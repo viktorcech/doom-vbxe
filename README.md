@@ -37,11 +37,12 @@ Runs on **real Atari hardware**.
   pip install pillow numpy
   ```
 - **PowerShell** — the build scripts are `.ps1`.
+- **The DOOM IWAD** and **id's DOOM C source** — both required, neither is distributed here. See below.
 
 ## Original game data (not included)
 
 The build packs its assets straight out of the **DOOM IWAD**, which is id Software's copyrighted
-data and is **not distributed here**. Supply your own legally-owned copy:
+data. Supply your own legally-owned copy:
 
 ```
 tools/DOOM.WAD          # the registered/Ultimate IWAD (episodes 1-3)
@@ -50,19 +51,17 @@ tools/DOOM.WAD          # the registered/Ultimate IWAD (episodes 1-3)
 `DOOMWAD` overrides the path and `DOOMPWAD` adds PWADs (`os.pathsep`-separated, later ones win, like
 DOOM's `-file`) if you would rather not copy the file in.
 
-The packers also read the **original DOOM C source** — id Software's own `info.c` is the authority
-for what every monster does when it is shot, and `p_map.c` for the splash-damage rule, so those
-tables are derived rather than retyped. It is GPL and lives upstream, so it is not vendored here
-either. Check it out into `_pomocne/_doomsrc/`:
+**The packers also need id's DOOM C source.** Monster stats and state chains live in `info.c`, not in
+the WAD, so the port parses them instead of retyping them (`p_map.c` for the splash-damage immunity,
+`p_spec.c`/`p_switch.c`/`p_doors.c` for the linedef specials). It is GPL and stays upstream:
 
 ```powershell
 git clone https://github.com/id-Software/DOOM.git _doom_tmp
 mkdir _pomocne\_doomsrc
 copy _doom_tmp\linuxdoom-1.10\*.c _pomocne\_doomsrc\
-copy _doom_tmp\linuxdoom-1.10\*.h _pomocne\_doomsrc\
 ```
 
-Without it `pack_things.py` stops with `info.c missing`, and a clean checkout cannot build.
+Without it `pack_things.py` stops with `info.c missing` and a clean checkout cannot build.
 
 ## Build
 
