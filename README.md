@@ -14,9 +14,10 @@ Runs on **real Atari hardware**.
 - **Atari XE/XL** with **VBXE** — the framebuffer, the palette and every blit go through it.
 - **Rapidus** accelerator — **required**, not optional. The engine assembles as 65816 (`opt c+`) and
   the BSP nodes, the texture pool and the sprite pool live in Rapidus SRAM banks.
-- Boots from a **disk image in D1:**.
+- Boots from a **disk image in D1:** — `doom_e1.atr` is ~6.6 MB (51838 sectors), so it takes a
+  mass-storage device.
 - **SIDE 3** cartridge — **recommended**. The engine streams every level, texture and sprite off the
-  disk as you play, so loading speed is felt constantly; SIDE 3 is much faster than a floppy.
+  disk as you play, so loading speed is felt the whole time.
 
 ## Controls
 
