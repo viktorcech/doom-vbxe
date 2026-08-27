@@ -15,6 +15,8 @@ Runs on **real Atari hardware**.
 - **Rapidus** accelerator — **required**, not optional. The engine assembles as 65816 (`opt c+`) and
   the BSP nodes, the texture pool and the sprite pool live in Rapidus SRAM banks.
 - Boots from a **disk image in D1:**.
+- **SIDE 3** cartridge — **recommended**. The engine streams every level, texture and sprite off the
+  disk as you play, so loading speed is felt constantly; SIDE 3 is much faster than a floppy.
 
 ## Controls
 
