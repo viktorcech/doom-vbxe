@@ -1,0 +1,44 @@
+# original game data (copyright -- supply your own)
+tools/DOOM.WAD
+*.WAD
+*.wad
+/wads/
+
+# id Software's DOOM C source (GPL, upstream -- check it out yourself)
+/_pomocne/
+
+# build tool (download MADS separately)
+mads.exe
+
+# build outputs
+/build/
+*.xex
+*.atr
+*.lst
+*.lab
+
+# generated at every build by the packers in tools/
+/at_tables.inc
+/atr_layout.inc
+/atr_levels.inc
+/fin_syms.inc
+/map_syms.inc
+/menu_syms.inc
+/mk_tables.inc
+/sound_tables.inc
+/weap_tables.inc
+/wi_syms.inc
+/wi_tables.inc
+
+# python
+__pycache__/
+*.pyc
+
+# backups / scratch
+*.bak
+*.tmp
+/bench/
+/sram/
+
+# editor / agent
+.claude/
