@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 263 B free, biggest contiguous block 184 B.
+; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -50,6 +50,8 @@
         icl 'map_syms.inc'           ; section base addrs, shared by all NUM_LEVELS
         icl 'atr_layout.inc'         ; LVL_SEC1/LVL_SECTORS/NUM_LEVELS (make_atr_doom.py)
         icl 'weap_tables.inc'        ; WPF_* psprite frame ids + the VBXE regions
+        icl 'hud_syms.inc'           ; VRAM of the HUD lumps HUD_TAB cannot reach
+                                     ;   (it stops at 29 entries -- pack_hud.py)
                                      ; load_weapons streams them to (pack_weap.py)
 
 ;--------------------------------------------------------------
@@ -414,7 +416,7 @@ fps_last    .ds 1                    ; RTCLOK3 at the previous frame (FPS bar)
         bpl ?olat                    ; 10 B instead of 20 -- the 10 pay for
                                      ; move_player's pk_x/pk_y latch.
         jsr move_player              ; walk forward/back (collision in stage 2)
-        jsr frame_dt                 ; fps_n = VBLANKs this frame -> doors + lifts
+        jsr frame_dt                 ; dt_vbl = VBLANKs this frame -> doors + lifts
         jsr check_triggers           ; crossed a lift line?
         jsr pf_frameb                ; animate it -- and let a floor that moved
                                      ;   carry what stands on it (mv_carry);
@@ -627,6 +629,7 @@ HUD_TAB                              ; to mv_step at $A077) when the face frames
 hud_resume = *
         org HUDCODE_BASE
         icl 'hud.asm'
+        icl 'fps.asm'                ; the 'F' frame-rate readout (was in hud.asm)
         org hud_resume                ; DOOM status bar (drawn after render_world)
         ; qs_tables (1 KB, page-aligned) relocated out of the $2000 segment: it
         ; used to flow here and reach $3FFF, but the textured-wall code grew the

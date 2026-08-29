@@ -513,9 +513,16 @@ pjth_resume = *
         sta pj_rxid
         lda THINGS_BASE+22           ; ...PLSS A
         sta pj_pid
-        lda THINGS_BASE+23           ; ...PLSE A (burst first of A/B/C)
-        sta pj_pxid
-        jmp pj_clr
+        lda THINGS_BASE+23           ; ...PLSE A (burst first of A/B/C).
+        sta pj_pxid                  ; The BFG ball's two (+36 BFS1 A, +37 BFE1
+        jmp pj_clr                   ;   A) are NOT copied: these four are read
+                                     ;   in the missile's per-frame path and want
+                                     ;   to be in fast RAM, but pj_bspawn reads
+                                     ;   its pair once per SHOT and runs under the
+                                     ;   ROM, where the blob at $C000 already is.
+                                     ;   Twelve bytes this block does not have --
+                                     ;   it ran into thr_comp ($8C9D) when they
+                                     ;   were here, and PJLV_END did not notice.
 .endp
 
 ;--------------------------------------------------------------
@@ -530,7 +537,7 @@ pjth_resume = *
 ;   Four frames now, measured by tools/tests/_verify_plasma.py.
 ;   Doubled it is still SLOWER than DOOM: a sub-step is the rocket's exact 14
 ;   units/VBLANK where the bolt's own rate is 17.5, and pj_frame never takes
-;   more than fps_n of them in one frame however big the cap is.
+;   more than dt_vbl of them in one frame however big the cap is.
 ;   It is in a hole of its own because every projectile block is full: PJGO has
 ;   two bytes left, PJHK ten, and the tails that LOOK spare belong to somebody
 ;   else -- $5BC5 is PFVAR_BASE and $8C9D is THRC_BASE, neither of which the
@@ -557,8 +564,8 @@ pjcap_resume = *
         org PJFR_BASE
 PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
                                      ;   A RUNAWAY GUARD now, not a pace: it
-                                     ;   sits above any real fps_n, so
-                                     ;   min(fps_n, pj_cap) is always fps_n and
+                                     ;   sits above any real dt_vbl, so
+                                     ;   min(dt_vbl, pj_cap) is always dt_vbl and
                                      ;   the missile flies at its true 14
                                      ;   units/VBLANK. See pj_ctab.
 .proc pj_frame                       ; ONE bolt, the one pj_load just swapped in
@@ -568,7 +575,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ?run    cmp #2
         bcc ?fly0                    ; 2..4 = the burst frames (their own clock)
         jmp pj_btick
-?fly0   ldx fps_n                    ; one sub-step per VBLANK, like the ball...
+?fly0   ldx dt_vbl                    ; one sub-step per VBLANK, like the ball...
         cpx pj_cap                   ; ...but never more than pj_cap of them in
         bcc ?step                    ;   one DRAWN frame (pj_go2 sets it from the
                                      ;   distance, so a short shot is not over in
@@ -655,11 +662,11 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;--------------------------------------------------------------
 ; pj_burst / pj_btick -- the impact: park, play the deathsound, walk the
 ;   burst frames on their own clocks (pj_bt0/1/2, VBLANKS).
-;   The clock runs DOWN BY fps_n, not by one: pj_frame is called once a frame
+;   The clock runs DOWN BY dt_vbl, not by one: pj_frame is called once a frame
 ;   and a frame is 4-6 VBLANKs here, so a `dec` made the 26-VBLANK burst last
 ;   26 FRAMES -- over two seconds of fireball standing in the air where DOOM
 ;   flashes it for half of one (2026-08-04: "splash ukazuje velmi dlho").
-;   The flight loop never had the bug; it always stepped fps_n times.
+;   The flight loop never had the bug; it always stepped dt_vbl times.
 ;   The block is full to the byte, so both tails share pj_gone.
 ;--------------------------------------------------------------
         org PJF2_BASE
@@ -681,9 +688,9 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         rts
 .endp
 .proc pj_btick
-        sec                          ; this frame ate fps_n VBLANKs of the frame
+        sec                          ; this frame ate dt_vbl VBLANKs of the frame
         lda pj_ttl                   ;   clock -- C=0 (it ran past) or Z=1 (it
-        sbc fps_n                    ;   ran out exactly) both mean: next frame
+        sbc dt_vbl                    ;   ran out exactly) both mean: next frame
         sta pj_ttl
         bcc ?adv
         bne ?out
@@ -1171,7 +1178,7 @@ pj_sh   dta 0                        ; shrinks the aim vector needed = log2(dist
 ;   stop a short shot being over in two frames, but info.c is unambiguous:
 ;   MT_ROCKET is 20*FRACUNIT a tic, which IS 14 units per PAL VBLANK, and in
 ;   DOOM a rocket really does cross a small room in two frames.
-;   Flat now, so min(fps_n, pj_cap) is always fps_n. The row stays a table
+;   Flat now, so min(dt_vbl, pj_cap) is always dt_vbl. The row stays a table
 ;   rather than becoming one constant because pj_go2 already indexes it and
 ;   pj_capdbl already doubles it for the plasma -- there is no room in either
 ;   block to delete the machinery, and none of it costs a cycle in flight.
@@ -1260,9 +1267,30 @@ pjhk_resume = *
         beq ?blast                   ; already dead: no second death chain
         lda pj_dmg
         jsr en_bhit                  ; P_DamageMobj + the voice + the chain
-?blast  lda pj_bsnd                  ; MT_PLASMA has no A_Explode (info.c), so
-        cmp #SFX_BAREXP              ;   the deathsound is what says "rocket":
-        bne ?out                     ;   a bolt is done once its victim is hurt
+?blast                               ; THE DEATHSOUND SAYS WHAT LANDED, and only
+                                     ; three ever reach here: SFX_BAREXP is the
+                                     ; rocket (A_Explode), SFX_RXPLOD is MT_BFG
+                                     ; (info.c:2033 -- A_BFGSpray, which hangs off
+                                     ; S_BFGLAND3, i.e. off the BALL's death,
+                                     ; which is HERE and not the trigger), and
+                                     ; SFX_FIRXPL is the plasma, which has neither
+                                     ; and is done once its victim is hurt.
+                                     ;   THE TEST IS BIT 0, not a pair of compares.
+                                     ; This block ends at $A3FF with QSqr on $A400
+                                     ; (bsp_main.asm), and it had exactly SIX bytes
+                                     ; for the BFG's arm; two compares want seven.
+                                     ; Of the three ids RXPLOD is the only ODD one,
+                                     ; so one `lsr` sorts it out and leaves the
+                                     ; other two shifted but still distinct -- both
+                                     ; are even, so nothing is lost. The `ert`
+                                     ; below is what makes that safe to write: the
+                                     ; day wadsound.py renumbers the list, the
+                                     ; build stops instead of spraying on plasma.
+        lda pj_bsnd
+        lsr
+        bcs ?spray
+        cmp #SFX_BAREXP/2
+        bne ?out
         lda pj_tx
         sta en_bx
         lda pj_tx+1
@@ -1274,8 +1302,14 @@ pjhk_resume = *
         lda #$FF
         sta pj_vic                   ; spent: a re-arm must not land it twice
         jmp en_boomat                ; A_Explode(..., 128) where it went off
+?spray  jmp wp_bfgspray              ; forty rays across the whole 90 degree view
+                                     ;   (it marks pj_vic spent itself -- there is
+                                     ;   no room for the store on this side)
 ?out    rts
 .endp
+    .if [SFX_RXPLOD&1]=0 .or [SFX_BAREXP&1]<>0 .or [SFX_FIRXPL&1]<>0
+        ert 'pj_hit dispatches on bit0: SFX_RXPLOD must be the ONLY odd id of the three'
+    .endif
     .if * > PJHIT_END+1
         ert 'pj_hit outgrew PJHIT_BASE..END (memory_map.inc)'
     .endif
@@ -1726,13 +1760,13 @@ pfg_resume = *
         sta pf_bid
 ?same   lda pf_on
         beq ?out
-        sec                          ; this drawn frame ate fps_n VBLANKs
+        sec                          ; this drawn frame ate dt_vbl VBLANKs
         lda pf_ttl
-        sbc fps_n
+        sbc dt_vbl
         sta pf_ttl
         bcc ?adv                     ; ran past, or out exactly -> next frame
         beq ?adv
-        lda fps_n                    ; ...and one image per DRAWN frame once the
+        lda dt_vbl                    ; ...and one image per DRAWN frame once the
         cmp #4                       ;   frames get long. A drawn frame here is
         bcc ?out                     ;   ~5 VBLANKs and BLUD's 8 tics are 11, so
                                      ;   the tic clock alone held every image for

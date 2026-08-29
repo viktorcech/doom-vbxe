@@ -22,6 +22,7 @@ mads.exe
 /atr_layout.inc
 /atr_levels.inc
 /fin_syms.inc
+/hud_syms.inc
 /map_syms.inc
 /menu_syms.inc
 /mk_tables.inc

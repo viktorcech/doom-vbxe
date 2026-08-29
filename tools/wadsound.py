@@ -249,6 +249,13 @@ SFX = [
     #     the existing 10 chunks already cover -- no new SIO, no new RAM.
     ('HOOF',   'DSHOOF',   1),        # cyberdemon's forefoot   (A_Hoof)
     ('METAL',  'DSMETAL',  1),        # ...its hind hoof, and the spider's legs
+    # --- 2026-08-28, the BFG9000. ONE new lump: A_BFGsound (p_pspr.c:822) plays
+    #     sfx_bfg on S_BFG1, and MT_BFG's deathsound is sfx_rxplod, which the
+    #     rocket launcher already brought in. The charge-up is the whole point
+    #     of it -- 20 tics of winding noise before the shot is what tells you a
+    #     BFG went off -- so it is not one of the lumps that can be dropped.
+    #     APPENDED, like every entry since the intermission's.
+    ('BFG',    'DSBFG',    1),        # A_BFGsound: the 20-tic wind-up
 ]
 
 

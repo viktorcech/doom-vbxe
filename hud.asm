@@ -190,42 +190,12 @@ hdyn_resume = *
         jsr hud_face_upd             ; the look-around animation (hud_hurt owns
                                      ;   the pain face, off fl_damage itself)
         lda hud_dirty
-        beq ?fps
-        sta fps_shown                ; the repaint covers the FPS digits: force a
-                                     ;   redraw (A=1 never matches a real fps_val)
+        beq ?tail
         dec hud_dirty
         jsr draw_hud
-?fps    jmp msg_tick                 ; HU_Drawer's message line -- and msg_tick
-.endp                                ;   tails into fps_tick, so this frame is
-                                     ;   still counted (no byte left here for a
-                                     ;   jsr of its own: see HUDDYN in
-                                     ;   memory_map.inc)
-
-;--------------------------------------------------------------
-; fps_tick -- the 'F' FPS readout's clock, every frame (msg_tick's tail, and
-;   msg_tick is draw_hud_gate's).
-;   Counts RENDERED frames against the VBI jiffy counter in windows of one
-;   second (50 jiffies, PAL): a finished window's frame count IS the
-;   frames-per-second, updated once a second, no division anywhere. The
-;   counters run from boot (toggling 'F' on shows the last finished second at
-;   once); only the drawing is gated (fps_disp).
-;   8-BIT ARITHMETIC, DELIBERATELY: in-game the VBI is rom_nmi (underrom.asm),
-;   which ticks ONLY RTCLOK3 -- $13 never carries -- so a 16-bit elapsed
-;   count closed the window early at every $14 wrap (a 1/12/50 flicker every
-;   5.12 s at high frame rates). (RTCLOK3 - fps_w16) mod 256 is correct under
-;   BOTH VBIs, menu and game. A >256-jiffy load hitch aliases mod 256 and can
-;   stretch one window; the value self-corrects the next second.
-;--------------------------------------------------------------
-.proc fps_tick
-        inc fps_f                    ; one more rendered frame this window
-        lda RTCLOK3
-        sec
-        sbc fps_w16                  ; elapsed jiffies, mod 256
-        cmp #50
-        bcs ?win                     ; one second is up
-        jmp fps_disp                 ; still open: redraw only if stale
-?win    jmp fps_win
-.endp
+?tail   jmp msg_tick                 ; HU_Drawer's message line, which tail-calls
+.endp                                ;   hud_tail (no byte left here for a jsr of
+                                     ;   its own: see HUDDYN in memory_map.inc)
 
 ;--------------------------------------------------------------
 ; hud_face_upd -- ST_updateFaceWidget's idle branch: every ST_FACECOUNT
@@ -240,7 +210,7 @@ hdyn_resume = *
 .proc hud_face_upd
         lda face_t                   ; VBLANK countdown, like the door timers
         sec
-        sbc fps_n
+        sbc dt_vbl
         bcs ?keep
         lda PSTATE+PS_HEALTH         ; DOOM ST_calcPainOffset: the face tracks
         cmp #67                      ;   HEALTH. 3 levels instead of DOOM's 5 --
@@ -279,7 +249,7 @@ hdyn_resume = *
 ;   IT HAS TO HANG OFF fl_damage AND NOT OFF fl_dmg. Reading the counter once a
 ;   frame was the obvious thing and it silently missed the acid: update_pz
 ;   tail-calls update_damage and then wp_think, and wp_think runs a DOOM tic per
-;   VBLANK of the frame -- seven of them at 5 fps -- so fl_tic had already
+;   VBLANK of the frame -- seven of them at five frames a second -- so fl_tic had already
 ;   decayed the nukage's 5 points back to zero before the HUD ever looked. The
 ;   monster hits only worked because they are bigger than a frame's worth of
 ;   decay. The EVENT is the truth here, not the counter.
@@ -348,7 +318,7 @@ hp_resume = *
 ;   weaponinfo[readyweapon].ammo). The fist is am_noammo, and DOOM draws no
 ;   number at all for it. Lives here rather than inline in draw_hud: that block
 ;   ($AF40) ends flush against sprites.asm at $B000.
-;   2026-08-10: parked at HUDAMMO_BASE -- fps_tick needed its HUDDYN bytes.
+;   2026-08-10: parked at HUDAMMO_BASE -- the HUDDYN bytes were wanted elsewhere.
 ;--------------------------------------------------------------
 ham_resume = *
         org HUDAMMO_BASE
@@ -397,7 +367,7 @@ ham_resume = *
 ?out    rts
 .endp
     .if * > HUDDYN_END+1
-        ert 'draw_hud_gate/fps_tick/hud_face_upd/pickup_bonus outgrew HUDDYN (memory_map.inc)'
+        ert 'draw_hud_gate/hud_face_upd/pickup_bonus outgrew HUDDYN (memory_map.inc)'
     .endif
         org hdyn_resume
 
@@ -418,7 +388,7 @@ ham_resume = *
 ; opposite reason: rows 168+ are never touched by the renderer.)
 ;
 ; THE TIMER IS IN VBLANKs, not frames -- the same rule the face, the doors and
-; the lifts follow (fps_n = frame_dt). 4 seconds is 4 seconds at 5 fps and at
+; the lifts follow (dt_vbl = frame_dt). 4 seconds is 4 seconds at five frames and at
 ; 50. It counts down one frame late: the frame that takes msg_t to zero still
 ; draws. Making that exact costs a second branch and this block has one byte
 ; left; a single frame of a 4-second message is not visible.
@@ -428,20 +398,20 @@ mtk_resume = *
 ;--------------------------------------------------------------
 ; msg_tick -- HU_Ticker + HU_Drawer in one, called as draw_hud_gate's TAIL (it
 ;   inherits the frame's blitter state and the MEMAC window on BANK_OVERHEAD)
-;   and leaving through fps_tick, which is the tail it displaced.
+;   and leaving through hud_tail, which is the tail it displaced.
 ;--------------------------------------------------------------
 .proc msg_tick
         lda msg_t                    ; nothing showing -> the whole widget is
         beq ?none                    ;   two loads and a branch
         sec
-        sbc fps_n                    ; VBLANKs, not frames (see the header)
+        sbc dt_vbl                    ; VBLANKs, not frames (see the header)
         bcs ?keep
         lda #0                       ; expired: floor it, do not wrap
 ?keep   sta msg_t
         lda msg_i                    ; the strip pack_menu.py rasterised for this
         ldx #MSG_Y                   ;   bonus id -- hu_stuff.c HU_MSGX/Y = 0,0
         jsr am_title.strip_blit
-?none   jmp fps_tick                 ; ...and on to the readout's clock
+?none   jmp hud_tail                 ; ...and on to whatever draws over the view
 .endp
     .if * > MSGTICK_END+1
         ert 'msg_tick outgrew MSGTICK_BASE..END (memory_map.inc)'
@@ -470,119 +440,6 @@ mst_resume = *
         ert 'msg_set outgrew MSGSET_BASE..END (memory_map.inc)'
     .endif
         org mst_resume
-
-;==============================================================
-; THE 'F' FPS READOUT -- the rest of it, parked piecewise: RAM has no single
-; hole left that holds it whole (tools/ram_map.py), so each piece sits in its
-; own gap with the usual org + ert guard. Flow per frame:
-;   draw_hud_gate -> msg_tick -> fps_tick (HUDDYN, above) -> fps_win on a
-;   closed window -> fps_disp -> fps_draw2 when the bar shows a stale value.
-; The 'F' key itself hangs off mn_key's tail (fps_key/fps_tog below).
-;==============================================================
-fpsw_resume = *
-        org FPSWIN_BASE
-;--------------------------------------------------------------
-; fps_win -- the one-second window just closed: its frame count IS the fps.
-;   Latch it and restart the window at NOW -- the few jiffies a slow frame
-;   overshot stay out of the next second. (fps_w16+1 is unused since the
-;   8-bit rework -- see fps_tick -- and stays reserved.)
-;--------------------------------------------------------------
-.proc fps_win
-        lda RTCLOK3
-        sta fps_w16
-        lda fps_f
-        sta fps_val
-        lda #0
-        sta fps_f
-        jmp fps_disp
-.endp
-    .if * > FPSWIN_END+1
-        ert 'fps_win outgrew FPSWIN_BASE..END (memory_map.inc)'
-    .endif
-
-        org FPSDISP_BASE
-;--------------------------------------------------------------
-; fps_disp -- draw_hud_gate's true tail: paint fps_val on the bar IF the
-;   readout is on and what is on screen is stale (a new window's value, or the
-;   gate poked fps_shown because a full bar repaint just went over the digits).
-;--------------------------------------------------------------
-.proc fps_disp
-        lda fps_on
-        beq ?out
-        lda fps_val
-        cmp fps_shown
-        beq ?out
-        sta fps_shown
-        jmp fps_draw2
-?out    rts
-.endp
-    .if * > FPSDISP_END+1
-        ert 'fps_disp outgrew FPSDISP_BASE..END (memory_map.inc)'
-    .endif
-
-        org FPSDRW_BASE
-;--------------------------------------------------------------
-; fps_draw2 -- STARMS goes down first (hud_top blits it BLT_COPY-free but the
-;   bar behind the box is opaque, so it erases the old digits), then the count
-;   in the big red STTNUM digits, right edge FPS_NUMX: frames per second.
-;--------------------------------------------------------------
-.proc fps_draw2
-        lda #HUD_ARMS
-        ldx #ST_ARMSX
-        jsr hud_top
-        lda fps_val
-        ldx #FPS_NUMX
-        jmp hud_num
-.endp
-fps_f     dta 0                      ; frames in the open window
-fps_w16   dta 0                      ; RTCLOK3 at the window start. ONE byte: the
-                                     ;   window is 8-bit arithmetic (see fps_tick),
-                                     ;   so the old high byte was never read.
-fps_val   dta 0                      ; last finished window = fps in tenths
-fps_shown dta 0                      ; what the bar shows now
-fps_on    dta 0                      ; 'F': 1 = readout visible
-    .if * > FPSDRW_END+1
-        ert 'fps_draw2 outgrew FPSDRW_BASE..END (memory_map.inc)'
-    .endif
-
-        org FPSKEY_BASE
-;--------------------------------------------------------------
-; fps_key -- mn_key's tail ('F' = FPS readout on/off). A is mn_key's leavings:
-;   the $3F-masked key code while a key is down, 1 (never KEY_F) off the
-;   re-arm path, 0 for a held ESC. The mn_arm edge is SHARED with ESC -- only
-;   one key can be down at a time, so each press still acts exactly once.
-;--------------------------------------------------------------
-.proc fps_key
-        cmp #KEY_F
-        bne ?no
-        lda mn_arm
-        beq ?no                      ; still held from the press that acted
-        dec mn_arm                   ; 1 -> 0: this press is spent
-        jmp fps_tog
-?no     jmp mn_pend                  ; carry on down read_keys' old tail
-.endp
-    .if * > FPSKEY_END+1
-        ert 'fps_key outgrew FPSKEY_BASE..END (memory_map.inc)'
-    .endif
-
-        org FPSTOG_BASE
-;--------------------------------------------------------------
-; fps_tog -- the press: flip the readout and buy one bar repaint, which both
-;   erases the digits on the way OFF and (via the gate's fps_shown poke)
-;   paints them straight back on the way ON with the last window's value.
-;--------------------------------------------------------------
-.proc fps_tog
-        lda fps_on
-        eor #1
-        sta fps_on
-        lda #1
-        sta hud_dirty
-        jmp mn_pend
-.endp
-    .if * > FPSTOG_END+1
-        ert 'fps_tog outgrew FPSTOG_BASE..END (memory_map.inc)'
-    .endif
-        org fpsw_resume
 
 hud_split_resume = *
         org HUDBLIT_BASE             ; the blit half lives below the MEMAC window
@@ -653,8 +510,16 @@ hud_split_resume = *
         lda row_hi,x
         adc #0
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        lda #[VRAM_SCREEN>>16]
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+hb_dbnk                              ; ...and hb_dbnk+1 IS the bank byte (below)
+        lda #[VRAM_SCREEN>>16]       ; bank 0 for the BAR (rows 168+ are SHARED
+                                     ;   between the buffers, so the bar is painted
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2  ; once) -- but the BACK BUFFER's bank
+                                     ;   for anything drawn inside the VIEW.
+                                     ;   THE OPERAND ITSELF is hb_dbnk: this run
+                                     ;   had ONE byte left, and `lda abs` is one
+                                     ;   more than `lda #`. A view-side caller
+                                     ;   pokes the immediate and puts it back;
+                                     ;   nothing else touches it.
         lda hb_ctrl
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
 hud_fire                             ; menu.asm's mn_erase builds its own BCB
@@ -676,4 +541,7 @@ hud_fire                             ; menu.asm's mn_erase builds its own BCB
 .endp
 
 hb_ctrl dta BLT_BSTENCIL             ; COPY for the bar, stencil for the glyphs
+                                     ; (hb_dbnk is hud_blit's other parameter and
+                                     ;  is the immediate operand above, not a
+                                     ;  variable: this run had ONE byte left)
         org hud_split_resume

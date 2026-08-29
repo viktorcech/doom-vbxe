@@ -378,7 +378,7 @@ blsub_resume = *
 ;   5 -- and at 700 u/s that is still 1750 units, wider than any DOOM 1 arena.
 ;--------------------------------------------------------------
 .proc bl_subs
-        ldx fps_n
+        ldx dt_vbl
         ldy bl_a
         lda at_ssh-ATM_LO,y
         beq ?done
@@ -507,7 +507,7 @@ blr_resume = *
         bcc ?fly0                    ;   (9 VB) per frame, C -> D -> E -> gone
         sec                          ;   (info.c S_TBALLX1..3), parked where it
         lda bl_ttl                   ;   died -- no movement, no hit test.
-        sbc fps_n                    ; DOWN BY fps_n, not by one: this runs once
+        sbc dt_vbl                    ; DOWN BY dt_vbl, not by one: this runs once
         sta bl_ttl                   ;   a FRAME and a frame is 4-6 VBLANKs, so
         bcc ?nx                      ;   a `dec` stretched the 27-VBLANK burst
         bne ?out                     ;   over two seconds (proj.asm, same fix)
@@ -527,7 +527,7 @@ blr_resume = *
         lda bl_xf                    ;   22-unit window. TWO per VBLANK for the
                                      ;   rocket (info.c speed 20 against the k7
                                      ;   scale's 10) -- same three bytes the
-                                     ;   `ldx fps_n` here used to be
+                                     ;   `ldx dt_vbl` here used to be
         adc bl_sx
         sta bl_xf
         lda bl_x
@@ -615,7 +615,7 @@ blr_resume = *
         jsr ?chk                     ;   dead in flight). Leaf + floor/lintel on
         bcs ?burst                   ;   EVERY sub-step: the old once-per-frame
         ldx bl_ax                    ;   test tunneled a thin shut door whole
-        dex                          ;   (fps_n x 7 u between samples vs the 8 u
+        dex                          ;   (dt_vbl x 7 u between samples vs the 8 u
         bne ?more                    ;   the door sector is thick) -- the imp's
         jmp ?rec                     ;   ball flew through closed doors
 ?more   jmp ?step

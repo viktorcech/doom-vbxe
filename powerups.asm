@@ -41,6 +41,31 @@
 ; cost lands in this block and not in the flash block, which is full to the byte
 ; ($F789, with en_bthings at $F78A).
 ;==============================================================
+pwm_resume = *
+        org PWMAP_BASE
+;--------------------------------------------------------------
+; pw_map -- P_GivePower(pw_allmap), in front of pw_give. Y = bonus id, and it
+;   must come back untouched (snd_bonus reads it), so the test is a cpy.
+;   28 is the Computer Area Map: am_walls draws every line the BSP walk has not
+;   lit yet while this bit is up (am_map.c's pw_allmap branch). 29, the visor,
+;   still stores nothing -- this build has no light amp.
+;   PARKED HERE and not in pw_give: that block ends ON POWER_END.
+;--------------------------------------------------------------
+.proc pw_map
+        cpy #BN_MAP
+        bne ?go
+        lda PW_FLAGS                 ; NOT `tsb`: tools/tests/sim6502.py has no
+        ora #PWF_ALLMAP              ;   opcode $0C, so every _verify_* test would
+        sta PW_FLAGS                 ;   run past it blind. Three bytes more, and
+                                     ;   this hole has 38. A is free -- pw_give
+                                     ;   dispatches on Y alone.
+?go     jmp pw_give
+.endp
+    .if * > PWMAP_END+1
+        ert 'pw_map outgrew PWMAP_BASE..PWMAP_END (memory_map.inc)'
+    .endif
+        org pwm_resume
+
 pw_resume = *
         org POWER_BASE
 

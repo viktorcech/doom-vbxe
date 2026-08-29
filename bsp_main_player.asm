@@ -11,7 +11,7 @@
 ; layout (active low: b0=up b1=down b2=left b3=right). (2026-06-03)
 STICK0   equ $D300            ; PIA PORTA (joystick 0 in low nibble)
 ; TURN/SPD are the fixed per-frame amounts again (memory_map.inc, stored into
-; PLR_STEP/TRN_STEP by plr_steps): the 2026-07-28 fps_n time scaling was
+; PLR_STEP/TRN_STEP by plr_steps): the 2026-07-28 dt_vbl time scaling was
 ; reverted the same day -- several times too fast in play, and the halfway
 ; collision probe in move_player assumes a step <= 24.
 
@@ -247,15 +247,48 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         sta zp_py
         lda coll_cy+1
         sta zp_py+1
-?done   rts
+?done   jmp mp_clamp                 ; a SHUT DOOR in the way? then pk collapses to
+                                     ;   where he STANDS. Without it the 24-unit
+                                     ;   step reached 24 units past the door and
+                                     ;   E2M9's key skulls -- 32 behind theirs --
+                                     ;   came off the far side. A window or a ledge
+                                     ;   does NOT clamp: that reach is the whole
+                                     ;   point of the pk latch below.
 mp_nomove                            ; pl_idle falls back here
-?nomove ldx #3                       ; NOT moving this frame: P_XYMovement never
-?nml    lda zp_px,x                  ;   runs, so the only point there is to test
-        sta pk_x,x                   ;   is where he stands (pk_x, memory_map.inc)
-        dex
-        bpl ?nml
+?nomove jmp mp_pkhere                ; NOT moving this frame: P_XYMovement never
+.endp                                ;   runs, so the only point to test is where
+                                     ;   he stands. The loop that did it moved to
+                                     ;   PKCLAMP_BASE beside mp_clamp -- those nine
+                                     ;   bytes are what pay for the jmp above.
+
+pkc_resume = *
+        org PKCLAMP_BASE
+;--------------------------------------------------------------
+; mp_clamp / mp_pkhere -- move_player's tail. mp_pkhere: pk = where he stands.
+;   mp_clamp: the same, but only when coll_seg saw a SHUT DOOR this move; else pk
+;   keeps the destination it was latched with, which is what leaves an item
+;   behind a window or up on a ledge reachable (spr_pickup's header: 118 of them
+;   in episode 1). Both clear the flag -- one move, one answer.
+;--------------------------------------------------------------
+coll_solid dta 0                     ; set by coll_seg on an opening of exactly 0
+.proc mp_clamp
+        lda coll_solid
+        bne mp_pkhere
         rts
 .endp
+.proc mp_pkhere
+        stz coll_solid
+        ldx #3
+?l      lda zp_px,x
+        sta pk_x,x
+        dex
+        bpl ?l
+        rts
+.endp
+    .if * > PKCLAMP_END+1
+        ert 'mp_clamp/mp_pkhere outgrew PKCLAMP_BASE..END (memory_map.inc)'
+    .endif
+        org pkc_resume
 
 ;==============================================================
 ; FALLING (2026-08-05) -- p_mobj.c P_ZMovement's player half, plus the two

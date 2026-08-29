@@ -88,8 +88,9 @@ paint_resume = *
 ;   Per SEG, not per column, so it lives in the second block (PAINT2_BASE) and
 ;   leaves the $0900 page to the per-column code.
 ;--------------------------------------------------------------
-pt2_resume = *
-        org PAINT2_BASE
+pts_resume = *
+        org PTSEG_BASE               ; the fast block tw_setup vacated -- pt_seg grew
+                                     ;   past PAINT2 when it started rounding
 .proc pt_seg
         lda #0
         sta rs_rptf
@@ -118,16 +119,40 @@ pt2_resume = *
         bpl ?dpos0
         jmp ?flat                    ; ceiling below floor
 ?dpos0
+        ; ROUND (2026-08-27): dividend += worldH/2 before the divide. udiv24
+        ; truncates, and now that paint_col takes the RECIPROCAL of rpt for
+        ; rs_tpr (pt_recip), half an LSB low here is amplified into whole texels
+        ; on a minified wall: over an E1M1 spawn frame this one add took the max
+        ; |tpr error| from 32 to 18 and the mean from 2.54 to 1.41.
+        ; The overflow guard moved BELOW it, so it sees the dividend actually
+        ; divided -- rounding can push a quotient that was exactly 65535 over.
+        lda rs_worldh+1
+        lsr
+        sta m_a+1
+        lda rs_worldh
+        ror
+        sta m_a
+        clc
+        lda m_prod
+        adc m_a
+        sta m_prod
+        lda m_prod+1
+        adc m_a+1
+        sta m_prod+1
+        lda m_prod+2
+        adc #0
+        sta m_prod+2
+        bcs ?sat
         lda rs_worldh+1              ; D/worldH >= 65536 would wrap the quotient:
         bne ?nov                     ;   worldH >= 256 cannot (D is 24-bit)
         lda m_prod+2
         cmp rs_worldh
         bcc ?nov
-        lda #$FF                     ; saturate -- a sliver of wall stretched over
+?sat    lda #$FF                     ; saturate -- a sliver of wall stretched over
         sta rs_rpt                   ;   the whole screen
         sta rs_rpt+1
         rts
-?nov    jsr udiv24                   ; rpt_q8 = D / worldH
+?nov    jsr udiv24                   ; rpt_q8 = (D + worldH/2) / worldH
         lda m_quot
         sta rs_rpt
         lda m_quot+1
@@ -178,6 +203,7 @@ pt2_resume = *
         rts
 .endp
 
+
 ;--------------------------------------------------------------
 ; pt_step -- one column on: rpt += drpt (Q16). Called from the column loop's
 ;   ?cnext beside the plane accumulators, i.e. for EVERY column, drawn or
@@ -197,8 +223,91 @@ pt2_resume = *
         sta rs_rpt+1
         rts
 .endp
+    .if * > PTSEG_END+1
+        ert 'pt_seg/pt_step outgrew PTSEG_BASE..PTSEG_END (memory_map.inc)'
+    .endif
+        org pts_resume
+
+pt2_resume = *
+        org PAINT2_BASE              ; the slot pt_seg left
+;--------------------------------------------------------------
+; pt_recip -- rs_tpr = 65536 / rs_rpt, by table, no divide.
+;
+; WHY THIS EXISTS (2026-08-27). rs_tpr is texels per screen row; rs_rpt is screen
+; rows per texel. They are exact reciprocals in Q8:
+;       tpr_q8 * rpt_q8 == 65536
+; identically -- both are worldH and D = yfacc-ycacc, one each way up. tw_setup
+; derived tpr straight from worldH/dscr with a udiv24, and BECAUSE a reciprocal
+; curves, colmerge.asm carried a whole anchor/interpolate machine (tws_anchor +
+; tw_setup_sub) to avoid paying that divide per column: two udiv24s per 8-column
+; block plus the look-ahead's accumulator save/advance/restore. Measured, that
+; machine plus its divides was 15.9 % of a wall frame and 7 % of the spawn.
+;
+; But pt_seg already tracks rpt, which is EXACTLY LINEAR in the column (two
+; divides per SEG, one add per column -- pt_step), so tpr is just one reciprocal
+; of a number the painter already has. And paint_col ALREADY memoises on rs_rpt
+; for pt_mul, so this runs only where rs_rpt changed: 45 % of painted columns at
+; a wall, 29 % at the spawn (tools/tests/_probe_tpr3.py).
+;
+; ACCURACY against the exact 65536*worldH/D over real frames, mean / max |error|
+; in tpr LSBs (same probe):
+;       spawn   tw_setup + interpolation  1.79 / 327     this  1.41 / 18
+;       wall    tw_setup + interpolation  0.20 /   1     this  0.25 /  1
+; It is not an approximation of the old path, it is BETTER than it: the old max
+; error was a whole block's worth of interpolation drift.
+;
+; MATH: rpt ~ m << e with m in [256,512) (recip_norm), INV_TAB[m] = 2^23/m, so
+;       65536/rpt = INV_TAB[m] >> (23 + e - 16) = INV_TAB[m] >> (RECIP_INV_K-16+e)
+; A negative shift means tpr >= 65536 -- saturate, exactly as tw_setup's ?tprmax
+; did, and rpt = 0 (a wall too far to cover one texel per row) saturates too.
+; Clobbers A/X/Y and the m_* scratch -- paint_col calls it before it needs any
+; of them. Per CHANGED column, so it sits beside pt_seg, not in the $0900 page.
+;--------------------------------------------------------------
+.proc pt_recip
+        lda rs_rpt
+        sta rc_m
+        lda rs_rpt+1
+        sta rc_m+1
+        ora rc_m
+        beq ?sat                     ; rpt = 0 -> tpr is off the top
+        jsr recip_norm               ; X = mantissa index, rc_e = exponent
+        lda.l RCX_INV_LO,x           ; INV_TAB[m] = round(2^23/m), bank $01
+        sta m_prod
+        lda.l RCX_INV_HI,x
+        sta m_prod+1
+        clc
+        lda #RECIP_INV_K-16
+        adc rc_e                     ; rc_e is signed
+        bmi ?sat                     ; shift < 0 -> tpr >= 65536
+        tax
+        beq ?done
+        cpx #8                       ; >= 8 -> drop the whole low byte first and
+        bcc ?bits                    ;   leave at most 7 single shifts (shifting
+        lda m_prod+1                 ;   14 times by ones would cost more than
+        sta m_prod                   ;   the divide this replaces)
+        lda #0
+        sta m_prod+1
+        txa
+        sec
+        sbc #8
+        beq ?done
+        tax
+?bits   lsr m_prod+1
+        ror m_prod
+        dex
+        bne ?bits
+?done   lda m_prod
+        sta rs_tpr
+        lda m_prod+1
+        sta rs_tpr+1
+        rts
+?sat    lda #$FF                     ; the saturation tw_setup's ?tprmax used
+        sta rs_tpr
+        sta rs_tpr+1
+        rts
+.endp
     .if * > PAINT2_END+1
-        ert 'pt_seg/pt_step outgrew PAINT2_BASE..PAINT2_END (memory_map.inc)'
+        ert 'pt_recip outgrew PAINT2_BASE..PAINT2_END (memory_map.inc)'
     .endif
         org pt2_resume
 
@@ -430,6 +539,12 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         lda rs_rpt+1                 ;   setup_chains zeroes ptm_last, so the
         sta ptm_last+1               ;   memo is consistent from frame one.
         jsr pt_mul
+        jsr pt_recip                 ; ... and rs_tpr = 65536/rpt on the SAME
+                                     ;   memo (2026-08-27): tpr is rpt's exact
+                                     ;   reciprocal, so it changes exactly when
+                                     ;   rpt does -- which is what let the whole
+                                     ;   tw_setup / tws_anchor divide-and-
+                                     ;   interpolate path go away. See pt_recip.
 ?baked
         ; ---- wt = (spa - pegrow)*tpr + vsh*256, reduced mod texH*256 --------
         ;      the same texel anchor draw_twall_col computed, and for the same

@@ -296,6 +296,12 @@ def _moving_sectors(md):
 
 ROLE_TAG = '@D'      # marks the private copy a door / lift face gets (see below)
 
+# The key-coloured door faces. Aliasing one of these is not a cosmetic slip --
+# a blue door painted DOORRED2 tells the player to go and find the wrong key --
+# so they are protected whatever else happens, and no ordinary wall may alias
+# ONTO them either (that would paint a fake locked door on a plain wall).
+KEY_DOOR_TEX = re.compile(r'^DOOR(BLU|RED|YEL)2?$')
+
 
 def _is_moving_face(md, doors, plats, sg, slot):
     """Is this seg slot ('w' = wall/upper/middle, 'l' = lower) a surface that
@@ -323,6 +329,28 @@ def _is_moving_face(md, doors, plats, sg, slot):
     if slot == 'w':
         return into in doors
     return two and (into in plats or into in doors)
+
+
+def _functional_names(md, slots):
+    """The texture names that a player has to be able to READ: every door /
+    lift face, door track and door step in the level (_is_moving_face), by the
+    name the seg slot actually carries.
+
+    This used to be answered by the ROLE_TAG suffix alone -- but _seg_slots
+    only tags when SHIP_ALL_TEXTURES is False, and it has been True since
+    2026-08-03, so with the full-texture build the texid alias below saw NO
+    protected doors at all: E2M6 merged BIGDOOR2 into STARGR2 (the first door
+    of the level), E2M2 BIGDOOR2 into DOORYEL, E3M3 the DOORTRAK track itself.
+    The role is a property of the SEG, not of the name, so ask the geometry.
+    """
+    doors, plats = _moving_sectors(md)
+    out = set()
+    for i, sg in enumerate(md.segs):
+        for k, slot in enumerate(('w', 'l')):        # 'm' is never a door face
+            nm = slots[i][k]
+            if nm and _is_moving_face(md, doors, plats, sg, slot):
+                out.add(nm)
+    return out
 
 
 # A switch face is a WALL texture with a button composited on top (SW1STRTN is
@@ -555,9 +583,17 @@ def pack_map_textures(md, wt, xpool=None):
                 if n:
                     freq[n] += 1
 
+        functional = _functional_names(md, slots)
+
         def _protected(n):
+            # Functional surfaces never alias: switches (p_switch.c's list),
+            # scroll walls, key doors, and every door / lift / track face.
+            # The protected set is 45 names at its worst (E2M6) -- see
+            # tools/tests/_audit_texalias.py -- so 18+ ids are always left for
+            # the ordinary walls the alias is actually meant to merge.
             return (is_switch(tex_base(n)) or SCROLL_TAG in n
-                    or n.endswith(ROLE_TAG))
+                    or n.endswith(ROLE_TAG) or n in functional
+                    or KEY_DOOR_TEX.match(tex_base(n)))
 
         def _dom_h(n):
             t = wt.get_texture(tex_base(n), n in masked)
@@ -585,6 +621,19 @@ def pack_map_textures(md, wt, xpool=None):
             cands = [k for k in used
                      if k != n and k not in alias and info[k] is not None
                      and (k in masked) == (n in masked)]
+            # ... and nothing may alias ONTO a functional surface either:
+            # that is how an ordinary wall ends up painted as a switch the
+            # player walks up and presses (E2M6 sent DOOR3 to SW1COMM, right
+            # where the level's first door is), as a locked door, as a door
+            # slab in a blank wall (E3M4 sent three walls to BIGDOOR5), or --
+            # worst -- onto the SCROLL copy, whose pixels slide every tic.
+            # They stay keepers, never targets; fall back only if the map
+            # offers nothing else at all.
+            plain = [k for k in cands
+                     if not is_switch(tex_base(k)) and SCROLL_TAG not in k
+                     and not KEY_DOOR_TEX.match(tex_base(k))
+                     and k not in functional]
+            cands = plain or cands
             if not cands:
                 continue
             alias[n] = min(cands, key=lambda k: _dist(n, k))

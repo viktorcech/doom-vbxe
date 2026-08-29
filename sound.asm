@@ -357,15 +357,49 @@ snda_resume = *
                                      ;   IRQ but Timer-1 is masked, so re-writing
                                      ;   IRQEN from POKMSK resets the stray latch
                                      ;   (a 0 bit clears its IRQST bit) and rti.
-?chain  pla                          ; A as the IRQ found it. The two saved X
-        pla                          ;   bytes are DISCARDED, not restored: this
-        pla                          ;   path only runs with the ROM IN (SIO owns
-                                     ;   POKEY mid-load), the frame loop is not
-                                     ;   running, so no 16-bit index is live -- and
-                                     ;   the OS handler is 6502 code that wants
-                                     ;   8-bit X anyway, which `sep #$30` above
-                                     ;   already left it. Balancing the stack is
-                                     ;   all this path owes.
+?chain  pla                          ; A back (one byte: the `pha` above ran with
+        rep #$10                     ;   M pinned 8-bit in either mode), then X
+        plx                          ;   AT THE WIDTH `phx` PUSHED IT. THAT MIRROR
+        sep #$10                     ;   IS THE WHOLE FIX (2026-08-29).
+                                     ; What was here was `pla / pla / pla`: pop A
+                                     ;   plus the TWO bytes a 16-bit `phx` leaves,
+                                     ;   discarding X because "no 16-bit index is
+                                     ;   live on this path". The count was the
+                                     ;   error. This path is gated on PORTB bit0 =
+                                     ;   1, i.e. ROM IN -- and rom_in/rom_out pin
+                                     ;   ROM IN <=> EMULATION MODE (underrom.asm,
+                                     ;   THE 65816 MODE INVARIANT). In emulation
+                                     ;   the index width is FORCED 8-bit and
+                                     ;   `rep #$10` cannot clear it, so `phx`
+                                     ;   pushed ONE byte, `pha` one more -- two on
+                                     ;   the stack against three popped. The third
+                                     ;   `pla` ate the P the interrupt had pushed,
+                                     ;   and the OS handler's RTI then pulled PCL
+                                     ;   as P and PCH as PCL and went to lunch.
+                                     ;   So the "native mode" the old comment
+                                     ;   reasoned from is the one mode this path
+                                     ;   can NEVER be in; the unwind was wrong
+                                     ;   every single time it ran.
+                                     ; WHAT IT COST: an ordinary SIO load. Every
+                                     ;   serial IRQ during one arrives with the
+                                     ;   ROM in, is not Timer-1, and lands here --
+                                     ;   so the stack rots on the first one and
+                                     ;   the machine is gone. It only ever booted
+                                     ;   off an IDE+/SIDE (or IDE+'s own US SIO),
+                                     ;   which loads with no POKEY serial IRQ at
+                                     ;   all. Reported from real hardware
+                                     ;   2026-08-29; the disassembly at $0491 in
+                                     ;   irq.png is this exact frame.
+                                     ; The pair mirrors ?out's `pla / rep #$10 /
+                                     ;   plx` -- which is why ?out was correct in
+                                     ;   both modes all along and this was not.
+                                     ;   `sep #$10` hands the OS handler the 8-bit
+                                     ;   X its 6502 code expects; it is a no-op in
+                                     ;   emulation, where we always are, and cheap
+                                     ;   insurance if the invariant ever moves.
+                                     ;   X and A now arrive RESTORED, not
+                                     ;   discarded, which the old path had no way
+                                     ;   to do and the OS is entitled to.
         jmp (snd_old_irq)
 ?mine
         lda POKMSK_R                 ; ack Timer-1: drop bit 0, then restore it

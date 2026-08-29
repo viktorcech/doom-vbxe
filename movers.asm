@@ -1017,7 +1017,7 @@ mvchg_resume = *
 
 ;--------------------------------------------------------------
 ; update_movers -- one step per frame per live slot, on DOOM's clock: slide
-;   down, dwell, raise back. Both counters scale with fps_n (VBLANKs the frame
+;   down, dwell, raise back. Both counters scale with dt_vbl (VBLANKs the frame
 ;   took, from frame_dt), like the doors: p_plats.c gives downWaitUpStay speed =
 ;   PLATSPEED*4 (140 units/s) and wait = 3 s FROM THE LANDING, and neither may
 ;   depend on the port's frame rate.
@@ -1044,7 +1044,7 @@ mvchg_resume = *
         beq ?climb
 ?dwell  lda MV_TIMER,x               ; the dwell counts VBLANKs, not frames
         sec
-        sbc fps_n
+        sbc dt_vbl
         sta MV_TIMER,x
         bcc ?up                      ; underflowed -> time is up
         bne ?next
@@ -1152,7 +1152,7 @@ usc_resume = *
 .proc update_scroll
         ldx MAP_HSCRTEX
         bmi ?out                     ; $FF: nothing scrolls on this level
-        ldy fps_n                    ; the VBLANKs this frame took
+        ldy dt_vbl                    ; the VBLANKs this frame took
 ?acc    clc
         lda ts_acc
         adc #SCROLL_Q8
@@ -1352,7 +1352,7 @@ dmg_resume = *
         tax                          ; 1 nukage, 2 slime, 3 super, 4 = E1M8 end
         lda dmg_timer                ; the tic counts VBLANKs, like the doors
         sec
-        sbc fps_n
+        sbc dt_vbl
         sta dmg_timer
         bcs ?out                     ; not due yet
         lda #DMG_VB
@@ -1445,9 +1445,24 @@ d30_resume = *
 ?l      lda.l DOORSTAY,x
         and #$06
         beq ?nx
-        lsr
-        lsr                          ; C = b2, the countdown is already running
-        bcs ?cnt
+        and #$04                     ; b2 = the countdown is already running.
+        bne ?cnt                     ;   IT WAS `lsr / lsr / bcs` (2026-08-28):
+                                     ;   two LSRs after `and #$06` put bit ONE in
+                                     ;   the carry, not bit TWO -- and bit one is
+                                     ;   the ARM bit door_force_open's ?shut sets
+                                     ;   (`ora #2`). So an armed door jumped
+                                     ;   STRAIGHT to ?cnt and counted DOWN a
+                                     ;   DOOR_WAIT/DOOR_FRAC pair nothing had ever
+                                     ;   initialised -- _verify_door30 caught it
+                                     ;   starting at 64502 instead of DOOR30_VB
+                                     ;   1500. The arm path, the only writer of
+                                     ;   DOOR30_VB, was reachable only from
+                                     ;   DOORSTAY=4, which is what the arm path
+                                     ;   itself writes -- and from there it
+                                     ;   re-armed every frame, so the countdown
+                                     ;   could never finish either way.
+                                     ;   Net effect: specials 16/76 never reopened
+                                     ;   on time. Same four bytes as the shifts.
         lda.l DOOR_STATE,x           ; armed: not shut yet -> nothing to do
         bne ?nx
         lda #4
@@ -1459,7 +1474,7 @@ d30_resume = *
         bne ?nx                      ; (>DOOR30_VB = 5, never zero)
 ?cnt    lda.l DOOR_WAIT,x
         sec
-        sbc fps_n
+        sbc dt_vbl
         sta.l DOOR_WAIT,x
         bcs ?nx
         lda.l DOOR_FRAC,x            ; borrowed into the high half. No read-
@@ -1474,11 +1489,30 @@ d30_resume = *
         sta.l DOORSTAY,x             ;   open. p_doors.c removes the thinker when
                                      ;   a close30ThenOpen reaches the top, so it
                                      ;   must NOT dwell and close again.
-        lda #1
-        sta.l DOOR_STATE,x
-        inc DOOR_NACT
-        lda #SFX_DOROPN
-        jsr snd_q_door_at
+        jsr door_force_open.dfo_go   ; X = door index: open + positional SFX --
+                                     ;   and the GUARDED DOOR_NACT bump, which is
+                                     ;   the whole reason this is a call now.
+                                     ;   The countdown only STARTS on a shut door
+                                     ;   (the `bne ?nx` above), but NOTHING cancels
+                                     ;   it if the player works that same door by
+                                     ;   hand inside the 30 s -- door_toggle never
+                                     ;   touches DOORSTAY. That path did its own
+                                     ;   inc, so the unguarded second one here left
+                                     ;   DOOR_NACT one above zero for the rest of
+                                     ;   the level, and update_doors' early out
+                                     ;   (`lda DOOR_NACT / bne`) never fired again:
+                                     ;   a full door scan AND door_at_point's BSP
+                                     ;   descent, every frame, forever.
+                                     ;   dfo_go is bit-identical on the state this
+                                     ;   countdown is FOR (parked shut); on a door
+                                     ;   the player left opening/open it also skips
+                                     ;   a duplicate SFX_DOROPN, which is what
+                                     ;   p_doors.c does too. DOORSTAY b0 is already
+                                     ;   stored above, so it still parks open.
+                                     ;   11 BYTES SHORTER than the code it replaces,
+                                     ;   which matters: DOOR30_END $F07F is a stale
+                                     ;   bound -- $F067-$F07E is another segment, so
+                                     ;   this block really ends at $F066.
 ?nx     dex
         bpl ?l
 ?ret    rts

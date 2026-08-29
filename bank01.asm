@@ -198,6 +198,23 @@ b1_code_start = *
         rtl
 .endp
 
+;--------------------------------------------------------------
+; fps_tab -- 5000/n as three DECIMAL DIGITS, for n = 1..64 VBLANKs per frame.
+;   Row n-1 is {integer, tenths, hundredths}: n=8 -> 6,2,5 because a frame that
+;   takes 8 VBLANKs is 50/8 = 6.25 fps EXACTLY. That exactness is the whole
+;   point of the readout -- doors.asm's frame_dt already measures dt_vbl, and
+;   the old counter threw it away by counting whole frames in a one-second
+;   window, which can only ever yield an integer.
+;   64 is DOOR_DTMAX, frame_dt's own clamp, so no frame can index past the end.
+;   MADS builds it: nothing computes a reciprocal at runtime, and nothing of
+;   base RAM is spent -- this bank has ~26 KB free and base RAM has 273 B.
+;--------------------------------------------------------------
+fps_tab
+        .rept 64,#
+        dta [5000/(#+1)]/100, [[5000/(#+1)]/10]%10, [5000/(#+1)]%10
+        .endr
+FPS_TAB_EXT = $010000 + fps_tab      ; what the readout's `lda.l` wants
+
 b1_code_end = *
 B1CODE_BYTES = b1_code_end - b1_code_start
     .if B1CODE_BYTES > B1CODE_MAX

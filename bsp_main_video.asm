@@ -417,8 +417,20 @@ ptcgo_resume = *
 .proc spr_chfire
         lda tw_x1st
         bne ?skip
-?bw     lda VBXE_BL_BUSY             ; the previous chain/blit must finish first
-        bne ?bw
+        phx                          ; the previous chain/blit must finish first --
+        jsr blitter_wait             ;   and it MUST be blitw_hard, not a lone
+        plx                          ;   `lda BL_BUSY / bne`: BUSY blinks off
+                                     ;   between chained BCB fetches, so a single
+                                     ;   clean read fires MID-CHAIN and takes the
+                                     ;   painter's mBlitListFetchAddr with it (the
+                                     ;   note above ptc_go says exactly this).
+                                     ;   The window is real here: bg_fill's
+                                     ;   ptc_fire_wait only runs when the walk
+                                     ;   left a GAP, so a view fully covered by
+                                     ;   walls reaches this poll with the
+                                     ;   painter's last chain still running.
+                                     ;   Same 5 bytes; blitw_hard eats X, hence
+                                     ;   the phx/plx (as ptc_go does).
         lda #0                       ; the expander chain starts at slot 0
         jsr ptc_tail
         lda #BCB_SIZE                ; re-arm the flag for the next call

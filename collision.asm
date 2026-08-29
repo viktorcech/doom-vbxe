@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 263 B free, biggest contiguous block 184 B.
+; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -532,6 +532,23 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
                                      ;   clearance and a fireball is 8 tall. It
                                      ;   is always PLAYER_H outside that call --
                                      ;   bl_wall puts it back before it returns.
+        tay                          ; OPENING EXACTLY 0 = a SHUT DOOR, and that is
+        bne ?wall                    ;   the one barrier the PICKUP must not reach
+        inc coll_solid               ;   through. (`tay` and not `cmp #1`: it sets Z
+                                     ;   from A in ONE byte and ?wall reloads Y
+                                     ;   immediately.) 1..55 is a gap he cannot FIT in
+                                     ;   but CAN see through, and p_map.c hands an
+                                     ;   item over at the destination of a refused
+                                     ;   move (things are checked before lines) --
+                                     ;   E1M2's green armour behind its 40-unit
+                                     ;   window is exactly that, and must keep
+                                     ;   working. DOOM never notices the door case
+                                     ;   because its destination is at most
+                                     ;   MAXMOVE/2 past the player (p_mobj.c halves
+                                     ;   the step); this port steps 24 and reached
+                                     ;   through. E2M9's three key skulls sit 32
+                                     ;   behind their keyed doors. mp_clamp acts on
+                                     ;   this and clears it.
 ?wall   ldy #0                       ; v1 -> endpoint A
         lda [zp_sptr],y
         sta m_a

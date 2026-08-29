@@ -34,7 +34,7 @@ import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.join(os.path.dirname(_HERE), '_pomocne', '_doomsrc')
+from doomstates import SRC_DIR             # the ONE place the C tree is located
 
 MANUAL_DOOR = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
 TAG_DOOR = {2, 16, 29, 63, 76, 86, 90, 103,

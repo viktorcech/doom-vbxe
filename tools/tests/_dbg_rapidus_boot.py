@@ -34,7 +34,7 @@ import os
 
 from sim6502 import Sim, load_syms
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ATR = os.path.join(ROOT, 'build', 'doom_e1.atr')
 
 SIOV = 0xE459

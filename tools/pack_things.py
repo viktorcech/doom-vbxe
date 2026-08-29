@@ -877,7 +877,10 @@ def emit_mk_tables():
     emit_wi_tables(rows, d)       #    the intermission's two, each in its own
                                   #    file (see emit_wi_tables for why)
     return rows
-HEADER = 36                   # +35 BAL2 A, the CACODEMON's fireball (2026-08-20;
+HEADER = 38                   # +36 BFS1 A and +37 BFE1 A, the BFG ball's flight
+                              # and burst ($FF = the level packed neither, which
+                              # makes pj_bspawn land the shot at once). 2026-08-28.
+                              # +35 BAL2 A, the CACODEMON's fireball (2026-08-20;
                               # $FF = this level has no cacodemon), burst = +1 like
                               # the other two.
                               # +2 for p_hp at 16, +1 for the fireball sprite id,
@@ -2124,8 +2127,14 @@ def emit_dtab(dfirst, wfirst, wn, afirst, pfirst, xfirst, isid, ifirst, icnt,
     return bytes(out)
 
 
-def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0):
-    """decor_cut/obst_cut (2026-08-18, E2/E3): drop the LAST n non-blocking
+def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
+    """bfg=False (2026-08-28): leave MT_BFG's own frames out. The LAST rung of
+    main()'s ladder, below every decoration: a dropped lamp is missing from the
+    room forever, a dropped BFG ball only means that on this one level the shot
+    resolves the tic it is fired instead of flying (pj_bspawn's $FF path). Only
+    E2M2 needs it.
+
+    decor_cut/obst_cut (2026-08-18, E2/E3): drop the LAST n non-blocking
     C_DECOR things (corpses, gore piles), then -- if still over -- the last n
     C_OBSTACLE decorations (lamps, pillars; BARRELS never, they are
     gameplay). main() retries with growing cuts when the RAM blob overflows
@@ -2336,8 +2345,17 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0):
     #     the barrel, info.c MT_BARREL). info.c runs the chain BACKWARDS --
     #     S_BLOOD1/2/3 are BLUD C, B, A -- so they are packed C,B,A and the
     #     engine can walk them with an inc like every other chain here.
-    for spr, frs in (('MISL', 'ABCD'), ('PLSS', 'A'), ('PLSE', 'ABC'),
-                     ('PUFF', 'ABCD'), ('BLUD', 'CBA')):
+    #     ...and the BFG BALL (2026-08-28). info.c MT_BFG: spawnstate
+    #     S_BFGSHOT = BFS1 A/B at 4 tics, deathstate S_BFGLAND = BFE1 A..F at
+    #     8. Cut the same way the two above are: ONE flight frame (the A/B
+    #     flicker is what the plasma already gives up) and THREE burst frames
+    #     of the six (the last three are the fade). It fired a PLASMA bolt for
+    #     one build and that was simply the wrong picture of the right event.
+    missiles = [('MISL', 'ABCD'), ('PLSS', 'A'), ('PLSE', 'ABC'),
+                ('PUFF', 'ABCD'), ('BLUD', 'CBA')]
+    if bfg:
+        missiles[3:3] = [('BFS1', 'A'), ('BFE1', 'ABC')]
+    for spr, frs in missiles:
         for fr in frs:
             got = sp.lump_for(spr, fr, 1)
             if got is None or got[0] in sprites:
@@ -2357,8 +2375,11 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0):
     rock_id, rock_xid = _msid('MISL', 'A'), _msid('MISL', 'B')
     plas_id, plas_xid = _msid('PLSS', 'A'), _msid('PLSE', 'A')
     puff_id, blud_id = _msid('PUFF', 'A'), _msid('BLUD', 'C')
+    bfgs_id = _msid('BFS1', 'A') if bfg else 0xFF
+    bfge_id = _msid('BFE1', 'A') if bfg else 0xFF
     print(f'  missiles: MISL A -> {rock_id}, burst B/C/D -> {rock_xid}..+2 | '
           f'PLSS A -> {plas_id}, PLSE A/B/C -> {plas_xid}..+2 | '
+          f'BFS1 A -> {bfgs_id}, BFE1 A/B/C -> {bfge_id}..+2 | '
           f'PUFF A/B/C/D -> {puff_id}..+3 | BLUD C/B/A -> {blud_id}..+2')
 
     things.sort(key=lambda r: r[0])
@@ -2653,6 +2674,7 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0):
     struct.pack_into('<B', out, 33, bal7_id)
     struct.pack_into('<B', out, 35, bal2_id)
     struct.pack_into('<B', out, 34, boss_kind)
+    struct.pack_into('<BB', out, 36, bfgs_id, bfge_id)
     out += prefix
     for (ssid, x, y, z, sid, fl, _hp, _ty) in things:
         out += struct.pack('<hhhBB', x, y, z, sid, fl)
@@ -2794,11 +2816,15 @@ def main():
                                       # byte indexes past the table
     for nm in names:
         md = wad.load_map(nm)
-        for dc, oc in ((0, 0), (24, 0), (48, 0), (96, 0),
-                       (96, 12), (96, 32), (160, 64)):
+        for bfg, dc, oc in [(b, d, o) for b in (True, False)
+                            for d, o in ((0, 0), (24, 0), (48, 0), (96, 0),
+                                         (96, 12), (96, 32), (160, 64))]:
             blob, blk, tab, things, dtab, los, sprcol = pack(md, sp, skill,
-                                                             dc, oc)
+                                                             dc, oc, bfg)
             if len(blk) <= THINGS_MAX:
+                if not bfg:
+                    print(f'  {nm}: RAM blob over ${THINGS_MAX:04X} -- dropped '
+                          f'the BFG BALL\'s frames (the shot lands at once here)')
                 if dc or oc:
                     print(f'  {nm}: RAM blob over ${THINGS_MAX:04X} -- dropped '
                           f'{dc} decor + {oc} obstacle decorations to fit')

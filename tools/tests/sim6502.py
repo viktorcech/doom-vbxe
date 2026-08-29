@@ -21,8 +21,7 @@ import os
 import re
 import struct
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # addressing modes (LAB/LAX: the 65816 long-absolute reads -- frame_setup and
 # the reciprocal tables live in Rapidus bank $01 and read with lda.l)
 (IMP, ACC, IMM, ZP, ZPX, ZPY, ABS, ABX, ABY, IND, IZX, IZY, REL, LIY,

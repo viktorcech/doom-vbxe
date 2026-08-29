@@ -689,7 +689,7 @@ rkw2_resume = *
 ;   DEATH ANIMATION needs the deathstate chain from info.c (POSS: DIE1..DIE5 at
 ;   5 tics each, DIE5 tics = -1 = a frozen corpse) plus TH_STATE/TH_TICS arrays --
 ;   both fit next to TH_HP in bank $01 at $6600/$6700. The tic clock already
-;   exists three times over (wp_think, doors, movers all turn fps_n into DOOM
+;   exists three times over (wp_think, doors, movers all turn dt_vbl into DOOM
 ;   tics with a Q8 remainder).
 ;   The REAL cost is VRAM: 5 DIE frames per type, single-rotation, and only the
 ;   types a level actually spawns -- 3 on E1M1, 5 on E1M6. Free VRAM is ~33 KB

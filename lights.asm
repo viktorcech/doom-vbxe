@@ -31,7 +31,7 @@
 ; TIMING
 ;   DOOM runs these thinkers on 35 Hz tics. The port has no tic: like the doors
 ;   (DOOR_DWELL_VB) every counter is in PAL VBLANKs and each frame subtracts
-;   fps_n, so the rates hold at any frame rate. pack_map.py converted the two
+;   dt_vbl, so the rates hold at any frame rate. pack_map.py converted the two
 ;   constants that come from the map (FASTDARK 15 -> 21, SLOWDARK 35 -> 50).
 ;
 ; THE RECORD (pack_map.py _lights, LIGHT_SIZE bytes, in the map's SEG bank):
@@ -150,7 +150,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         bne ?any
         rts
 ?any    stx lt_n
-        lda fps_n                    ; VBLANKs this frame (frame_dt), clamped
+        lda dt_vbl                    ; VBLANKs this frame (frame_dt), clamped
         cmp #LT_DTMAX
         bcc ?dt
         lda #LT_DTMAX

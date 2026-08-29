@@ -86,12 +86,12 @@
         lda rs_ybfacc+2
         cmp cm_sig+7
         bne ?no
-        lda rs_dscr
-        cmp cm_sig+8
-        bne ?no
-        lda rs_dscr+1
-        cmp cm_sig+9
-        bne ?no
+        lda rs_rpt                   ; the painter's per-column scale. It was
+        cmp cm_sig+8                 ;   rs_dscr until 2026-08-27, and rs_dscr
+        bne ?no                      ;   went with tw_setup; rpt is the stricter
+        lda rs_rpt+1                 ;   test anyway -- it is what the texel walk
+        cmp cm_sig+9                 ;   actually uses, and the accumulator bytes
+        bne ?no                      ;   above already pin dscr to within 1/16 row
         lda rs_uacc+1
         cmp cm_sig+10
         bne ?no
@@ -130,9 +130,9 @@
         sta cm_sig+6
         lda rs_ybfacc+2
         sta cm_sig+7
-        lda rs_dscr
+        lda rs_rpt                   ; ... and the same in the saved signature
         sta cm_sig+8
-        lda rs_dscr+1
+        lda rs_rpt+1
         sta cm_sig+9
         lda rs_uacc+1
         sta cm_sig+10
@@ -220,9 +220,40 @@
         lda #[VRAM_BCB_TWALL>>16]
         sta VBXE_BL_ADR2
         lda #1
-        sta VBXE_BL_START            ; async; the BCB is latched here
-        lda #0                       ; hand the BCB back as a 1-byte-wide column
-        sta MEMW+MEMW_TW_OFF+BCB_WIDTH
+        sta VBXE_BL_START            ; async -- AND THE BCB IS *NOT* LATCHED HERE
+                                     ;   (2026-08-29, the real-hardware stripes).
+                                     ;   That the whole 21-byte block is captured
+                                     ;   by the write is an ALTIRRA property, not
+                                     ;   a VBXE one: its BLITTER_START handler
+                                     ;   calls LoadBlitter() inline ('we have to
+                                     ;   load the first entry immediately because
+                                     ;   some demos are a bit creative and
+                                     ;   overwrite the first entry without
+                                     ;   checking blitter status', vbxe.cpp:1361).
+                                     ;   The FX core FETCHES those 21 bytes out of
+                                     ;   VRAM afterwards, on whatever DMA cycles
+                                     ;   the display leaves it -- and the two
+                                     ;   instructions that used to sit here
+                                     ;   ('hand the BCB back as a 1-byte-wide
+                                     ;   column', ~10 cycles, far fewer on a
+                                     ;   Rapidus) beat that fetch to BCB_WIDTH.
+                                     ;   The copy then ran ONE column wide instead
+                                     ;   of cm_n, so every twin but the first kept
+                                     ;   what the back buffer held three frames
+                                     ;   ago: the 2-5 column stripes of stale
+                                     ;   ceiling/floor colour people photographed
+                                     ;   (3.png -- x-cols 29-30, 37-38, 41-42,
+                                     ;   45-46, 58-61, 66-70, 76-77, each one
+                                     ;   exactly a merged run).
+                                     ;   Nothing needs the reset any more: with
+                                     ;   TEX_RUNS=1 cm_flush is the ONLY user of
+                                     ;   the TWALL BCB and it writes WIDTH on
+                                     ;   every call. draw_vspan, which did rely on
+                                     ;   the 1-px invariant, is compiled out.
+        lda #0
+    .if !TEX_RUNS
+        sta MEMW+MEMW_TW_OFF+BCB_WIDTH   ; draw_vspan never sets WIDTH itself
+    .endif
         sta cm_n
         ldx cm_savex
 ?none   lda #$FF                     ; the run is over either way
@@ -337,9 +368,24 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
         lda #[VRAM_BCB_VLINE>>16]
         sta VBXE_BL_ADR2
         lda #1
-        sta VBXE_BL_START
+        sta VBXE_BL_START            ; async, and the BCB is NOT captured by this
+                                     ;   write on real VBXE -- see the long note
+                                     ;   in cm_flush. The reset that used to
+                                     ;   follow raced the core's own fetch of
+                                     ;   BCB_WIDTH and collapsed the background
+                                     ;   rectangle to ONE column, which is the
+                                     ;   wide "jumping fragment" version of the
+                                     ;   same bug: a gap the BSP walk left open
+                                     ;   kept the buffer's three-frames-old
+                                     ;   picture instead of BG_COLOUR.
+                                     ;   bg_blit sets WIDTH from bg_w on every
+                                     ;   call, and with TEX_RUNS=1 it is the only
+                                     ;   user of the VLINE BCB's slot 0, so the
+                                     ;   invariant it restored has no reader left.
+    .if !TEX_RUNS
         lda #0                       ; back to a 1-pixel column for draw_vspan
         sta MEMW+MEMW_VL_OFF+BCB_WIDTH
+    .endif
         ldx cm_savex
         rts
 .endp
@@ -409,6 +455,8 @@ CU_SHIFT  equ 3                      ; log2(CU_SUB)
 .proc cu_seg_init
         lda #0
         sta cu_cnt                   ; 0 -> the first column is an anchor
+        lda #$FF                     ; ... and no look-ahead u carries over: the
+        sta cu_cx                    ;   t1/t2 tracks are this seg's now
         rts
 .endp
 
@@ -446,49 +494,9 @@ cu_sgn   dta 0                       ; its sign extension for the 24-bit add
 cu_u0    dta 0,0,0                   ; exact u at the block's first column
 cu_save  dta 0,0,0,0,0,0             ; rs_t1/rs_t2 across the look-ahead
 cu_sx    dta 0
+cu_ah    dta 0,0,0                   ; exact u at the column the look-ahead hit
+cu_cx    dta $FF                     ; ... and which column that was ($FF = none)
 
-;--------------------------------------------------------------
-; twlas_room -- look-ahead room check (F6): from column X (preserved), clamp the
-;   block to the largest power of two <= min(CU_SUB, rs_sxR - X). las_n = 1, 2,
-;   4 or 8 columns, las_sh = its shift. rs_sxR >= X always (X <= xb <= sxR).
-;   The old code always walked CU_SUB columns ahead: past the seg's right edge
-;   t2 = scL*(sxR-x) goes NEGATIVE, wraps the 24-bit track, and the whole final
-;   block interpolates toward garbage -- the "tripled switch" (5.png).
-;--------------------------------------------------------------
-.proc twlas_room
-        lda rs_sxR+1
-        bne ?full                    ; sxR >= 256 -> room >= 97
-        txa
-        eor #$FF                     ; A = sxR - X (borrow impossible)
-        sec
-        adc rs_sxR
-        cmp #CU_SUB
-        bcs ?full
-        cmp #4
-        bcs ?n4
-        cmp #2
-        bcs ?n2
-        lda #1                       ; room 0..1: anchor-only block (the step is
-        sta las_n                    ;   dead -- las_n-1 = 0 columns follow it)
-        lda #0
-        beq ?ssh                     ; always
-?n2     lda #2
-        sta las_n
-        lda #1
-        bne ?ssh
-?n4     lda #4
-        sta las_n
-        lda #2
-        bne ?ssh
-?full   lda #CU_SUB
-        sta las_n
-        lda #CU_SHIFT
-?ssh    sta las_sh
-        rts
-.endp
-
-las_n     dta 0                      ; look-ahead block: columns (1/2/4/8)
-las_sh    dta 0                      ; ... and its shift (0/1/2/3)
 
 ;--------------------------------------------------------------
 ; cu_anchor -- calc_u_sub's block start: exact u here AND las_n columns ahead,
@@ -497,14 +505,22 @@ las_sh    dta 0                      ; ... and its shift (0/1/2/3)
 ;--------------------------------------------------------------
 .proc cu_anchor
         stx cu_sx                    ; calc_u preserves X, but the t1/t2 shuffle
-        jsr calc_u                   ; exact u at THIS column
+        cpx cu_cx                    ; did the LAST block's look-ahead land
+        bne ?fresh                   ;   exactly here? then u is already known
+        ldy #2
+?cp     lda cu_ah,y
+        sta cu_u0,y
+        dey
+        bpl ?cp
+        bmi ?have0                   ; always (dey wrapped to $FF)
+?fresh  jsr calc_u                   ; exact u at THIS column
         lda rs_uacc                  ; keep it: the block starts here
         sta cu_u0
         lda rs_uacc+1
         sta cu_u0+1
         lda rs_uacc+2
         sta cu_u0+2
-        jsr twlas_room               ; F6: never walk past the seg's right edge
+?have0  jsr twlas_room               ; F6: never walk past the seg's right edge
         ; --- t1/t2 las_n columns ahead (they advance by constants per column) --
         ldy #0
 ?sv     lda rs_t1,y                  ; save both tracks (3 bytes each)
@@ -536,6 +552,15 @@ las_sh    dta 0                      ; ... and its shift (0/1/2/3)
         dey
         bne ?adv
         jsr calc_u                   ; exact u at column x + las_n
+        ldy #2                       ; ... which is where the NEXT anchor starts,
+?sa     lda rs_uacc,y                ;   so hand it the answer instead of making
+        sta cu_ah,y                  ;   it divide for the same number again
+        dey
+        bpl ?sa
+        txa                          ; X is still this anchor's column
+        clc
+        adc las_n
+        sta cu_cx
         ldy #0
 ?rs     lda cu_save,y                ; put the real tracks back
         sta rs_t1,y
@@ -589,11 +614,13 @@ las_sh    dta 0                      ; ... and its shift (0/1/2/3)
 ; constant step per column, so tpr varies smoothly along a seg -- exactly the
 ; case linear interpolation is made for.
 ;
-; An anchor computes the rate at column x+CU_SUB FIRST and then at x, so the
-; ladder values the blit actually uses (tw_use8 / tw_s / tw_ssh / tw_rsh /
-; tw_spy / tw_rpt) are left set for THIS column and are then held for the whole
-; block -- they are a coarse ladder anyway. Only rs_tpr, which drives the texel
-; accumulator, is interpolated. Every anchor re-syncs to the exact value.
+; 2026-08-27: ALL OF THAT IS GONE. rs_tpr is the exact reciprocal of rs_rpt,
+; which pt_seg already tracks exactly-linearly in the column, so paint.asm's
+; pt_recip produces it by table off the memo paint_col already keeps -- no
+; divide, no anchor, no interpolation, and a SMALLER error than the anchors had
+; (max 327 -> 18 tpr LSBs over an E1M1 spawn frame; tools/tests/_probe_tpr3.py).
+; What is left here is the F3 steep verdict, which the perspective-u track still
+; needs (calc_u_sub reads tws_exact), and the block counter that paces it.
 ;==============================================================
 .proc tw_seg_init
         lda #0
@@ -603,26 +630,14 @@ las_sh    dta 0                      ; ... and its shift (0/1/2/3)
 .endp
 
 .proc tw_setup_sub
-        dec tws_cnt
-        bmi ?far                     ; anchor OR steep re-check (tws_anchor decides)
-        clc                          ; rs_tpr += tws_step (Q16: fraction byte first,
-        lda tw_tprf                  ;   so 8 truncated LSB no longer accumulate
-        adc tws_step                 ;   into whole-texel phase jumps per block)
-        sta tw_tprf
-        lda rs_tpr
-        adc tws_step+1
-        sta rs_tpr
-        lda rs_tpr+1
-        adc tws_step+2
-        sta rs_tpr+1
+        dec tws_cnt                  ; the rate itself needs nothing per column
+        bmi ?far                     ;   now -- this only paces the steep re-test
         rts
 ?far    jmp tws_anchor
 .endp
 
 tws_cnt   dta 0
-tws_step  dta 0,0,0                  ; Q16 rate step (fraction, lo, hi)
-tw_tprf   dta 0                      ; rs_tpr's Q16 fraction byte
-tws_exact dta 0                      ; 1 = steep block: per-column exact u + rate
+tws_exact dta 0                      ; 1 = steep block: per-column exact u
 
     .if * > COLMERGE_END
         ert 'colmerge.asm (fast block) outgrew its hole -- see memory_map.inc'
@@ -657,6 +672,48 @@ tws_exact dta 0                      ; 1 = steep block: per-column exact u + rat
 twa_resume = *
         org TWANCHOR_BASE
 
+;--------------------------------------------------------------
+; twlas_room -- look-ahead room check (F6): from column X (preserved), clamp the
+;   block to the largest power of two <= min(CU_SUB, rs_sxR - X). las_n = 1, 2,
+;   4 or 8 columns, las_sh = its shift. rs_sxR >= X always (X <= xb <= sxR).
+;   The old code always walked CU_SUB columns ahead: past the seg's right edge
+;   t2 = scL*(sxR-x) goes NEGATIVE, wraps the 24-bit track, and the whole final
+;   block interpolates toward garbage -- the "tripled switch" (5.png).
+;--------------------------------------------------------------
+.proc twlas_room
+        lda rs_sxR+1
+        bne ?full                    ; sxR >= 256 -> room >= 97
+        txa
+        eor #$FF                     ; A = sxR - X (borrow impossible)
+        sec
+        adc rs_sxR
+        cmp #CU_SUB
+        bcs ?full
+        cmp #4
+        bcs ?n4
+        cmp #2
+        bcs ?n2
+        lda #1                       ; room 0..1: anchor-only block (the step is
+        sta las_n                    ;   dead -- las_n-1 = 0 columns follow it)
+        lda #0
+        beq ?ssh                     ; always
+?n2     lda #2
+        sta las_n
+        lda #1
+        bne ?ssh
+?n4     lda #4
+        sta las_n
+        lda #2
+        bne ?ssh
+?full   lda #CU_SUB
+        sta las_n
+        lda #CU_SHIFT
+?ssh    sta las_sh
+        rts
+.endp
+
+las_n     dta 0                      ; look-ahead block: columns (1/2/4/8)
+las_sh    dta 0                      ; ... and its shift (0/1/2/3)
 ;--------------------------------------------------------------
 ; tws_anchor -- tw_setup_sub's block start. First the F3 steep test; a steep
 ;   column gets the exact rate (+ ladder) and keeps anchoring every column.
@@ -727,102 +784,21 @@ twa_resume = *
 ?steep  lda #1
         sta tws_exact
         lda #0
-        sta tw_tprf
         sta tws_cnt                  ; cnt 0 -> re-test steepness NEXT column too
-        jsr tw_setup                 ; exact rate + ladder for THIS column
         ldx tws_sx
         rts
 ?nosteep
-        lda #0
-        sta tws_exact
-        jsr twlas_room               ; F6: same room clamp as the u track
-        ldy #0                       ; save both plane accumulators (3 bytes each)
-?sv     lda rs_ycacc,y
-        sta tws_save,y
-        lda rs_yfacc,y
-        sta tws_save+3,y
-        iny
-        cpy #3
-        bne ?sv
-        ldy las_n                    ; advance them las_n columns
-?adv    jsr ?step1
-        dey
-        bne ?adv
-        jsr tw_setup                 ; rate at column x + las_n (F1's memo kill
-                                     ;   went with the memo itself, 2026-08-14)
-        lda rs_tpr
-        sta tws_t1
-        lda rs_tpr+1
-        sta tws_t1+1
-        ldy #0                       ; put the accumulators back
-?rs     lda tws_save,y
-        sta rs_ycacc,y
-        lda tws_save+3,y
-        sta rs_yfacc,y
-        iny
-        cpy #3
-        bne ?rs
-        jsr tw_setup                 ; rate + ladder for THIS column (kept for the block)
-        lda #0
-        sta tw_tprf                  ; the block starts at the exact rate
-        sec                          ; F2: step = ((tpr_ahead - tpr) << 8) >> las_sh
-        lda tws_t1
-        sbc rs_tpr
-        sta tws_step+1
-        lda tws_t1+1
-        sbc rs_tpr+1
-        sta tws_step+2
-        lda #0
-        sta tws_step
-        ldy las_sh
-        beq ?shdone                  ; las_n = 1: the step is never consumed
-?sh     lda tws_step+2
-        cmp #$80                     ; arithmetic shift right (keep the sign)
-        ror tws_step+2
-        ror tws_step+1
-        ror tws_step
-        dey
-        bne ?sh
-?shdone ldy las_n
+        lda #0                       ; F6: the block still ends where the u track's
+        sta tws_exact                ;   does, so the two stay in step -- but with
+        jsr twlas_room               ;   nothing to interpolate that is all an
+        ldy las_n                    ;   anchor has left to do
         dey
         sty tws_cnt
         ldx tws_sx
         rts
-;   one column of both front plane accumulators (24-bit += signed 16 step)
-?step1  clc
-        lda rs_ycacc
-        adc rs_ycS
-        sta rs_ycacc
-        lda rs_ycacc+1
-        adc rs_ycS+1
-        sta rs_ycacc+1
-        lda rs_ycS+1
-        bpl ?ycp
-        lda #$FF
-        bmi ?yca
-?ycp    lda #$00
-?yca    adc rs_ycacc+2
-        sta rs_ycacc+2
-        clc
-        lda rs_yfacc
-        adc rs_yfS
-        sta rs_yfacc
-        lda rs_yfacc+1
-        adc rs_yfS+1
-        sta rs_yfacc+1
-        lda rs_yfS+1
-        bpl ?yfp
-        lda #$FF
-        bmi ?yfa
-?yfp    lda #$00
-?yfa    adc rs_yfacc+2
-        sta rs_yfacc+2
-        rts
 .endp
 
-; anchor-only state (nothing per-column reads these)
-tws_t1    dta 0,0
-tws_save  dta 0,0,0,0,0,0
+; anchor-only state (nothing per-column reads this)
 tws_sx    dta 0
 
     .if * > TWANCHOR_END

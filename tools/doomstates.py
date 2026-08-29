@@ -37,7 +37,19 @@ import re
 import sys
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-SRC = os.path.join(os.path.dirname(_HERE), '_pomocne', '_doomsrc', 'info.c')
+_PROJ = os.path.dirname(_HERE)
+
+# WHERE THE C IS. _pomocne/_doomsrc is the checkout every comment in this repo
+# names; DOOM-master/ is the same linuxdoom-1.10 tree unpacked in the project
+# root (2026-08-28). Either one serves, whichever is actually there -- the
+# packers need the source at BUILD time, and a build that dies because the tree
+# is spelled the other way is a build nobody can run. doomspecs.py imports
+# SRC_DIR from here so the two never drift apart.
+SRC_DIRS = (os.path.join(_PROJ, '_pomocne', '_doomsrc'),
+            os.path.join(_PROJ, 'DOOM-master', 'linuxdoom-1.10'))
+SRC_DIR = next((d for d in SRC_DIRS if os.path.isfile(os.path.join(d, 'info.c'))),
+               SRC_DIRS[0])
+SRC = os.path.join(SRC_DIR, 'info.c')
 
 # mobjinfo fields this port cares about, by the comment id.c writes after them.
 # speed/reactiontime/meleestate/missilestate came in with the AI work (A_Chase's

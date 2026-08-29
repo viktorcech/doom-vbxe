@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 263 B free, biggest contiguous block 184 B.
+; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -100,13 +100,17 @@ rk_resume = *
         beq ?edge
         cmp #KEY_GT
         beq ?edge
-        ldy #WK_LAST                  ; 3..8 = '1'..'6' (select weapon). A table
+        ldy #WK_LAST                  ; 3..9 = '1'..'7' (select weapon). A table
 ?wk     cmp wk_tab-3,y                ;   scan, not a chain of cmp/beq: the chain
         beq ?edge                     ;   cost 5 B per key and the block is hard
         dey                           ;   against en_los at $F218. Scanned from
         cpy #3                        ;   the top so Y IS the key's slot, which is
         bcs ?wk                       ;   what ?wkey below turns into the wp_* id.
-        ldy #9                        ; 9 = 'T': flat walls on/off (fast frame)
+                                      ;   '7' joined it 2026-08-28 with the BFG:
+                                      ;   the table grew a byte and NOTHING else
+                                      ;   in the scan changed, which is the whole
+                                      ;   point of it being a table.
+        ldy #10                       ; 10 = 'T': flat walls on/off (fast frame)
         cmp #KEY_T
         beq ?edge
         ldy #0                        ; any other key: no toggle down
@@ -127,14 +131,14 @@ rk_resume = *
         bne ?not2                     ; 3..9 below
         jsr vw_bigger                 ; 2 = '=' -> one step bigger
         jmp ?ret
-?not2   cpy #7                        ; slot 9 = 'T' (Y is slot-2 here)
+?not2   cpy #8                        ; slot 10 = 'T' (Y is slot-2 here)
         bne ?wkey
         lda tex_flat                  ; flip the runtime flat-walls switch --
         eor #1                        ;   seg_draw's resolve reads it per seg
         sta tex_flat
         jmp ?ret
-?wkey   dey                           ; Y was 3..8 and is now 0..5 = the wp_* id
-        tya                           ;   ('1' = fist .. '6' = plasma, DOOM's
+?wkey   dey                           ; Y was 3..9 and is now 0..6 = the wp_* id
+        tya                           ;   ('1' = fist .. '7' = the BFG, DOOM's
         jsr wp_select                 ;   own keys); wp_select ignores what the
         jmp ?ret                      ;   player does not own
 ?vsm    jsr vw_smaller
@@ -144,8 +148,8 @@ rk_resume = *
                                       ;   costs this block zero bytes, and it has
                                       ;   none: $F180-$F217 is full.
 .endp
-wk_tab  dta KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6   ; slot 3..8 -> wp_* 0..5
-WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('6' -> 8)
+wk_tab  dta KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7  ; slot 3..9 -> wp 0..6
+WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('7' -> 9)
     .if * > READKEYS_END+1
         ert 'read_keys outgrew READKEYS_BASE..END (memory_map.inc)'
     .endif
@@ -201,8 +205,10 @@ CHT_LEN equ * - cht_tab
 ;   * armortype HAS a home now (pl_armt, memory_map.inc), so IDKFA hands out the
 ;     real blue suit: 200 points at the 1/2 rate. cht_arm does both, and it is a
 ;     jsr because this block has two spare bytes and needs five.
-;   * "every weapon" is WP_ART, not $FF: bit 6 is the BFG and this build ships no
-;     art for it, so owning it would only let wp_select stop on a blank.
+;   * "every weapon" is WP_ART, which is $FF now -- 2026-08-28 gave the BFG
+;     its psprite and set bit 6, so IDKFA really does hand out all eight. It
+;     stays the named constant: WP_ART is what wp_select gates on, and the next
+;     weapon that arrives without art wants exactly this bit cleared again.
 ;   * maxammo[] IS the backpack-doubled cap in DOOM, so this goes through
 ;     pw_max like the backpack pickup does, and reuses its table. powerups.asm
 ;     needs its pw_aidx indirection because give_bonus hands it a bonus id; here

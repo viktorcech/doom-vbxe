@@ -25,7 +25,7 @@ Runs on **real Atari hardware**.
 |-------|--------|
 | **Joystick (port 1)** | move / turn, fire |
 | **SPACE** | use (doors, switches) |
-| **1**…**6** | select weapon |
+| **1**…**7** | select weapon (7 = BFG9000) |
 | **TAB** | automap |
 | **−** / **=** | view window size — zoom on the automap |
 | **ESC** | control panel (new game, options, load, save, read this, quit) |

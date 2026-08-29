@@ -236,7 +236,11 @@
         jsr pl_armset                ;   type is what decides how much of a hit it
 ?done   sec                          ;   eats (P_GiveArmor, p_inter.c:254)
         rts
-?power  jmp pw_give                  ; C and Y come back from there
+?power  jmp pw_map                   ; C and Y come back from there. pw_map is
+                                     ;   pw_give with the Computer Map leg in
+                                     ;   front of it (powerups.asm): pw_give's
+                                     ;   own block has no spare byte, and this
+                                     ;   jmp is three either way
 ?bits   cpy #22                      ; 16-21 = a WEAPON: ONE routine does all of
         bcc wp_give                  ;   P_GiveWeapon (the owned bit, the ammo,
                                      ;   the raise) and answers C from there, so

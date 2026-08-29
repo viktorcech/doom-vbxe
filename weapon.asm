@@ -13,7 +13,7 @@
 ; Timing -- why the machine is ticked, not stepped once per frame
 ;   DOOM runs psprites at 35 Hz. This port's frame rate is 3-10 fps, so stepping
 ;   one state per frame would stretch a 4-tic muzzle flash over a second. Instead
-;   wp_think turns the frame's VBLANKs (fps_n, from frame_dt) into DOOM TICS
+;   wp_think turns the frame's VBLANKs (dt_vbl, from frame_dt) into DOOM TICS
 ;   (TIC_Q8 = 35/50 in Q8, remainder carried in wp_tacc) and runs the machine that
 ;   many times -- so every duration in the table below is DOOM's own number and
 ;   the animation is right on a stock 800XL and on a Rapidus alike. Same model
@@ -103,6 +103,21 @@ WS_PLASMA1    equ 59
 WS_PLASMA2    equ 60
 WS_PLSFLASH1  equ 61                 ; A_FirePlasma picks between the two AT
 WS_PLSFLASH2  equ 62                 ;   RANDOM (p_pspr.c), unlike the chaingun
+; 2026-08-28 -- the BFG9000, the last weapon that was picked up but never held.
+; info.c S_BFG..S_BFGFLASH2, unchanged. It is the only gun whose trigger runs
+; THREE actions across three states: S_BFG1 winds up for 20 tics on A_BFGsound,
+; S_BFG2 lights the flash 10 tics later (A_GunFlash, like the rocket -- the
+; flash leads the shot), and only S_BFG3 fires. That 30-tic wind-up before
+; anything leaves the barrel is the weapon.
+WS_BFG        equ 63                 ; BFG9000
+WS_BFGDOWN    equ 64
+WS_BFGUP      equ 65
+WS_BFG1       equ 66                 ; BFGG A 20 A_BFGsound  -- the charge-up
+WS_BFG2       equ 67                 ; BFGG B 10 A_GunFlash
+WS_BFG3       equ 68                 ; BFGG B 10 A_FireBFG   -- 40 cells go here
+WS_BFG4       equ 69                 ; BFGG B 20 A_ReFire
+WS_BFGFLASH1  equ 70                 ; BFGF A 11 (A_Light1)
+WS_BFGFLASH2  equ 71                 ; BFGF B  6 (A_Light2)
 
 ; ---- action codes (the {A_*} column of info.c) -------------------------------
 WA_NONE       equ 0
@@ -113,7 +128,19 @@ WA_FIRE       equ 4                  ; A_FirePistol / A_FireShotgun / A_FireCGun
 WA_PUNCH      equ 5                  ; A_Punch (melee: needs monsters, so silent)
 WA_REFIRE     equ 6                  ; A_ReFire
 WA_GUNFLASH   equ 7                  ; A_GunFlash: light the flash psprite WITHOUT
-                                     ;   firing (S_MISSILE1, and S_BFG2 later)
+                                     ;   firing (S_MISSILE1 and S_BFG2 -- "later"
+                                     ;   arrived 2026-08-28)
+WA_BFGSND     equ 8                  ; A_BFGsound: S_BFG1's whole job is the
+                                     ;   charge-up noise. No ammo, no flash, no
+                                     ;   shot -- the 20 tics it holds ARE the tell
+                                     ;   that a BFG is about to go off
+WA_FIREBFG    equ 9                  ; A_FireBFG: 40 cells and the spray. NOT
+                                     ;   WA_FIRE, because wp_fire_a is the
+                                     ;   hitscan skeleton (one round, en_gunshot,
+                                     ;   a muzzle flash) and A_FireBFG shares none
+                                     ;   of it. 8 and 9 are ADJACENT so wp_action
+                                     ;   can send both to the BFG block on one
+                                     ;   compare -- that run has no bytes spare.
 WP_HOPS       equ 8                  ; zero-tic states chained in one go, cap
 
         org WEAPON_BASE
@@ -252,9 +279,9 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
 ;   Converts this frame's VBLANKs into DOOM tics and runs the machine that often.
 ;--------------------------------------------------------------
 .proc wp_think
-        lda fps_n
+        lda dt_vbl
         beq ?none                    ; same VBLANK as the last frame: no tic
-        sta m_a                      ; m_b:m_a = fps_n * TIC_Q8 -- the canonical
+        sta m_a                      ; m_b:m_a = dt_vbl * TIC_Q8 -- the canonical
         lda #0                       ;   shift-add (see the note in wp_scale:
         sta m_b                      ;   ONE shift of the multiplier per pass,
         lsr m_a                      ;   the `ror m_a` at the bottom, so the
@@ -285,7 +312,7 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
                                      ;   ran it 256 times. Invisible until now
                                      ;   because the old test probed wp_phase,
                                      ;   which 256 tics advance by 256*4 = 0 mod
-                                     ;   256. It needs fps_n = 1, i.e. a frame
+                                     ;   256. It needs dt_vbl = 1, i.e. a frame
                                      ;   that took a single VBLANK -- reachable on
                                      ;   a Rapidus with the view window small.
 ?tic    jsr wp_tic
@@ -431,12 +458,15 @@ wpf_resume = *
                                      ;   MELEERANGE (en_melee), no ammo, no
                                      ;   flash -- wp_fire_a already does all
         cmp #WA_GUNFLASH             ;   of that off the WP_FIST row.
-        bne ?out                     ; A_GunFlash: the flash psprite only. The
+        bne ?bfg                     ; A_GunFlash: the flash psprite only. The
         ldx wp_cur                   ;   rocket lights it a state BEFORE it fires
-        lda wi_flash,x
+        lda wi_flash,x               ;   (and so does the BFG, S_BFG2)
         beq ?out
         jmp wp_fenter
-?fire   jmp wp_fire_a
+?bfg    cmp #WA_BFGSND               ; 8 (A_BFGsound) and 9 (A_FireBFG) are the
+        bcc ?out                     ;   only codes above WA_GUNFLASH, so ONE
+        jmp wp_bfgact                ;   compare hands both to the BFG block
+?fire   jmp wp_fire_a                ;   ($FD72), which tells them apart
 ?out    rts
 .endp
 
@@ -625,10 +655,17 @@ wpr_resume = *
         ldx wp_cur
         lda wi_ammo,x
         bmi ?ok                      ; am_noammo always fires
-        tax
+        cpx #WP_BFG                  ; "Minimal amount for one shot varies"
+        beq ?bfg                     ;   (p_pspr.c:167): every gun here wants one
+        tax                          ;   round, the BFG wants BFGCELLS -- and it
+        lda PSTATE,x                 ;   is the test that stops a 39-cell BFG
+        bne ?ok                      ;   from firing for free and then leaving
+        beq ?scan0                   ;   the counter wrapped to 255
+?bfg    tax
         lda PSTATE,x
-        bne ?ok
-        ldx #0
+        cmp #BFGCELLS
+        bcs ?ok
+?scan0  ldx #0
 ?scan   ldy wi_prio,x                ; best weapon first
         bmi ?fist
         lda wp_bit,y
@@ -860,6 +897,9 @@ WS_FRM                               ; ---- sprite frame -------------------
         dta WPF_PLSGA,WPF_PLSGA,WPF_PLSGA                  ; PLASMA/DOWN/UP
         dta WPF_PLSGA,WPF_PLSGB
         dta WPF_PLSFA,WPF_PLSFB                            ; PLSFLASH1/2
+        dta WPF_BFGGA,WPF_BFGGA,WPF_BFGGA                  ; BFG/DOWN/UP
+        dta WPF_BFGGA,WPF_BFGGB,WPF_BFGGB,WPF_BFGGB        ; BFG1..4
+        dta WPF_BFGFA,WPF_BFGFB                            ; BFGFLASH1/2
 
 WS_DUR                               ; ---- duration, DOOM tics ------------
         dta 0
@@ -870,6 +910,7 @@ WS_DUR                               ; ---- duration, DOOM tics ------------
         dta 4,4,1,1, 4,4,0                                 ; chainsaw (SAW3 = 0)
         dta 1,1,1, 8,12,0, 3,4,4,4                         ; rocket launcher
         dta 1,1,1, 3,20, 4,4                               ; plasma rifle
+        dta 1,1,1, 20,10,10,20, 11,6                       ; BFG (flash 11,6)
 
 WS_ACT                               ; ---- action -------------------------
         dta WA_NONE
@@ -894,8 +935,17 @@ WS_ACT                               ; ---- action -------------------------
         dta WA_READY,WA_LOWER,WA_RAISE                     ; plasma rifle
         dta WA_FIRE,WA_REFIRE
         dta WA_NONE,WA_NONE
+        dta WA_READY,WA_LOWER,WA_RAISE                     ; BFG9000
+        dta WA_BFGSND,WA_GUNFLASH,WA_FIREBFG,WA_REFIRE     ; wind-up/flash/shot
+        dta WA_NONE,WA_NONE                                ; (A_Light1/2 again)
 
-WS_NXT                               ; ---- next state ---------------------
+; ---- next state. PARKED AT WSNXT_BASE ($B5DB): the fourth column of the same
+; four-column table, moved out of the $F280 block when the BFG filled it (see
+; memory_map.inc). Read with `lda WS_NXT,y` exactly like the three above -- the
+; only thing the move changes is the address the assembler puts on it.
+wsn_resume = *
+        org WSNXT_BASE
+WS_NXT
         dta WS_NULL
         dta WS_PUNCH,WS_PUNCHDOWN,WS_PUNCHUP               ; the 1-tic states
         dta WS_PUNCH2,WS_PUNCH3,WS_PUNCH4,WS_PUNCH5,WS_PUNCH   ;   loop on
@@ -917,27 +967,44 @@ WS_NXT                               ; ---- next state ---------------------
         dta WS_PLASMA,WS_PLASMADOWN,WS_PLASMAUP
         dta WS_PLASMA2,WS_PLASMA
         dta WS_NULL,WS_NULL
+        dta WS_BFG,WS_BFGDOWN,WS_BFGUP
+        dta WS_BFG2,WS_BFG3,WS_BFG4,WS_BFG
+        dta WS_BFGFLASH2,WS_NULL
+    .if * > WSNXT_END+1
+        ert 'WS_NXT outgrew WSNXT_BASE..END (memory_map.inc)'
+    .endif
+        org wsn_resume
 
 ;==============================================================
-; PER-WEAPON TABLE -- d_items.c weaponinfo[], indexed by WP_*. Only the four
-; weapons with art are reachable; rows 4..7 keep every array a full 8 long so a
-; stray index cannot walk off the end (they mirror the pistol).
+; PER-WEAPON TABLE -- d_items.c weaponinfo[], indexed by WP_*. Every row is a
+; real weapon now: the BFG (6) stopped mirroring the pistol on 2026-08-28, when
+; pack_weap.py gave it frames, so all eight entries of all eight arrays mean
+; what they say.
+;   PARKED AT WITAB_BASE ($B594). Pure data read with ,x and ,y, once or twice
+; per trigger pull, so any RAM does -- and the $F280 block went 32 B over
+; WEAPON_END the moment the BFG arrived (nine states x four columns, plus four
+; more WEAP_TAB records, plus the two new actions). The GROUP moved whole:
+; these are parallel arrays on one index and splitting them is how a table
+; drifts out of step. Same move, and the same reason, as wp_give's three
+; tables going to WPGTAB_BASE.
 ;==============================================================
+wit_resume = *
+        org WITAB_BASE
 wp_bit  dta 1,2,4,8,16,32,64,128     ; 1<<wp: PS_WEAPONS is DOOM's wp_* bitfield
 wi_ammo dta $FF, PS_BULLETS, PS_SHELLS, PS_BULLETS   ; weaponinfo[].ammo, and
         dta PS_ROCKETS, PS_CELLS, PS_CELLS, $FF      ;   $FF = am_noammo
 wi_up   dta WS_PUNCHUP,   WS_PISTOLUP,   WS_SGUNUP,    WS_CHAINUP
-        dta WS_MISSILEUP, WS_PLASMAUP,   WS_PISTOLUP,  WS_SAWUP
+        dta WS_MISSILEUP, WS_PLASMAUP,   WS_BFGUP,     WS_SAWUP
 wi_down dta WS_PUNCHDOWN, WS_PISTOLDOWN, WS_SGUNDOWN,  WS_CHAINDOWN
-        dta WS_MISSILEDOWN,WS_PLASMADOWN,WS_PISTOLDOWN,WS_SAWDOWN
+        dta WS_MISSILEDOWN,WS_PLASMADOWN,WS_BFGDOWN,   WS_SAWDOWN
 wi_rdy  dta WS_PUNCH,     WS_PISTOL,     WS_SGUN,      WS_CHAIN
-        dta WS_MISSILE,   WS_PLASMA,     WS_PISTOL,    WS_SAW
+        dta WS_MISSILE,   WS_PLASMA,     WS_BFG,       WS_SAW
 wi_atk  dta WS_PUNCH1,    WS_PISTOL1,    WS_SGUN1,     WS_CHAIN1
-        dta WS_MISSILE1,  WS_PLASMA1,    WS_PISTOL1,   WS_SAW1
+        dta WS_MISSILE1,  WS_PLASMA1,    WS_BFG1,      WS_SAW1
 wi_flash dta 0, WS_PISFLASH, WS_SGFLASH1, WS_CHFLASH1
-        dta WS_MISFLASH1, WS_PLSFLASH1, 0, 0   ; the saw has none (S_NULL)
+        dta WS_MISFLASH1, WS_PLSFLASH1, WS_BFGFLASH1, 0   ; the saw has none
 wi_sfx  dta SFX_PUNCH,  SFX_PISTOL, SFX_SHOTGN, SFX_PISTOL
-        dta SFX_RLAUNC, SFX_PLASMA, SFX_PISTOL, SFX_SAWFUL
+        dta SFX_RLAUNC, SFX_PLASMA, SFX_BFG,    SFX_SAWFUL
         ; The rocket fires sfx_rlaunc now, the original's launch (info.c
         ; seesound): since the missile flies visibly (proj.asm) the impact
         ; half -- sfx_barexp, MT_ROCKET's deathsound -- plays when the sprite
@@ -948,9 +1015,24 @@ wi_prio dta WP_PLASMA, WP_CHAINGUN, WP_SHOTGUN, WP_PISTOL, WP_CHAINSAW
         dta WP_MISSILE, $FF
                                      ; P_CheckAmmo's fallback order, p_pspr.c:
                                      ;   plasma, chaingun, shotgun, pistol,
-                                     ;   chainsaw, missile, bfg, fist -- minus
-                                     ;   the two weapons this build has no art for
+                                     ;   chainsaw, missile, bfg, fist.
+                                     ; THE BFG IS DELIBERATELY NOT IN THIS LIST,
+                                     ;   though it has art now. DOOM guards its
+                                     ;   entry with `ammo[am_cell] > 40`; this
+                                     ;   scan only asks whether the counter is
+                                     ;   NONZERO, so without that guard it would
+                                     ;   hand the BFG back on one cell,
+                                     ;   wp_checkammo's `cmp #BFGCELLS` would
+                                     ;   refuse it on the next A_WeaponReady, and
+                                     ;   the two would swap the gun in and out
+                                     ;   forever. The direction that matters works
+                                     ;   either way: a BFG that runs dry still
+                                     ;   falls back to the plasma from here.
 WI_NPRIO equ * - wi_prio
+    .if * > WITAB_END+1
+        ert 'weaponinfo[] outgrew WITAB_BASE..END (memory_map.inc)'
+    .endif
+        org wit_resume
 
 WEAP_TAB                             ; 7 B per frame: u24 vram, w, h, ax, ay
         ins 'build/assets/weap/weap.tab'
@@ -958,6 +1040,237 @@ WEAP_TAB                             ; 7 B per frame: u24 vram, w, h, ax, ay
     .if * > WEAPON_END+1
         ert 'weapon.asm outgrew WEAPON_BASE..END (memory_map.inc)'
     .endif
+
+
+;==============================================================
+; THE BFG9000's OWN ACTIONS -- p_pspr.c A_BFGsound (822), A_FireBFG (564) and
+; A_BFGSpray (781). Out of the $F280 block because that one is packed to the
+; byte and this is the coldest code in the file: S_BFG1..S_BFG4 hold 20+10+10+20
+; tics, so nothing here runs more than about once a second.
+;
+; THE BALL FLIES, on the machinery proj.asm already runs for the rocket and the
+; plasma: en_bfg2 below is en_rocket2 with one word changed. It flies as ITSELF
+; -- info.c MT_BFG spawnstate S_BFGSHOT = BFS1, deathstate S_BFGLAND = BFE1 --
+; packed one flight frame + three burst frames, the same cut the rocket's MISL
+; and the plasma's PLSS/PLSE already take.
+;   Two builds were wrong before this one, and both are worth remembering: the
+; first resolved the whole shot on the trigger tic, so there was nothing to see
+; at all ("nevidno luc"); the second borrowed the plasma's sprite to have
+; SOMETHING to draw, and a BFG that fires a plasma bolt is not a reduction, it
+; is a lie ("bfg striela plazmu! to je zle!"). The frames cost 42 B of every
+; level's things blob and exactly one level -- E2M2, whose 725-subsector prefix
+; has beaten that slot before -- cannot pay it; there pack_things.py stores $FF
+; and the shot lands at once.
+;
+; WHAT SURVIVES WHOLE is the thing that makes a BFG a BFG -- the spray. DOOM
+; fires forty P_AimLineAttacks over ANG90 in front of the ball and hurts
+; everything they find, and ANG90 IS this port's field of view: SCREEN_HALF is
+; the focal length of a 90 degree FOV, so the fan the spray sweeps and the 160
+; byte-columns of the view are the same fan. Ray i is therefore column 2 + 4i
+; and nothing has to be converted. Each ray is en_shoot, which already does
+; P_AimLineAttack + P_DamageMobj's work: the nearest VISIBLE shootable thing in
+; that column takes the roll, dies if it runs out, yells if it does not. A
+; monster wide enough to span several rays takes several of them, which is what
+; DOOM's independent rays do too.
+;
+; WHAT IT COSTS. Forty en_shoots, each a walk of the frame's vissprite list
+; (sp_n <= 40) with an en_seen clip test per candidate. That is the most
+; expensive thing the player can ask for in one tic -- and it is asked for at
+; most once a second, behind a 30-tic wind-up, which is exactly the shape of
+; the shot in DOOM.
+;==============================================================
+bfg_resume = *
+        org BFGFIRE_BASE
+
+;--------------------------------------------------------------
+; wp_bfgact -- A = the action code (8 or 9); wp_action sent both here on one
+;   compare rather than spend the bytes telling them apart in that run.
+;--------------------------------------------------------------
+.proc wp_bfgact
+        cmp #WA_BFGSND
+        bne wp_fire_bfg              ; 9 = A_FireBFG, the proc below
+        lda #SFX_BFG                 ; A_BFGsound: S_StartSound and NOTHING else.
+        sta snd_pending              ;   No P_NoiseAlert -- that is P_FireWeapon's
+        rts                          ;   and it goes off 30 tics later, with the
+.endp                                ;   shot.
+
+;--------------------------------------------------------------
+; wp_fire_bfg -- A_FireBFG: spend BFGCELLS, then land the shot.
+;--------------------------------------------------------------
+.proc wp_fire_bfg
+        lda PSTATE+PS_CELLS          ; `ammo[am_cell] -= BFGCELLS`. wp_checkammo
+        sec                          ;   refused the trigger below 40 (p_pspr.c
+        sbc #BFGCELLS                ;   P_CheckAmmo), so the borrow cannot
+        bcs ?put                     ;   happen -- the floor is belt and braces
+        lda #0                       ;   against a future path that fires without
+?put    sta PSTATE+PS_CELLS          ;   asking
+        lda #1
+        sta hud_dirty                ; the cell counter moved
+        lda #SFX_BFG                 ; P_FireWeapon's P_NoiseAlert (p_pspr.c:256)
+        jsr ai_noisealert            ;   -- every trigger pull wakes the room
+        ; ---- the aim state en_gunshot sets up for every other weapon. The BFG
+        ;      does not go through it (nothing there fits A_FireBFG), so the
+        ;      three flags and the aim cell are set here instead, dead centre:
+        ;      P_SpawnPlayerMissile autoaims and takes no spread.
+        lda #0
+        sta en_hit
+        sta en_melee                 ; not a melee swing -- en_shoot's MELEERANGE
+        sta pf_mel                   ;   gate stays open at any distance
+        lda #SCREEN_HALF
+        sta en_col
+        ldy #SCREEN_HALF-1
+        sty en_cl
+        ldy #SCREEN_HALF+1
+        sty en_ch
+        jsr bfg_dmgroll              ; what the BALL does where it lands
+        jmp en_bfg2                  ; ...and off it goes
+.endp
+
+;--------------------------------------------------------------
+; bfg_dmgroll -- the ball's DIRECT hit, p_map.c PIT_CheckThing:
+;       damage = ((P_Random()&7)+1) * mo->info->damage
+;   and MT_BFG's damage is 100 (info.c:2038), so 100..800.
+;   THE ONE NUMBER THAT HAD TO BEND: en_dmg is a byte. 100 and 200 survive
+;   whole; everything from 300 up caps at 255, which changes the outcome for
+;   nothing in episodes 1-3 except the two final bosses -- and they are exactly
+;   what the SPRAY is for, forty rays of 15..120 each landing on top of this.
+;   -> A = the roll.
+;--------------------------------------------------------------
+.proc bfg_dmgroll
+        lda RANDOM
+        and #7
+        beq ?d100
+        cmp #1
+        beq ?d200
+        lda #255
+        rts
+?d100   lda #100
+        rts
+?d200   lda #200
+        rts
+.endp
+
+;--------------------------------------------------------------
+; en_bfg2 -- P_SpawnPlayerMissile(MT_BFG). en_rocket2 (proj.asm) with one word
+;   changed: same slot pick, same "every slot busy -> land that one now", same
+;   pj_aim, same save. A = the direct-hit roll.
+;--------------------------------------------------------------
+.proc en_bfg2
+        pha                          ; the roll, while pj_pick eats A
+        jsr pj_pick
+        bne ?arm
+        jsr pj_hit                   ; every slot busy: the missile in this one
+        dec pj_on                    ;   lands NOW, on ITS victim and with ITS
+?arm    pla                          ;   roll -- pj_aim overwrites both
+        jsr pj_aim
+        jsr pj_bspawn
+        ldx pj_cur
+        jmp pj_save
+.endp
+
+;--------------------------------------------------------------
+; pj_bspawn -- arm the shared missile as MT_BFG. pj_pspawn's shape with the
+;   BFG's own sprites and its own deathsound, which doubles as the flag: pj_hit
+;   reads pj_bsnd to know what landed -- SFX_BAREXP means the rocket and its
+;   A_Explode, SFX_RXPLOD means this and its forty rays. info.c:2033 gives
+;   MT_BFG sfx_rxplod and the rocket launcher already brought that lump in, so
+;   the flag costs nothing.
+;   The frames are BFS1 A in flight and BFE1 A/B/C bursting (info.c S_BFGSHOT /
+;   S_BFGLAND), cut to one + three the way the rocket's MISL and the plasma's
+;   PLSS/PLSE are. $FF means the level's things blob could not afford them --
+;   only E2M2 -- and then the shot lands at once, like a level with no MISL.
+;--------------------------------------------------------------
+.proc pj_bspawn
+        lda #SFX_RXPLOD
+        sta pj_bsnd                  ; set BEFORE the ?now bail, like pj_rspawn
+        lda THINGS_BASE+36           ;   does -- pj_hit needs it either way.
+        bpl ?arm                     ; The id comes straight out of the level's
+        jmp pj_hit                   ;   things header: $FF = no BFS1 packed (only
+?arm    sta pj_fid                   ;   E2M2), so there is no flight to carry the
+        lda THINGS_BASE+37           ;   shot and it sprays at once. No copy in
+        sta pj_xid                   ;   fast RAM -- read once per shot, and under
+                                     ;   the ROM, where the blob already is
+        lda #12                      ; S_BFGLAND's 8 tics -> 12 VB, all three
+        sta pj_bt0                   ;   (the rocket's 8/6/4 became 11/9/6 the
+        sta pj_bt1                   ;   same way; BFE1 A/B/C are 8/8/8)
+        sta pj_bt2
+        jmp pj_go
+.endp
+    .if * > BFGFIRE_END+1
+        ert 'the BFG trigger block outgrew BFGFIRE_BASE..END (memory_map.inc)'
+    .endif
+        org bfg_resume
+
+;==============================================================
+; A_BFGSpray (p_pspr.c:781) -- "Spawn a BFG explosion on every monster in view".
+; Called from pj_hit when the ball lands, never from the trigger: in DOOM it
+; hangs off S_BFGLAND3, the third frame of the burst.
+;==============================================================
+spray_resume = *
+        org BFGSPRAY_BASE
+.proc wp_bfgspray
+        lda #$FF
+        sta pj_vic                   ; SPENT, before anything else: a re-arm must
+                                     ;   not spray twice. pj_hit does this inline
+                                     ;   for the rocket; on this arm it had no
+                                     ;   room for the store, so it lives here.
+        lda #0
+        sta en_hit                   ; en_shoot raises it when a ray connects
+        sta en_melee
+        sta pf_mel
+        lda #BFG_RAY0
+        sta bfg_col
+?ray    lda bfg_col
+        sta en_col                   ; the ray itself...
+        sec
+        sbc #BFG_RAYSTEP/2           ; ...and the aim CELL around it. The rays are
+        sta en_cl                    ;   four columns apart, so +-2 makes the fan
+        lda bfg_col                  ;   continuous -- a monster that falls
+        clc                          ;   BETWEEN two rays is still inside the
+        adc #BFG_RAYSTEP/2           ;   cone, which is what a 90 degree sweep
+        sta en_ch                    ;   means
+        jsr bfg_roll                 ; 15 * ((P_Random()&7)+1), p_pspr.c:803
+        jsr en_shoot                 ; = P_AimLineAttack + P_DamageMobj
+        lda bfg_col
+        clc
+        adc #BFG_RAYSTEP
+        sta bfg_col
+        cmp #BFG_RAYEND
+        bcc ?ray
+        rts
+.endp
+
+;--------------------------------------------------------------
+; bfg_roll -- one ray's damage, p_pspr.c verbatim:
+;       damage = 0;  for (j=0;j<15;j++) damage += (P_Random()&7) + 1;
+;   15..120, mean 67 -- lethal as a sweep without any one ray being a rocket.
+;   No clamp needed: 15 * 8 = 120 fits the byte. -> A = the roll.
+;--------------------------------------------------------------
+.proc bfg_roll
+        lda #0
+        sta bfg_dmg
+        ldx #15
+?r      lda RANDOM                   ; POKEY LFSR, the same P_Random every other
+        and #7                       ;   roll in this port uses
+        sec                          ; the +1, folded into the add: A <= 7 and
+        adc bfg_dmg                  ;   the running sum <= 112, so no carry ever
+        sta bfg_dmg                  ;   leaves the byte
+        dex
+        bne ?r
+        lda bfg_dmg
+        rts
+.endp
+
+bfg_col dta 0                        ; the sweep cursor, in byte-columns
+bfg_dmg dta 0                        ; bfg_roll's accumulator -- en_shoot clobbers
+                                     ;   en_t, so the sum cannot live there (the
+                                     ;   same reason en_pel exists for the
+                                     ;   shotgun's pellet count)
+    .if * > BFGSPRAY_END+1
+        ert 'wp_bfgspray outgrew BFGSPRAY_BASE..END (memory_map.inc)'
+    .endif
+        org spray_resume
+
 
 
 ;==============================================================

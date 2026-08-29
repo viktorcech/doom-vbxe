@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 263 B free, biggest contiguous block 184 B.
+; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -209,7 +209,7 @@ di_resume = *
 ;   like p_doors.c:151-165 for a `normal` door.
 ;--------------------------------------------------------------
 ;--------------------------------------------------------------
-; frame_dt -- fps_n = VBLANKs the previous frame took (1..DOOR_DTMAX). Called once
+; frame_dt -- dt_vbl = VBLANKs the previous frame took (1..DOOR_DTMAX). Called once
 ;   per frame from the main loop, BEFORE anything that animates: doors and lifts
 ;   both scale their motion by it, so DOOM's 35 Hz tic rate survives any frame
 ;   rate (5 fps on a stock 800XL, far more on a Rapidus).
@@ -223,10 +223,10 @@ di_resume = *
 ?dt     cmp #DOOR_DTMAX+1            ; a load hitch must not fling a door open
         bcc ?ok
         lda #DOOR_DTMAX
-?ok     sta fps_n
+?ok     sta dt_vbl
         lda RTCLOK3
         sta fps_last
-        lda fps_n                    ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
+        lda dt_vbl                    ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
         sta m_a                      ;   frame: update_movers doubles it (PLATSPEED*4)
         lda #0                       ;   and update_doors uses it as it is
         sta m_a+1
@@ -244,11 +244,11 @@ di_resume = *
 
 ;--------------------------------------------------------------
 ; plr_steps -- PLR_STEP/TRN_STEP for this frame: the ORIGINAL fixed per-frame
-;   amounts (SPD=24 units, TURN=3 BAM). The PSPD_Q8*fps_n time scaling of
+;   amounts (SPD=24 units, TURN=3 BAM). The PSPD_Q8*dt_vbl time scaling of
 ;   2026-07-28 was reverted the same day: at the real frame rates it moved and
 ;   turned several times faster than the fixed step ever did (unplayable), and
 ;   move_player's halfway collision probe assumes a step <= 24 anyway.
-;   Still frame_dt's tail, so doors/lifts keep their own fps_n scaling.
+;   Still frame_dt's tail, so doors/lifts keep their own dt_vbl scaling.
 ;   Parked in the $FBC0 hole: the doors block is full.
 ;--------------------------------------------------------------
 plrs_resume = *
@@ -431,7 +431,7 @@ plrs_resume = *
         bne ?writ                    ;   p_doors.c case open: thinker removed)
         lda.l DOOR_WAIT,x            ; the dwell counts VBLANKs, not frames
         sec
-        sbc fps_n
+        sbc dt_vbl
         sta.l DOOR_WAIT,x
         bcc ?dwend                   ; underflowed -> time is up
         bne ?writ
@@ -1215,7 +1215,7 @@ btu_resume = *
         bne ?run
         rts
 ?run    sec
-        sbc fps_n
+        sbc dt_vbl
         bcs ?ok
         lda #0
 ?ok     sta btn_timer

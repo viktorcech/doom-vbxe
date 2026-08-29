@@ -25,7 +25,7 @@ wi_resume = *
 .proc wi_tick
         lda wi_time
         clc
-        adc fps_n
+        adc dt_vbl
         sta wi_time
         bcc ?nc
         inc wi_time+1

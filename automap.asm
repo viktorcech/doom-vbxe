@@ -495,9 +495,20 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda.l AM_BANK0,x             ;     address here the first time this line
         ora.l AM_BANK0+1,x           ;     was rendered (r_segs.c:398)
         bne ?seen
-        sep #$10                     ; never seen -> nothing. DOOM's pw_allmap
-        jmp ?next                    ;   branch would go here (powerups.asm
-                                     ;   still throws the Computer Map away)
+        lda PW_FLAGS                 ; not lit by the walk -- but the COMPUTER MAP
+        and #PWF_ALLMAP              ;   reveals it anyway (am_map.c: the pw_allmap
+        bne ?seen                    ;   arm of AM_drawWalls). ?seen still drops
+                                     ;   LINE_NEVERSEE, which is what that arm does
+                                     ;   too. Index width is still 16-bit here, so
+                                     ;   ?seen's `lda.l ...,x` is reached correctly.
+                                     ;   NOT DOOM-EXACT IN ONE WAY: am_map.c paints
+                                     ;   these GRAYS+3 so you can tell them from
+                                     ;   what you actually walked; that needs a
+                                     ;   per-line "revealed" marker and a second
+                                     ;   arm in the colour ladder, ~25 B, and this
+                                     ;   overlay has 17 ($14EE..MENU_RUN_END).
+        sep #$10                     ; never seen and no map -> nothing
+        jmp ?next
 ?seen   lda.l AMFLG_EXT_D,x          ; ... and its flags, same X, fixed delta
         sep #$10
         sta am_flg
