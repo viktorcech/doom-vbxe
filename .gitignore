@@ -36,6 +36,9 @@ mads.exe
 __pycache__/
 *.pyc
 
+# scratch test/debug scripts
+/tools/tests/
+
 # backups / scratch
 *.bak
 *.tmp
