@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1257 B free, biggest contiguous block 253 B.
+; RAM BUDGET: 1046 B free, biggest contiguous block 181 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -222,6 +222,104 @@ fps_last    .ds 1                    ; RTCLOK3 at the previous frame (FPS bar)
         ini early_init
 
 ;==============================================================
+; RAM CHECK (phaeron's review, 2026-08-31) -- parked at RAMCHK_BASE
+;==============================================================
+; Probe every linear-RAM bank the port uses, BEFORE anything streams into
+; them: SRAM $01-$06 (map EXT + AI tables, SFX, segs, weapon master + CMAP),
+; $08 (sprite coltabs) and the TOP bank of the SDRAM level cache (PRE1 end,
+; atr_layout.inc), which spr_fget and every level revisit read at runtime.
+; A configuration without that RAM boots, plays a while and then silently
+; loses textures (phaeron measured ~4 MB as the visible floor) -- this turns
+; that into one message at power-on.
+;   Method per bank: pattern -> $BB:rc_twin (long store), INVERTED pattern ->
+; the bank-0 twin (same 16-bit offset -- this block's own byte), long read
+; back. A real bank answers the pattern; a partial-decode MIRROR of bank 0
+; answers the twin's inverted value; open bus answers junk -- and the second
+; pass swaps the patterns so a floating value cannot pass both. No restore
+; needed: it runs before the loaders, so every scribble is streamed over.
+;   The failure path calls NO OS -- the IOCBs at $0340 are engine RAM
+; (RECLAIMED OS RAM, memory_map.inc) -- and needs no VBI: it programs ANTIC
+; through the hardware registers (the shadows are dead, NMIEN is 0) and
+; halts, the same policy as main's no-VBXE `jmp *`.
+DLISTL  equ $D402                    ; ANTIC display-list pointer (hardware --
+DLISTH  equ $D403                    ;   not SDLST: no VBI runs here)
+CHBASE  equ $D409                    ; charset base ($E0 = the ROM font)
+COLPF1  equ $D017                    ; mode-2 text luminance
+COLPF2  equ $D018                    ; mode-2 background
+        org RAMCHK_BASE
+.proc ram_check
+        ldx #0
+?bank   lda rc_banks,x
+        beq ?ok                      ; table end -> every bank answered
+        sta ?wr+3                    ; the bank byte of both long operands
+        sta ?rd+3                    ;   (self-mod; cold one-shot code)
+        lda #$A5
+        jsr ?probe                   ; pattern, the twin gets $5A...
+        bne ?fail
+        lda #$5A                     ; ...then swapped, so neither open bus
+        jsr ?probe                   ;   nor a stale $A5 can pass twice
+        bne ?fail
+        inx
+        bne ?bank                    ; table < 256 B: always taken
+?ok     rts
+?probe  pha
+?wr     sta.l rc_twin                ; -> $BB:rc_twin (bank byte patched)
+        eor #$FF
+        sta rc_twin                  ; bank-0 twin: a mirror now differs
+        pla
+?rd     cmp.l rc_twin                ; Z=1 iff the bank held the pattern
+        rts
+?fail   lda rc_banks,x               ; the failing bank -> two hex digits
+        pha
+        lsr @
+        lsr @
+        lsr @
+        lsr @
+        jsr ?hex
+        sta rc_bnk
+        pla
+        and #$0F
+        jsr ?hex
+        sta rc_bnk+1
+        lda #<rc_dl
+        sta DLISTL
+        lda #>rc_dl
+        sta DLISTH
+        lda #$E0
+        sta CHBASE
+        lda #$0E
+        sta COLPF1                   ; white text ...
+        stz COLPF2                   ; ... on black
+        lda #$22
+        sta DMACTL                   ; normal playfield + DL DMA on
+        jmp *                        ; halt (the no-VBXE path's policy)
+?hex    cmp #10                      ; nibble -> SCREEN code ('0'=$10,'A'=$21)
+        bcc ?dig
+        adc #$16                     ; C=1: n+$17 = $21..$26 ('A'-'F')
+        rts
+?dig    adc #$10                     ; C=0: n+$10 = $10..$19 ('0'-'9')
+        rts
+.endp
+; the SDRAM level cache's top bank: its last cached sector must exist
+RC_TOP  equ [[PRE1_BASE+[PRE1_CNT*128]-1]>>16]
+rc_banks dta $01,$02,$03,$04,$05,$06,$08,RC_TOP,0
+rc_twin dta 0                        ; every probe's bank-0 twin byte
+rc_dl   dta $70,$70,$70              ; 24 blank scans
+        dta $42,a(rc_msg)            ; two mode-2 lines, one LMS
+        dta $02
+        dta $41,a(rc_dl)             ; JVB
+rc_msg  dta d'LINEAR RAM MISSING AT BANK $'
+rc_bnk  dta d'XX'
+        dta d'.         '
+        dta d'THIS PORT NEEDS A 16MB RAPIDUS.         '
+    .if * <> rc_msg+80
+        ert 'rc_msg is not 2 x 40 B -- each mode-2 line reads exactly 40'
+    .endif
+    .if * > RAMCHK_END+1
+        ert 'ram_check outgrew RAMCHK_BASE..END (memory_map.inc)'
+    .endif
+
+;==============================================================
 ; MAIN
 ;==============================================================
         org $2000
@@ -230,6 +328,10 @@ fps_last    .ds 1                    ; RTCLOK3 at the previous frame (FPS bar)
         lda #0
         sta SDMCTL                   ; ANTIC off; VBXE drives the display
         sta NMIEN                    ; no VBI yet
+
+        jsr ram_check                ; every linear-RAM bank answers, or halt
+                                     ;   with a message (parked block above) --
+                                     ;   BEFORE anything streams into them
 
         jsr detect_vbxe
         bcc ?ok

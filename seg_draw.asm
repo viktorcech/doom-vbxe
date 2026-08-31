@@ -23,7 +23,7 @@
         asl @
         asl @                        ; vertex index * 4 (4-byte records)
         clc
-        adc #MAP_VERTS               ; MAP_VERTS = offset 0 in the EXT bank;
+        adc #MAP_VERTS               ; MAP_VERTS = offset $0100 in the EXT bank
         sta zp_vptr                  ;   zp_vptr+2 = MAP_EXT_BANK, set once by
                                      ;   init_level (nothing else writes it)
         ldy #0

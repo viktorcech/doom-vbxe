@@ -366,7 +366,7 @@ def render(segs):
 
 # EVERY hand-written asm/inc source carries the banner; ram_map keeps the figure
 # in all of them honest. map_syms.inc / atr_layout.inc are generated, so their
-# generators (tools/bin_syms.py, tools/make_atr_doom.py) emit it themselves.
+# generators (tools/pack_map.py, tools/make_atr_doom.py) emit it themselves.
 ASM_FILES = ['bsp_main.asm', 'renderer.asm', 'math.asm', 'collision.asm',
              'doors.asm', 'checkbbox.asm', 'vcache.asm', 'boot.asm',
              'viewsize.asm', 'read_keys.asm',

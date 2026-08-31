@@ -41,7 +41,7 @@ tex_chunk  dta 0                     ; load_textures: current 4KB chunk (survive
 ;   $4000..$85FF slot even compacted, so the blob is, in read order,
 ;       [ LOW:  header, sectors, textab, yoffs ] -> $4000,     MAP_LOW_SECT
 ;       [ HIGH: ssectors, doors, doorlock      ] -> $D800,     MAP_HI_SECT
-;       [ EXT:  verts, nodes, segoff           ] -> $01:0000,  MAP_EXT_SECT
+;       [ EXT:  verts, nodes, segoff           ] -> $01:0100,  MAP_EXT_SECT
 ;       [ SEG:  seg records + the automap tables] -> $03:0100,  MAP_SEG_SECT
 ;   The HIGH half is RAM UNDER THE OS ROM, and SIOV is IN that ROM, so it cannot
 ;   be read there directly: it goes through the staging buffer a page at a time
@@ -109,7 +109,9 @@ ll_stride dta a(0)
         sta ll_left
         jsr read_urom
         lda #<MAP_VERTS              ; --- EXT region: VERTS+NODES into the Rapidus
-        sta ll_dst                   ;     SRAM bank (MAP_VERTS = offset 0 there)
+        sta ll_dst                   ;     SRAM bank (MAP_VERTS = offset $0100:
+                                     ;     $01:0000-00FF is the page the Rapidus
+                                     ;     may remap to page zero -- pack_map.py)
         lda #>MAP_VERTS
         sta ll_dst+1
         lda #MAP_EXT_SECT

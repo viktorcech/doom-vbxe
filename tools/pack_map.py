@@ -204,8 +204,9 @@ EXT_LIMIT = 0x6000                   # DOOR_EXT (memory_map.inc): the streamed m
                                      # (the only free space left in the machine)
                                      # so 32-door maps stopped needing the weld;
                                      # this ceiling drops with them. The whole
-                                     # 27-map set ends at $393C, so there is
-                                     # still ~10 KB of map growth under it.
+                                     # 27-map set ends at $3A3C (base $0100 --
+                                     # see the EXT layout in _emit), so there
+                                     # is still ~9.5 KB of map growth under it.
                                      # 2026-08-15: it said LOS_EXT ($6A00), but
                                      # the six pages BELOW that -- TH_HPL/TH_HPH/
                                      # TH_CELL/TH_BNEXT/TH_STATE/TH_TICS -- are
@@ -875,7 +876,14 @@ def emit_map_syms(caps):
     high_end = doorlock + caps.doors            #   Two 4 B door records, not one
                                                 #   of 8: see _doors.
 
-    verts = 0x0000                              # EXT: offsets INSIDE bank MAP_EXT_BANK
+    # EXT base $0100, NOT 0 (2026-08-31, phaeron's Rapidus review): the Rapidus
+    # can remap $01:0000-$00FF onto page zero (its 65C816 abs,X/abs,Y MyDOS
+    # compat option), which would put the first 64 vertices inside somebody
+    # else's zero page. One page of slack keeps the streamed map out of it --
+    # the same one-page trick the SEG bank already plays (see the MAP_SEGS
+    # comment below). The loader lands the blob at MAP_VERTS, so the shift is
+    # symbol-only; ext_sec below must count from `verts`, not from 0.
+    verts = 0x0100                              # EXT: offsets INSIDE bank MAP_EXT_BANK
     segoff = verts + caps.verts * 4             # (NODES joined the SEG bank
     ssect = segoff + caps.segs * 2              #  2026-08-18 -- see _seg_layout)
     ext_end = ssect + caps.ssect * SSECT_SIZE
@@ -909,7 +917,9 @@ def emit_map_syms(caps):
         sys.exit(f'SEG region {seg_end} B > one Rapidus bank -- split it.')
     lo_sec = (low_end - MAP_LOAD + SECTOR - 1) // SECTOR
     hi_sec = (high_end - MAP_LOAD_HI + SECTOR - 1) // SECTOR
-    ext_sec = (ext_end + SECTOR - 1) // SECTOR
+    ext_sec = (ext_end - verts + SECTOR - 1) // SECTOR  # DATA only: the stream
+                                                        # starts at MAP_VERTS
+                                                        # ($0100), not at 0
     seg_sec = (seg_end - segs + SECTOR - 1) // SECTOR         # DATA only: the
                                                               # stream starts at
                                                               # MAP_SEGS, not at 0
@@ -923,8 +933,8 @@ def emit_map_syms(caps):
          f'; LOW  ${MAP_LOAD:04X}-${low_end:04X} ({low_end - MAP_LOAD} B, {lo_sec} sectors)',
          f'; HIGH ${MAP_LOAD_HI:04X}-${high_end:04X} ({high_end - MAP_LOAD_HI} B, '
          f'{hi_sec} sectors) -- RAM under the OS ROM',
-         f'; EXT  ${MAP_EXT_BANK:02X}:0000-${MAP_EXT_BANK:02X}:{ext_end:04X} '
-         f'({ext_end} B, {ext_sec} sectors) -- Rapidus SRAM bank (VERTS+SEGOFF+SSECT);',
+         f'; EXT  ${MAP_EXT_BANK:02X}:{verts:04X}-${MAP_EXT_BANK:02X}:{ext_end:04X} '
+         f'({ext_end - verts} B, {ext_sec} sectors) -- Rapidus SRAM bank (VERTS+SEGOFF+SSECT);',
          ';      MAP_VERTS/MAP_SSECT below are OFFSETS inside that bank, read via',
          ';      65816 [zp],y long indirect with zp+2 = MAP_EXT_BANK. (NODES',
          ';      moved to the SEG bank 2026-08-18, SSECT in from HIGH -- E2/E3.)',
