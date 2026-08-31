@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1046 B free, biggest contiguous block 181 B.
+; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -160,8 +160,12 @@ WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('7' -> 9)
 ;
 ;   id's matcher is simpler than people remember: on a mismatch it does
 ;   `cht->p = cht->sequence` and does NOT re-test the offending key against the
-;   first letter. So does this -- type "iidkfa" and you start over, exactly as
-;   in DOOM.
+;   first letter. So does this -- type "ixdkfa" and you start over, exactly as
+;   in DOOM. ONE divergence: a DOUBLED letter ("iidkfa") is swallowed by the
+;   KBCODE latch below (same code = no new-press edge), so here it still
+;   completes where DOOM's release-driven matcher would reset. More forgiving,
+;   never less; "idkfa" itself has no doubled letter, so the accept path is
+;   identical.
 ;
 ;   The port has no key-UP event, so "a new press" is "KBCODE differs from the
 ;   last code we accepted". That is enough here and only here: "idkfa" has no
@@ -235,6 +239,13 @@ CHT_LEN equ * - cht_tab
         sta PSTATE+PS_BULLETS,x
         dex
         bpl ?am
+        inc hud_dirty                 ; the bar IS the acknowledgement (note
+                                      ;   above), so mark it dirty HERE: nothing
+                                      ;   else repaints after a cheat. The face
+                                      ;   timer used to catch it within 0.5 s as
+                                      ;   a side effect, until hud_facefix
+                                      ;   stopped buying full repaints
+                                      ;   (2026-08-31).
         rts                           ; SILENT -- see the note above. A cheat that
                                       ;   announces itself with the weapon-pickup
                                       ;   sound is not what m_cheat.c does.

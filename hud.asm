@@ -267,8 +267,8 @@ hdyn_resume = *
         cmp face_cur
         beq ?same
         sta face_cur
-        lda #1                       ; new face -> repaint the shared bar
-        sta hud_dirty
+        jsr hud_faceup2              ; face-only: 2 blits (hud_facefix), or
+                                     ;   nothing if a full repaint is pending
 ?same   lda #FACE_VB
 ?keep   sta face_t
         rts
@@ -405,6 +405,77 @@ ham_resume = *
         ert 'draw_hud_gate/hud_face_upd/pickup_bonus outgrew HUDDYN (memory_map.inc)'
     .endif
         org hdyn_resume
+
+;--------------------------------------------------------------
+; hud_facefix -- the look-around face swap WITHOUT the full bar repaint
+;   (2026-08-31): hud_face_upd used to set hud_dirty every FACE_VB and buy
+;   draw_hud's ~14 blits (each behind a blitter_wait) for a 12x31 cell.
+;   Two blits instead: restore the cell out of the STBAR GRAPHIC -- a
+;   sub-rectangle, so the BCB is built by hand; the 7-byte HUD_TAB format
+;   cannot say SRC_STEPY != WIDTH, the same reason mn_box exists -- then
+;   stencil face_cur over it.
+;   THE CELL IS CONSTANT, and that is load-bearing: every face lump in
+;   hud.tab is w=12 with left=-3 (so every face draws at x=74..85) and the
+;   tops are 169/170, bottoms 198/199 -- x74,y169,12x31 covers ANY old face
+;   under ANY new one. A different-height lump only arrives with a health
+;   tier change or the grin, and both of those come through paths that set
+;   hud_dirty (pl_hurtfx, pickup_bonus, savegame) -> the full repaint runs
+;   and hud_faceup2 skips this proc.
+;--------------------------------------------------------------
+FF_X      equ ST_FACEX+3             ; 74: every face lump has left = -3
+FF_Y      equ HUD_BAR_Y+1            ; 169: the earliest face top (hud.tab)
+FF_W      equ 12
+FF_H      equ 31
+FF_SRCOFF equ [FF_Y-HUD_BAR_Y]*SCREEN_WIDTH+FF_X
+hffx_resume = *
+        org HUDFFIX_BASE
+.proc hud_faceup2
+        lda hud_dirty                ; a full repaint is pending and includes
+        bne ?skip                    ;   the face -> nothing to do here
+        jmp hud_facefix
+?skip   rts
+.endp
+.proc hud_facefix
+        lda #HUD_BAR
+        jsr hud_entry                ; hud_ent+0..2 = the STBAR graphic's VRAM
+        clc                          ; SRC = STBAR + 1*160+74: the cell's own
+        lda hud_ent                  ;   pixels inside the bar image
+        adc #<FF_SRCOFF
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        lda hud_ent+1
+        adc #>FF_SRCOFF
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        lda hud_ent+2                ; no bank carry: the blob is nowhere near
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2    ; a 64 KB edge (pack_hud.py)
+        lda #SCREEN_WIDTH            ; sub-rectangle: the source steps by the
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ; BAR's row, not by its width
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        ldx #FF_Y                    ; DST = row 169 + 74 -- bank 0, the SHARED
+        lda row_lo,x                 ;   bar rows, like every hud_blit
+        clc
+        adc #FF_X
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        lda row_hi,x
+        adc #0
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        lda #BLT_COPY                ; = 0: opaque -- and so are the dst bank
+        sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; and the step's high byte
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ; (mn_box's trick)
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        lda #FF_W-1
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        lda #FF_H-1
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        jsr hud_blit.hud_fire        ; wait out the previous blit, fire this one
+        lda face_cur                 ; ...and the face itself: ONE stencil blit
+        ldx #ST_FACEX                ;   (hb_ctrl rests at BLT_BSTENCIL)
+        jmp hud_top
+.endp
+    .if * > HUDFFIX_END+1
+        ert 'hud_facefix outgrew HUDFFIX_BASE..END (memory_map.inc)'
+    .endif
+        org hffx_resume
 
 ;==============================================================
 ; THE MESSAGE LINE (2026-08-16, "ked nieco vezmem, hore sa zjavi popisok").
