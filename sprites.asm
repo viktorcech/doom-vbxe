@@ -267,7 +267,7 @@ sr_resume = *
         lda sp_i                     ; dying? then the frame comes from the death
         jsr spr_dyn                  ;   table, already in sp_tab (enemy.asm)
         ; --- 16-BIT A for the table-entry math and the header copy
-        ;     (2026-08-31, the tips-poliak.txt hand-review): id*8 was an 8-bit
+        ;     (2026-08-31, the drac030 hand-review): id*8 was an 8-bit
         ;     shift ladder through m_prod and the header four lda/sta pairs --
         ;     ~100 cycles a sprite; this is ~63. sp_w/sp_h/sp_left/sp_top are
         ;     CONTIGUOUS in record order (memory_map.inc), so two 16-bit moves

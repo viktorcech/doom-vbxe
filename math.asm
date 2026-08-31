@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1116 B free, biggest contiguous block 253 B.
+; RAM BUDGET: 1257 B free, biggest contiguous block 253 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -96,9 +96,11 @@
                                    ;   only the OTHER three products need qs_p,
                                    ;   because they are ADDED to m_prod. p00 has
                                    ;   nothing to add to, so it can just land.
-        lda #0                     ; bytes 2,3 start at zero and the products that
-        sta m_prod+2               ;   would land there are now ADDED, not stored,
-        sta m_prod+3               ;   which is what lets any of them be skipped
+        stz m_prod+2               ; bytes 2,3 start at zero and the products that
+        stz m_prod+3               ;   would land there are now ADDED, not stored,
+                                   ;   which is what lets any of them be skipped.
+                                   ;   stz, not lda #0/sta: A dies on the next
+                                   ;   line, 1,023 calls/frame (_an_drac030)
         lda m_a+1
         ora m_b+1
         bne ?more

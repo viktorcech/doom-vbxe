@@ -141,7 +141,7 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
     .if TEX_RUNSH <> 6
         ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
     .endif
-        ; 16-BIT A (2026-08-31, the tips-poliak.txt hand-review): the split
+        ; 16-BIT A (2026-08-31, the drac030 hand-review): the split
         ; shift (hi = x>>2, lo = x<<6) and the halved add were 50 cycles;
         ; x<<6 in one 16-bit accumulator lands STRAIGHT in the tsrc add --
         ; no qs_p staging at all. 37 cycles, bit-identical, and the 16-bit

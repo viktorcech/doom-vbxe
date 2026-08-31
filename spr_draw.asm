@@ -178,8 +178,7 @@
         lda sp_scale+1
         sta m_den+1
         jsr udiv24                   ; m_quot = spy8 = samples per row at z = 8
-        ; 16-BIT A (2026-08-31, tips-poliak.txt round two -- "S. Ten kawalek
-        ; jest przecudny"): this built (m_quot+4)>>3 by STORING the sum and
+        ; 16-BIT A (2026-08-31, drac030 round two): this built (m_quot+4)>>3 by STORING the sum and
         ; then shifting it IN MEMORY, six lsr/ror abs pairs at 12 cycles each,
         ; with an lda/ora/bne re-load to test what the accumulator had just
         ; held. The whole thing is one 16-bit accumulator expression now --

@@ -417,7 +417,7 @@ mtx_back_resume = *
         sta ybotc_arr,x
         dey
         stz solid_arr,x              ; 65816 stz abs,x: 2 cycles and 2 bytes off
-                                     ;   EVERY replayed column (tips-poliak.txt
+                                     ;   EVERY replayed column (drac030
                                      ;   hand-review, 2026-08-31)
         txa                          ; the snapshot samples every FOURTH column
         and #3                       ;   (mseg_snap ?put): the three between it

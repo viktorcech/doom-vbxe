@@ -7,39 +7,37 @@
 ; load_vertex -- zp_vidx -> zp_rx,zp_ry = vertex - player.
 ;--------------------------------------------------------------
 .proc load_vertex
+        ; ONE 16-bit accumulator, whole proc (2026-08-31, _an_drac030): the old
+        ; body shifted the pointer half in A and half IN MEMORY (asl zp_vptr /
+        ; rol zp_vptr+1), added in bytes and read the vertex in four 8-bit
+        ; halves -- ~110 cycles at 199 calls/frame. Bit-identical: <<2, the
+        ; add and both subtracts wrap the same 16 bits, and a 16-bit
+        ; [zp_vptr],y at y=0/2 reads the same little-endian pairs. Internal
+        ; rep/sep because the automap's two call sites are 8-bit code
+        ; (process_seg's two are 16-bit either side and just pay the toggle).
+        ; Y exits 2, not 3 -- no caller reads Y after (am_draw reloads X,
+        ; process_seg reloads Y).
+        rep #$20
+        .LONGA ON
         lda zp_vidx
-        asl
-        sta zp_vptr
-        lda zp_vidx+1
-        rol
-        sta zp_vptr+1
-        asl zp_vptr
-        rol zp_vptr+1
+        asl @
+        asl @                        ; vertex index * 4 (4-byte records)
         clc
-        lda zp_vptr
-        adc #<MAP_VERTS              ; MAP_VERTS = offset 0 in the EXT bank;
+        adc #MAP_VERTS               ; MAP_VERTS = offset 0 in the EXT bank;
         sta zp_vptr                  ;   zp_vptr+2 = MAP_EXT_BANK, set once by
-        lda zp_vptr+1                ;   init_level (nothing else writes it)
-        adc #>MAP_VERTS
-        sta zp_vptr+1
+                                     ;   init_level (nothing else writes it)
         ldy #0
         sec
         lda [zp_vptr],y
         sbc zp_px
         sta zp_rx
-        iny
-        lda [zp_vptr],y
-        sbc zp_px+1
-        sta zp_rx+1
-        iny
+        ldy #2
         sec
         lda [zp_vptr],y
         sbc zp_py
         sta zp_ry
-        iny
-        lda [zp_vptr],y
-        sbc zp_py+1
-        sta zp_ry+1
+        .LONGA OFF
+        sep #$20
         rts
 .endp
 
@@ -69,14 +67,19 @@ vsh_resume = *
 .endp
 
 .proc vsh_mod
-        sta m_b                      ; m_b = texH << 7  (fits: 255<<7 = 32640)
-        lda #0
-        sta m_b+1
-        ldx #7
-?sh     asl m_b
-        rol m_b+1
-        dex
-        bne ?sh
+        rep #$20                     ; m_b = texH << 7 (fits: 255<<7 = 32640) --
+        .LONGA ON                    ;   in the accumulator, not the old ldx #7
+        and #$FF                     ;   loop of asl/rol ON m_b (~98 cycles of
+        asl @                        ;   memory RMW for what seven 2-cycle
+        asl @                        ;   shifts do; _an_drac030 2026-08-31).
+        asl @                        ;   `and #$FF`: rep exposes whatever the
+        asl @                        ;   8-bit caller left in B.
+        asl @
+        asl @
+        asl @
+        sta m_b
+        .LONGA OFF
+        sep #$20
         ldx #8                       ; subtract texH<<7 .. texH<<0 where it fits
 ?l      sec
         lda m_a
@@ -124,15 +127,15 @@ vsh_end = *
 segy_resume = *
         org SEGYOFF_BASE
 .proc seg_yoff
-        lda rs_segi                  ; m_a = segi >> 3 -> byte index into MAP_YBITS
-        sta m_a
-        lda rs_segi+1
-        sta m_a+1
-        ldx #3
-?sh     lsr m_a+1
-        ror m_a
-        dex
-        bne ?sh
+        rep #$20                     ; m_a = segi >> 3 -> byte index into
+        .LONGA ON                    ;   MAP_YBITS. The old form copied segi to
+        lda rs_segi                  ;   m_a in halves and shifted it IN MEMORY
+        lsr @                        ;   three times (ldx #3 / lsr / ror / dex /
+        lsr @                        ;   bne = ~45 cycles); the accumulator does
+        lsr @                        ;   it in 6, bit-identically, and m_a/m_a+1
+        sta m_a                      ;   hold the same two bytes for the page
+        .LONGA OFF                   ;   test below (_an_drac030, 2026-08-31)
+        sep #$20
         ldy m_a
         lda rs_segi                  ; C = bit (segi & 7) of that byte
         and #7
@@ -887,7 +890,7 @@ ds_resume = *
         sta rs_sx1
         ; --- endpoint 2 --- (no sep/rep here: nothing 8-bit stood between
         ;     them, so the pair was 6 dead cycles x 102 calls -- the class
-        ;     tips-poliak.txt hunts by eye, 2026-08-31)
+        ;     drac030 hunts by eye, 2026-08-31)
         lda zp_X2
         sta zp_X
         lda zp_Z2
@@ -1115,50 +1118,41 @@ ds_resume = *
         lda m_prod+2
         sta rs_t2+2
         ; --- front sector -> zp_ptr; load heights/colours ---
+        ; ONE 16-bit window for the whole block (2026-08-31, _an_drac030): the
+        ; sector*8 used to shift IN m_prod (store-then-shift, ~40 cycles), the
+        ; pointer add went in bytes and the three height subtracts in halves --
+        ; ~139 cycles a seg against ~82 here, 99 segs a frame. Bit-identical:
+        ; the 16-bit [zp_sptr],y drags seg byte @5 into the high half and the
+        ; `and #$FF` drops it; (zp_ptr),y at 2/0 reads the same little-endian
+        ; height pairs; every sum and difference wraps the same 16 bits.
         ldy #SEG_FRONT               ; front_sec (u8) @ seg+4
+        rep #$20
+        .LONGA ON
         lda [zp_sptr],y
-        sta m_prod
-        lda #0
-        sta m_prod+1
-        asl m_prod                   ; m_prod = front_sec*8 via shifts (tips #3)
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1                 ; front_sec*8
+        and #$FF
+        asl @
+        asl @
+        asl @                        ; front_sec*8 (8-byte sector records)
         clc
-        lda m_prod
-        adc #<MAP_SECTORS
+        adc #MAP_SECTORS
         sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SECTORS
-        sta zp_ptr+1
         ; worldtop = ceil_h(@2) - pz ; worldbot = floor_h(@0) - pz
         ldy #2
         sec
         lda (zp_ptr),y
         sbc zp_pz
         sta rs_wtop
-        iny
-        lda (zp_ptr),y
-        sbc zp_pz+1
-        sta rs_wtop+1
         ldy #0
         sec
         lda (zp_ptr),y
         sbc zp_pz
         sta rs_wbot
-        iny
-        lda (zp_ptr),y
-        sbc zp_pz+1
-        sta rs_wbot+1
         sec                          ; worldH = f_ceil-f_floor = wtop-wbot (texel span)
         lda rs_wtop
         sbc rs_wbot
         sta rs_worldh
-        lda rs_wtop+1
-        sbc rs_wbot+1
-        sta rs_worldh+1
+        .LONGA OFF
+        sep #$20
 ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
                                      ;   both SHADED with this sector's light
                                      ;   (lights.asm; it also parks the colormap

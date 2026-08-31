@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1116 B free, biggest contiguous block 253 B.
+; RAM BUDGET: 1257 B free, biggest contiguous block 253 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -181,11 +181,10 @@ wki_resume = *
         ; not 3, so the direction survives any realistic rep/sep price.
         rep #$20
         .LONGA ON
-        lda zp_nid
-        and #$7FFF                   ; NODE_LEAF bit off
-        asl @
-        asl @                        ; nid*4
-        sta m_ma
+        lda zp_nid                   ; no `and #$7FFF`: the NODE_LEAF bit (and
+        asl @                        ;   bit 14) fall out of these two shifts,
+        asl @                        ;   so nid*4 is already clean -- drac030's
+        sta m_ma                     ;   drac030 point 1, applied everywhere
         asl @
         asl @
         asl @                        ; nid*32
@@ -463,39 +462,37 @@ cu_resume = *
 ;--------------------------------------------------------------
 .proc render_subsector
         jsr spr_add                  ; things first, then the segs (R_Subsector order)
-        rep #$20                     ; ssptr = MAP_SSECT + ssid*4, in ONE 16-bit
-        .LONGA ON                    ;   accumulator (same rewrite as
-        lda zp_nid                   ;   calc_nodeptr; m_a/m_prod no longer used
-        and #$7FFF                   ;   -- the loads below overwrite m_a anyway)
+        ; ONE 16-bit window, subsector to seg pointer (2026-08-31, drac030):
+        ; drac030 counted this run at 36 instructions / 130 cycles and showed
+        ; 17 / 53; his three points, all applied: the `and #$7FFF` was dead --
+        ; the two shifts push bits 15/14 out of the accumulator, so the leaf
+        ; flag masks ITSELF; the seg index is read as ONE 16-bit word instead
+        ; of byte-by-byte; and the *8 (SEG_SIZE) plus the MAP_SEGS add stay in
+        ; the same accumulator instead of a jsr m_x8 round trip (bits 15-13
+        ; fall out of the three shifts -- the seg cap is far below 8192, the
+        ; same wrap m_x8 had). m_a/m_prod are no longer touched.
+        rep #$20
+        .LONGA ON
+        lda zp_nid
         asl @
-        asl @
+        asl @                        ; ssid*4 (the leaf bit just fell out)
         clc
         adc #MAP_SSECT
         sta zp_ptr
-        .LONGA OFF
-        sep #$20
-        ldy #0                       ; first seg index -> m_a (and rs_segi: seg_yoff
-        lda [zp_ptr],y               ;   keys MAP_YBITS by seg INDEX, and the seg
-        sta m_a                      ;   loop below only tracks the pointer)
-        sta rs_segi
-        iny
-        lda [zp_ptr],y
-        sta m_a+1
-        sta rs_segi+1
-        ldy #2                       ; count -> zp_segcnt
+        ldy #2                       ; count -> zp_segcnt, one 16-bit read
         lda [zp_ptr],y
         sta zp_segcnt
-        iny
-        lda [zp_ptr],y
-        sta zp_segcnt+1
-        jsr m_x8                     ; m_prod = first*8 via shifts (SEG_SIZE; tips #3)
+        ldy #0                       ; first seg index (16-bit) -> rs_segi
+        lda [zp_ptr],y               ;   (seg_yoff keys MAP_YBITS by INDEX; the
+        sta rs_segi                  ;   seg loop below only tracks the pointer)
+        asl @
+        asl @
+        asl @                        ; *8 = SEG_SIZE
         clc
-        lda m_prod
-        adc #<MAP_SEGS
+        adc #MAP_SEGS
         sta zp_sptr
-        lda m_prod+1
-        adc #>MAP_SEGS
-        sta zp_sptr+1
+        .LONGA OFF
+        sep #$20
 ?sloop
         lda zp_segcnt
         ora zp_segcnt+1
@@ -553,52 +550,33 @@ lf_resume = *
         rep #$20                     ; ONE 16-bit accumulator (same rewrite as
         .LONGA ON                    ;   calc_nodeptr; m_a is overwritten below)
         lda zp_nid
-        and #$7FFF
-        asl @
-        asl @
+        asl @                        ; ssid*4 -- NO and #$7FFF: the two shifts
+        asl @                        ;   push the leaf bit out (drac030)
         clc
         adc #MAP_SSECT
         sta zp_ptr
-        .LONGA OFF
-        sep #$20
-        ldy #0                        ; first seg index @ ssect+0
-        lda [zp_ptr],y
-        sta m_a
-        iny
-        lda [zp_ptr],y
-        sta m_a+1
-        jsr m_x8                     ; zp_sptr = MAP_SEGS + first*SEG_SIZE (=*8)
+        ldy #0                        ; first seg index @ ssect+0, one 16-bit
+        lda [zp_ptr],y                ;   read; *8 and both adds stay in the
+        asl @                         ;   accumulator -- the m_a staging, the
+        asl @                         ;   jsr m_x8 and the byte-halved adds are
+        asl @                         ;   gone (drac030's fused form)
         clc
-        lda m_prod
-        adc #<MAP_SEGS
+        adc #MAP_SEGS
         sta zp_sptr
-        lda m_prod+1
-        adc #>MAP_SEGS
-        sta zp_sptr+1
-        ldy #SEG_FRONT                ; front_sec (u8) @ seg+4
-        lda [zp_sptr],y
-        sta m_prod
-        lda #0
-        sta m_prod+1
-        asl m_prod                    ; zp_ptr = MAP_SECTORS + front_sec*8
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1                  ; front_sec*8
+        ldy #SEG_FRONT                ; front_sec (u8) @ seg+4 (@5 rides the
+        lda [zp_sptr],y               ;   16-bit load, the mask drops it)
+        and #$FF
+        asl @
+        asl @
+        asl @                         ; front_sec*8
         clc
-        lda m_prod
-        adc #<MAP_SECTORS
+        adc #MAP_SECTORS
         sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SECTORS
-        sta zp_ptr+1
         ldy #0                        ; floor_h (i16) @ sector+0
         lda (zp_ptr),y
         sta loc_floor
-        iny
-        lda (zp_ptr),y
-        sta loc_floor+1
+        .LONGA OFF
+        sep #$20
         rts
 .endp
     .if * > LOCFLOOR_END+1
