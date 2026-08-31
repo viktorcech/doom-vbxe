@@ -62,9 +62,8 @@ class WadTextures:
             self.playpal_lump = self._lump('PLAYPAL')      # a WAD without one
         self.playpal = self._read_playpal()
         self.pnames = self._read_pnames()
-        self.texdefs = {}                      # NAME -> (w, h, [(pnames_idx, ox, oy)])
-        for ln in ('TEXTURE1', 'TEXTURE2'):
-            self._read_texturex(ln)
+        self.texdefs = {}                      # NAME -> (w, h, [(patch, ox, oy)])
+        self._read_textures()
         self._tex_cache = {}
         self._patch_cache = {}
         self._near_black = None
@@ -131,9 +130,56 @@ class WadTextures:
         n, = struct.unpack_from('<I', d, 0)
         return [_name(d[4 + i * 8:4 + i * 8 + 8]) for i in range(n)]
 
-    def _read_texturex(self, lumpname):
-        d = self._lump(lumpname)
-        if d is None:
+    def _pnames_of(self, src):
+        """Source `src`'s OWN patch table, or the merged one when it ships
+        none. A TEXTUREx entry indexes the PNAMES OF ITS OWN FILE, so that is
+        the only table its patch numbers mean anything in."""
+        d = (self.w.source_lump(src, 'PNAMES')
+             if hasattr(self.w, 'source_lump') else None)
+        if d is None or len(d) < 4:
+            return self.pnames
+        n, = struct.unpack_from('<I', d, 0)
+        return [_name(d[4 + i * 8:4 + i * 8 + 8]) for i in range(n)]
+
+    def _read_textures(self):
+        """Every file's texture set, in load order, each read against ITS OWN
+        PNAMES -- and NOT through the merged lump view (2026-08-30).
+
+        The merged view resolves one lump NAME at a time, but a texture set is
+        not one lump: it is PNAMES + TEXTURE1 + TEXTURE2 together, and the patch
+        numbers in a TEXTUREx are indices into the PNAMES that shipped beside
+        it. Layer a DOOM II file over DOOM.WAD -- which this port must do,
+        because it bakes episode 1's intermission screen and so DOOM.WAD has to
+        stay the IWAD -- and the view hands back DOOM II's PNAMES and TEXTURE1
+        with DOOM.WAD's TEXTURE2, because DOOM II ships none. Two things went
+        wrong at once: DOOM.WAD's TEXTURE2 defs were decoded against DOOM II's
+        patch table, and being read second they OVERWROTE the DOOM II defs of
+        every name the two sets share -- 132 textures on doom2.wad, 134 on
+        tnt.wad, 132 on D2KITANA.WAD. CEMENT1, COMPBLUE, GSTONE1, METAL,
+        SUPPORT3, WOOD1 and the rest came out of whatever patches happened to
+        sit at those indices in the other file.
+
+        Per file, TEXTURE1 then TEXTURE2 (DOOM's own order), later files winning
+        by name -- so a map WAD's own set overrides, and a name it never defines
+        still falls back to the IWAD's def read with the IWAD's patch table
+        instead of being lost. A single-file WAD reads exactly as before: one
+        source, the same two lumps, the same PNAMES."""
+        nsrc = len(getattr(self.w, 'sources', ()) or ())
+        if not nsrc or not hasattr(self.w, 'source_lump'):
+            for ln in ('TEXTURE1', 'TEXTURE2'):      # a Wad built before
+                d = self._lump(ln)                   #   sources existed
+                if d is not None:
+                    self._read_texturex(d, self.pnames)
+            return
+        for src in range(nsrc):
+            pn = self._pnames_of(src)
+            for ln in ('TEXTURE1', 'TEXTURE2'):
+                d = self.w.source_lump(src, ln)
+                if d is not None:
+                    self._read_texturex(d, pn)
+
+    def _read_texturex(self, d, pnames):
+        if d is None or len(d) < 4:
             return
         numtex, = struct.unpack_from('<i', d, 0)
         for i in range(numtex):
@@ -145,7 +191,10 @@ class WadTextures:
             for j in range(patchcount):
                 po = offs + 22 + j * 10
                 ox, oy, pidx = struct.unpack_from('<hhH', d, po)
-                patches.append((pidx, ox, oy))
+                # the NAME, resolved here while the right patch table is still
+                # in hand -- a texdef outlives it (see _read_textures)
+                patches.append((pnames[pidx] if 0 <= pidx < len(pnames) else '',
+                                ox, oy))
             self.texdefs[name.upper()] = (width, height, patches)
 
     # ---- patch (DOOM picture / post format) ----------------------------------
@@ -251,10 +300,10 @@ class WadTextures:
             w, h, patches = td
             tex = [[0] * h for _ in range(w)]           # opaque-init 0; walls fully cover
             cov = [bytearray(h) for _ in range(w)] if masked else None
-            for (pidx, ox, oy) in patches:
-                if not (0 <= pidx < len(self.pnames)):
+            for (pname, ox, oy) in patches:
+                if not pname:
                     continue
-                pat = self.get_patch(self.pnames[pidx])
+                pat = self.get_patch(pname)
                 if pat is None:
                     continue
                 pw, ph, cols = pat

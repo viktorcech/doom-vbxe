@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
+; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -616,15 +616,11 @@ mov_resume = *
         icl 'movers.asm'             ; walkover lifts / lowering floors
         icl 'ball.asm'               ; the imp's fireball (MT_TROOPSHOT reduced)
         icl 'proj.asm'               ; the player's visible rocket/plasma shot
-        org HUDTAB_BASE              ; HUD_TAB: it outgrew the $A000 hole (119 B
-HUD_TAB                              ; to mv_step at $A077) when the face frames
-        ins 'build/assets/hud/hud.tab'   ; joined; data, so the slow freed
-                                     ; vissprite-record area is fine.
-                                     ; 0 STBAR, 1..10 digits, 11 '%', 12 arms,
-                                     ; 13..15 keys, 16..18 look faces, 19 grin
-    .if * > HUDTAB_END+1
-        ert 'HUD_TAB overran HUDTAB_BASE..END (memory_map.inc)'
-    .endif
+                                     ; HUD_TAB lives in Rapidus bank $01 since
+                                     ; 2026-08-30 (bank01.asm) -- 203 B of base
+                                     ; RAM back. Rows: 0 STBAR, 1..10 digits,
+                                     ; 11 '%', 12 arms, 13..15 keys, 16..18 look
+                                     ; faces, 19 grin.
         org mov_resume
 hud_resume = *
         org HUDCODE_BASE
@@ -795,18 +791,24 @@ sndcopy_resume = *
 b1copy_resume = *
         org B1COPY_BASE
 .proc b1_to_ext
+        ; 2026-08-31: table-driven -- FOUR blocks ride up now: both code
+        ; stages (B1CODE, B1CODE2) and the two SQ2 masters, whose staged
+        ; win2 pages die right here. Page counts are rounded up as before;
+        ; the tail bytes land in free bank and nothing reads them.
         jsr rom_out                  ; $C000 is RAM only with the ROM out
-        lda #<B1CODE_STAGE
+        ldx #0
+?next   lda ?tab+0,x
         sta sp_ptr
-        lda #>B1CODE_STAGE
+        lda ?tab+1,x
         sta sp_ptr+1
-        lda #<B1CODE_OFF
+        lda ?tab+2,x
         sta zp_ptr
-        lda #>B1CODE_OFF
+        lda ?tab+3,x
         sta zp_ptr+1
+        lda ?tab+4,x
+        sta m_a                      ; pages left (math scratch, dead at boot)
         lda #MAP_EXT_BANK
         sta zp_ptr+2
-        ldx #[B1CODE_BYTES+255]/256
 ?page   ldy #0
 ?byte   lda (sp_ptr),y
         sta [zp_ptr],y
@@ -814,9 +816,20 @@ b1copy_resume = *
         bne ?byte
         inc sp_ptr+1
         inc zp_ptr+1
-        dex
+        dec m_a
         bne ?page
+        txa                          ; next 5-byte ?tab row
+        clc
+        adc #5
+        tax
+        cpx #25
+        bcc ?next
         jmp rom_in                   ; ...and back to emulation mode with it
+?tab    dta <B1CODE_STAGE, >B1CODE_STAGE, <B1CODE_OFF, >B1CODE_OFF, [B1CODE_BYTES+255]/256
+        dta <B1CODE2_STAGE, >B1CODE2_STAGE, <B1CODE2_OFF, >B1CODE2_OFF, [B1CODE2_BYTES+255]/256
+        dta <SQ2L_STAGE, >SQ2L_STAGE, <SQ2L_EXT, >SQ2L_EXT, 2
+        dta <SQ2H_STAGE, >SQ2H_STAGE, <SQ2H_EXT, >SQ2H_EXT, 2
+        dta <AMOVL_STAGE, >AMOVL_STAGE, <AMOVL_EXT, >AMOVL_EXT, 5
 .endp
     .if * > B1COPY_END+1
         ert 'b1_to_ext outgrew B1COPY_BASE..END (memory_map.inc)'

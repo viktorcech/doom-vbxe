@@ -134,7 +134,17 @@ mvs_resume = *
         ; player is standing in and compare it with the trigger's activation
         ; sector (record offset 0). door_at_point does exactly this walk and is
         ; proven on hardware, so mv_sector is a copy of it.
-        jsr mv_sector                ; m_a = sector under the player
+        ;
+        ; THE DESCENT IS NOT DONE HERE ANY MORE (2026-08-29). It used to be
+        ; `jsr mv_sector` on this line -- a full BSP descent from the root, PER
+        ; TRIGGER, PER FRAME, and mv_sector lives at $A10A, i.e. in the
+        ; chip-speed $8000-$BFFF window where every fetch costs x11.2. The
+        ; player's sector is a property of the FRAME, not of the trigger
+        ; record, so check_triggers now takes it once (mv_psec_set) and this
+        ; loop just compares. Measured with tools/tests/_bench_subsys.py on
+        ; E1M4 (32 triggers): check_triggers inclusive 17.67 ms of a 96.7 ms
+        ; frame -- 18.3% -- of which 32 descents were 15.3 ms.
+        ; update_doors made exactly this move for door_at_point already.
         ldy #0                       ; either room next to the line will do
         jsr ?match
         bcs ?yes
@@ -169,13 +179,15 @@ mvs_resume = *
 ?nocross clc
         rts
 ?match  lda (zp_ptr),y               ; ONE byte: pack_things.py asserts 255
-        cmp m_a                      ;   sectors, so a room id is a byte and $FF
+        cmp mv_psec                  ;   sectors, so a room id is a byte and $FF
         bne ?nomatch                 ;   is its "no room" sentinel -- which is
         sec                          ;   what the record's OTHER byte was, and
         rts                          ;   it carries the floor SPEED now
-?nomatch clc
-        rts
-.endp
+?nomatch clc                         ; (mv_psec, not m_a: the sector is latched
+        rts                          ;  once a frame now -- see the head of this
+.endp                                ;  .proc. m_a does not survive mv_side_line
+                                     ;  anyway, which is why it could never have
+                                     ;  been the latch itself.)
 
 
 
@@ -245,6 +257,33 @@ mvs_leaf                             ; (mv_guard's bail-out lands here)
         sta m_a+1
         rts
 .endp
+
+;--------------------------------------------------------------
+; mv_psec_set -- latch the player's sector for this frame's trigger scan.
+;   check_triggers calls it ONCE before the loop instead of mv_crossed calling
+;   mv_sector once per record: the descent answers "which room is the player
+;   in", which cannot change while the scan runs (nothing in the loop moves
+;   him -- a fired trigger arms a mover, it does not walk the player), and the
+;   one thing that CAN, EV_Teleport, gets a second latch in check_triggers so
+;   the change is bit-identical to the old per-record descent rather than
+;   merely equivalent.
+;   Parked at MVPSEC_BASE ($B7B7): the movers segment is packed and this is
+;   the 10 B of slack behind fps_tog. m_a is NOT the latch -- mv_side_line
+;   destroys it on any record whose room matches.
+;--------------------------------------------------------------
+mvps_resume = *
+        org MVPSEC_BASE
+.proc mv_psec_set
+        jsr mv_sector                ; m_a = sector under (zp_px, zp_py)
+        lda m_a
+        sta mv_psec
+        rts
+.endp
+mv_psec dta 0                        ; the latched sector id (a byte: see mv_crossed)
+    .if * > MVPSEC_END+1
+        ert 'mv_psec_set outgrew MVPSEC_BASE..MVPSEC_END (memory_map.inc)'
+    .endif
+        org mvps_resume
 
 ;--------------------------------------------------------------
 ; mv_side_line -- A = 0/1: which side of the trigger line (mv_px, mv_py) is on.
@@ -395,6 +434,15 @@ mvu_resume = *
         org MVUSED_BASE
 
 .proc check_triggers
+        jsr mv_psec_set              ; WHICH ROOM IS THE PLAYER IN -- once for
+                                     ;   the whole scan. This is the "line vs
+                                     ;   sector" split: the SECTOR the player
+                                     ;   occupies is a fact about the frame, the
+                                     ;   LINE test below is per record. It used
+                                     ;   to be inside mv_crossed, so every
+                                     ;   trigger paid its own BSP descent from
+                                     ;   the root -- 32 of them a frame on E1M4,
+                                     ;   in the x11.2 chip-speed window.
         lda #0                       ; NO "is a mover running" gate here. It used
         sta mv_i                     ;   to skip the WHOLE scan while a lift was
                                      ;   moving, so for the ~7 s of a ride not one
@@ -411,15 +459,23 @@ mvu_resume = *
         bcs ?nx
         jsr mv_ptr                   ; zp_ptr = this trigger record
         jsr mv_crossed
-        bcs ?fire
-?nx     inc mv_i
-        jmp ?loop
-?fire   jsr trig_exit                ; the W1 EXIT test, then trig_walk's own
-        jmp ?nx                      ;   doors.asm dispatcher); then KEEP
-                                     ;   SCANNING -- one W1 line can tag several
-                                     ;   sectors (E1M8: the two baron doors are
-                                     ;   two records of one line; the jmp-out
-                                     ;   opened only one)
+        bcc ?nx                      ; (the fire path FALLS THROUGH to ?nx now:
+                                     ;  the `jmp ?nx` it used to end with paid
+                                     ;  for the two jsrs above and here)
+        jsr trig_exit                ; the W1 EXIT test, then trig_walk's own
+        jsr mv_psec_set              ; ...and EV_Teleport moves the player, so
+                                     ;   re-latch: the records after this one
+                                     ;   must see the sector the OLD code would
+                                     ;   have descended to. (trig_walk also
+                                     ;   copies the destination into mv_ox/mv_oy,
+                                     ;   so nothing can cross a line after a
+                                     ;   teleport either way -- this keeps the
+                                     ;   change bit-identical instead of merely
+                                     ;   equivalent.)
+?nx     inc mv_i                     ; KEEP SCANNING after a fire -- one W1 line
+        jmp ?loop                    ;   can tag several sectors (E1M8: the two
+                                     ;   baron doors are two records of one line;
+                                     ;   the old jmp-out opened only one)
 .endp
 
 ;--------------------------------------------------------------
@@ -553,11 +609,14 @@ mvs2_resume = *
         bpl ?mu
         sta ts_acc                   ; the scrolling wall starts unscrolled -- a
         sta ts_col                   ;   stale ts_col would wrap the base address
-        jmp lt_init                  ;   BELOW the texture on the first wrap
-                                     ; ... and TAIL-CALL the light init: it is
-                                     ;   per level like everything above, and
-                                     ;   init_level's $1B00 block has one byte
-                                     ;   left, not three (lights.asm)
+        jmp sq2_lt_init              ;   BELOW the texture on the first wrap
+                                     ; ... and TAIL-CALL the light init VIA the
+                                     ;   SQ2 restore shim (math.asm's FRACTAB
+                                     ;   block): load_things just streamed the
+                                     ;   THINGS blob over the SQ2 homes, and
+                                     ;   this jmp is the one per-level link with
+                                     ;   room for the detour -- lights.asm and
+                                     ;   init_level's $1B00 block have none.
 .endp
 
 ;--------------------------------------------------------------
@@ -1318,9 +1377,14 @@ tgw_resume = *
 
 ;==============================================================
 ; update_damage -- p_spec.c P_PlayerInSpecialSector, once per frame.
-; The nukage/slime floors: DOOM charges the player 5/10/20 health every 32 tics
-; (0.914 s) while he STANDS in the sector -- and the port's eye always sits on
-; the floor (update_pz), so its "has he hit the ground yet" test is free.
+; The nukage/slime floors: DOOM charges the player 5/10/20 health on every 32nd
+; tic of the LEVEL clock (`!(leveltime & 0x1f)`, 0.914 s) that he is STANDING in
+; the sector -- standing, not falling through it: the routine's first line is
+; "Falling, not all the way down yet?" and returns while mo->z is off the floor.
+;   * the tic is a FREE-RUNNING clock (dmg_timer), not a stopwatch started when
+;     he steps on. That is the whole point of DOOM's phrasing: a strip he only
+;     WALKS ACROSS is inside for a handful of tics, and it charges him whenever
+;     one of them is the 32nd. See the note at the subtraction below.
 ;   * the damage class is b1-b3 of the sector's flag byte (pack_map.py DMG).
 ;   * it costs no point location: update_pz has just run locate_floor, which
 ;     leaves zp_ptr on &MAP_SECTORS[sector under the player].
@@ -1337,26 +1401,46 @@ tgw_resume = *
 dmg_resume = *
         org DMGSEC_BASE
 .proc update_damage
+        lda dmg_timer                ; THE CLOCK FIRST, and it FREE-RUNS: DOOM's
+        sec                          ;   test is `!(leveltime & 0x1f)` on the
+        sbc dt_vbl                   ;   LEVEL clock, which keeps counting
+        sta dmg_timer                ;   wherever the player stands. This used to
+        bcs ?out                     ;   be a per-entry countdown re-armed to the
+        lda #DMG_VB                  ;   full DMG_VB every frame he was NOT on a
+        sta dmg_timer                ;   damaging floor, which made a strip he
+                                     ;   WALKS ACROSS incapable of ever charging
+                                     ;   him: E2M1's cross is 64 units wide, i.e.
+                                     ;   ~3 frames at SPD 24, against the 46
+                                     ;   VBLANKs the timer wanted -- so it never
+                                     ;   reached 0 and the crossing was free.
+                                     ;   Free-running, those 3 frames land on the
+                                     ;   tic as often as DOOM's 4 tics in 32 do.
         lda pl_dead                  ; P_PlayerThink hands a PST_DEAD player to
-        bne ?safe                    ;   P_DeathThink and RETURNS, so
-                                     ;   P_PlayerInSpecialSector never runs on a
+        ora pl_air                   ;   P_DeathThink and RETURNS, so
+        bne ?out                     ;   P_PlayerInSpecialSector never runs on a
                                      ;   corpse: the nukage stops burning it and,
                                      ;   above all, stops grunting every 32 tics
                                      ;   (the "EH" over and over after the death
-                                     ;   scream). ?safe also re-arms dmg_timer.
+                                     ;   scream). The clock above still ticks,
+                                     ;   exactly as leveltime does while dead.
+                                     ; pl_air is P_PlayerInSpecialSector's FIRST
+                                     ;   line -- "Falling, not all the way down
+                                     ;   yet?", `if (mo->z != sector->floorheight)
+                                     ;   return`. The header here used to say the
+                                     ;   test was free because the eye always sat
+                                     ;   on the floor; that stopped being true the
+                                     ;   day gravity landed (pl_zmove), and
+                                     ;   without it a drop into E3M6's lava burned
+                                     ;   the player in mid-air. pl_air IS that
+                                     ;   comparison: pl_zmove clears it in ?land,
+                                     ;   the same branch that assigns
+                                     ;   pl_z = loc_floor.
         ldy #7
         lda (zp_ptr),y               ; sector flags: b0 sky, b1-b3 damage class
         and #$0E
-        beq ?safe
+        beq ?out
         lsr
         tax                          ; 1 nukage, 2 slime, 3 super, 4 = E1M8 end
-        lda dmg_timer                ; the tic counts VBLANKs, like the doors
-        sec
-        sbc dt_vbl
-        sta dmg_timer
-        bcs ?out                     ; not due yet
-        lda #DMG_VB
-        sta dmg_timer
         jsr pw_shield                ; the radiation suit / invulnerability decide
         bcs ?out                     ;   whether this tic lands at all (powerups.asm)
         lda dmg_amt,x                ; P_DamageMobj(player->mo, NULL, NULL, dmg):
@@ -1372,9 +1456,6 @@ dmg_resume = *
         lda #1                       ;   so the E1M8 finale sector could never
         sta EXIT_REQ                 ;   fire the exit at all
 ?out    rts
-?safe   lda #DMG_VB                  ; stepping off re-arms the whole delay
-        sta dmg_timer
-        rts
 .endp
 
 ;--------------------------------------------------------------

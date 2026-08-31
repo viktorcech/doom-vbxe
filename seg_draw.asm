@@ -376,52 +376,55 @@ cm_sscl2
 ;   OUT: rs_Stmp (step, signed16), rs_acctmp (accumulator at column xa, 24b).
 ;   track = 12800 - world*scale;  step = (R-L)/span;  acc = L + (xa-sxL)*step.
 ;--------------------------------------------------------------
+; 16-BIT (2026-08-29): the arguments are 16-bit and the results 24-bit, so a
+; copy is two OVERLAPPING 16-bit moves (bytes 0-1, then 1-2) and the 24-bit
+; subtract is one 16-bit sbc plus its top byte. track_calc/step_recip are
+; 8-bit code; M only, X/Y stay 8 (sound.asm:316).
 .proc plane_setup
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         lda rs_wtmp                  ; L = trk(world, scL) -> rs_Ltmp
         sta m_a
-        lda rs_wtmp+1
-        sta m_a+1
         lda rs_scL
         sta m_b
-        lda rs_scL+1
-        sta m_b+1
+        .LONGA OFF
+        sep #$20
         jsr track_calc
+        rep #$20
+        .LONGA ON
         lda m_prod
         sta rs_Ltmp
         lda m_prod+1
         sta rs_Ltmp+1
-        lda m_prod+2
-        sta rs_Ltmp+2
         lda rs_wtmp                  ; R = trk(world, scR) (left in m_prod)
         sta m_a
-        lda rs_wtmp+1
-        sta m_a+1
         lda rs_scR
         sta m_b
-        lda rs_scR+1
-        sta m_b+1
+        .LONGA OFF
+        sep #$20
         jsr track_calc
+        rep #$20
+        .LONGA ON
         lda m_prod                   ; keep R: it is the RIGHT-hand anchor below,
         sta rs_acctmp                ;   and rs_acctmp is free until we write the
         lda m_prod+1                 ;   answer into it
         sta rs_acctmp+1
-        lda m_prod+2
-        sta rs_acctmp+2
         sec                          ; step = (R - L) / span
         lda rs_acctmp
         sbc rs_Ltmp
         sta m_prod
-        lda rs_acctmp+1
-        sbc rs_Ltmp+1
-        sta m_prod+1
-        lda rs_acctmp+2
+        .LONGA OFF
+        sep #$20
+        lda rs_acctmp+2              ; ...and the 24-bit borrow's top byte
         sbc rs_Ltmp+2
         sta m_prod+2
         jsr step_recip               ; step = (R-L)/span via inv_span reciprocal
+        rep #$20
+        .LONGA ON
         lda m_quot
         sta rs_Stmp
-        lda m_quot+1
-        sta rs_Stmp+1
+        .LONGA OFF
+        sep #$20
         ; --- acc at xa, anchored on whichever END IS NEARER ------------------
         ; step is truncated to 1/256 px, so the anchor's error is multiplied by
         ; the distance to it. Anchoring always on the left cost up to 21 px on a
@@ -494,14 +497,11 @@ cm_sscl2
 ds_resume = *
         org DRAWSPAN_BASE
 .proc draw_span
-        lda rs_spb
-        cmp rs_spa
-        bcc ?no
-        sec
-        sbc rs_spa
-        clc
-        adc #1
+        sec                          ; A = rs_spb already: draw_clip's ?bset
+        sbc rs_spa                   ;   store is the ONLY way in, and sbc's
+        bcc ?no                      ;   carry is the cmp's carry (A dies at ?no)
         tay
+        iny                          ; height = spb-spa+1 (no inc a on 6502)
         lda rs_spa
     .if TEX_RUNS
         jmp pt_span                  ; tail-call: the flat span becomes a chain
@@ -531,10 +531,9 @@ ds_resume = *
         cmp rs_top
         bcc ?atop
         cmp rs_bot
-        beq ?ara
-        bcs ?out
-?ara    lda rs_ra
-        jmp ?aset
+        bcc ?aset                    ; cmp does not touch A, so A IS rs_ra here:
+        bne ?out                     ;   the old ?ara reloaded what it had, and
+        beq ?aset                    ;   the jmp round it went away with it
 ?atop   lda rs_top
 ?aset   sta rs_spa
         lda rs_rb+1                  ; b = min(rs_rb, bot); <top -> nothing
@@ -544,13 +543,12 @@ ds_resume = *
         cmp rs_top
         bcc ?out
         cmp rs_bot
-        bcc ?brb
-        beq ?brb
+        bcc ?bset                    ; same as above -- A is still rs_rb, and
+        beq ?bset                    ;   ?bbot now FALLS THROUGH to ?bset
 ?bbot   lda rs_bot
-        jmp ?bset
-?brb    lda rs_rb
 ?bset   sta rs_spb
-        jmp draw_span                ; tail-call (draws if spb>=spa, preserves X)
+        jmp draw_span                ; tail-call (draws if spb>=spa, preserves
+                                     ;   X) -- and hands it rs_spb IN A
 ?out    rts
 .endp
 
@@ -559,36 +557,45 @@ ds_resume = *
 ;   project, then height/portal render with per-column occlusion.
 ;--------------------------------------------------------------
 .proc process_seg
+        ; --- THE WHOLE PROLOGUE IS 16-BIT (2026-08-29). Every quantity here is
+        ;     a 16-bit coordinate, and the engine already runs in 65816 NATIVE
+        ;     mode (underrom.asm's ROM-OUT <=> native invariant), so a block of
+        ;     them costs `rep #$20`/`sep #$20` = 6 cycles and no clc/xce. That
+        ;     turns a vertex index into ONE [zp_sptr],y, a coordinate save into
+        ;     ONE lda/sta, and a 16-bit subtract into one sec/lda/sbc/sta --
+        ;     204 cycles and 337 bytes a call over the whole .proc, at 102
+        ;     calls a frame (_bench_subsys, tools/tests/_probe_16bit.py).
+        ;     M ONLY. X and Y stay 8-bit for the reason sound.asm:316 records:
+        ;     the 3958 Hz digi IRQ inherits M/X, and `sep #$10` zeroes the high
+        ;     halves of X/Y while the RTI restores only the width bits.
+        ;     load_vertex, cross_pos and transform are 8-bit code, so the mode
+        ;     goes back before every call.
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON                    ;   (and TELL MADS: an immediate is 3 B now)
         ldy #0                       ; v1
         lda [zp_sptr],y
         sta zp_vidx
-        iny
-        lda [zp_sptr],y
-        sta zp_vidx+1
+        .LONGA OFF
+        sep #$20
         jsr load_vertex
+        rep #$20
+        .LONGA ON
         lda zp_rx
         sta zp_rx1
-        lda zp_rx+1
-        sta zp_rx1+1
         lda zp_ry
         sta zp_ry1
-        lda zp_ry+1
-        sta zp_ry1+1
         ldy #2                       ; v2
         lda [zp_sptr],y
         sta zp_vidx
-        iny
-        lda [zp_sptr],y
-        sta zp_vidx+1
+        .LONGA OFF
+        sep #$20
         jsr load_vertex
+        rep #$20
+        .LONGA ON
         lda zp_rx
         sta zp_rx2
-        lda zp_rx+1
-        sta zp_rx2+1
         lda zp_ry
         sta zp_ry2
-        lda zp_ry+1
-        sta zp_ry2+1
         ; --- backface FIRST. It only needs the PLAYER-RELATIVE coords, never the
         ;     rotated ones, so testing it here skips the two transforms (~700 cyc)
         ;     for every backfaced seg -- and on E1M1 that is 46% of every frame's
@@ -598,30 +605,18 @@ ds_resume = *
         lda zp_rx2
         sbc zp_rx1
         sta cx_a
-        lda zp_rx2+1
-        sbc zp_rx1+1
-        sta cx_a+1
         sec
         lda #0
         sbc zp_ry1
         sta cx_b
-        lda #0
-        sbc zp_ry1+1
-        sta cx_b+1
         sec
         lda zp_ry2
         sbc zp_ry1
         sta cx_c
-        lda zp_ry2+1
-        sbc zp_ry1+1
-        sta cx_c+1
         sec
         lda #0
         sbc zp_rx1
         sta cx_d
-        lda #0
-        sbc zp_rx1+1
-        sta cx_d+1
         ; --- tips #2, now for SEGS: axis-aligned fast path. When the seg is axis
         ;     aligned one cross term is ZERO, so the sign of the cross is a
         ;     sign-bit XOR and BOTH smul32 calls vanish. point_on_side has had
@@ -636,75 +631,73 @@ ds_resume = *
         ;     corners) + 429,640 real seg x pose cases, 0 mismatches. It compares
         ;     against cross_pos AS IMPLEMENTED, not against ideal math -- read the
         ;     tool header for why that distinction is the whole point.
-        lda cx_a
-        ora cx_a+1
-        bne ?bf_tryc
+        lda cx_a                     ; (16-bit: the ora of the two halves the
+        bne ?bf_tryc                 ;   8-bit version needed IS the load now)
         lda cx_c                     ; cx_a = 0 -> cross = -(cx_c*cx_d)
-        ora cx_c+1
         beq ?bf_front                ;   a zero factor -> cross = 0 -> front
         lda cx_d
-        ora cx_d+1
         beq ?bf_front
-        lda cx_c+1                   ;   cross > 0 iff the signs DIFFER
-        eor cx_d+1
-        bmi ?bf_far
-        bpl ?bf_front                ; (always: bit 7 was just tested)
+        lda cx_c                     ;   cross > 0 iff the signs DIFFER -- and
+        eor cx_d                     ;   bit 15 of a 16-bit eor is the same
+        bmi ?bf_far                  ;   answer bit 7 of the high bytes gave
+        bpl ?bf_front                ; (always: the sign was just tested)
 ?bf_tryc
         lda cx_c
-        ora cx_c+1
         bne ?bf_gen                  ; neither axis -> pay for the full cross
         lda cx_b                     ; cx_c = 0 -> cross = cx_a*cx_b (cx_a != 0)
-        ora cx_b+1
         beq ?bf_front
-        lda cx_a+1                   ;   cross > 0 iff the signs are the SAME
-        eor cx_b+1
+        lda cx_a                     ;   cross > 0 iff the signs are the SAME
+        eor cx_b
         bpl ?bf_far
         bmi ?bf_front                ; (always)
-?bf_far jmp ?bfout                   ; ?bfout is already at the edge of a relative
-                                     ;   branch from the old test site, so the two
-                                     ;   fast exits above go through here. Only
-                                     ;   ever REACHED by branch -- the bmi over it
-                                     ;   is unconditional in effect.
+?bf_far .LONGA OFF
+        sep #$20                     ; ---- every exit leaves 8-bit. ?bfout is an
+        jmp ?bfout                   ;   rts and cross_pos is 8-bit code.
 ?bf_gen
+        sep #$20
         jsr cross_pos
         bne ?bfout                   ; cross>0 -> backface: not a single multiply
                                      ;   spent on the view transform below
+        rep #$20                     ; front-facing after all: back to 16 bits,
+        .LONGA ON
+                                     ;   which is how the axis-aligned exits
+                                     ;   above arrive (rep/sep touch only M --
+                                     ;   the Z the bne just read survives)
 ?bf_front
-        ; --- front-facing: NOW pay for the view transform of both endpoints ---
+        ; --- front-facing: NOW pay for the view transform of both endpoints.
+        ;     Eight 16-bit copies, so eight `rep #$20` moves instead of sixteen
+        ;     lda/sta pairs -- 48 bytes and 32 cycles a call, and process_seg
+        ;     runs 102 times a frame. transform is 8-bit code, so the mode goes
+        ;     back before each call; M only, never X/Y (see cm_save's note).
+        ;     Entered ALREADY 16-bit -- see the backface exits above.
         lda zp_rx1
         sta zp_rx
-        lda zp_rx1+1
-        sta zp_rx+1
         lda zp_ry1
         sta zp_ry
-        lda zp_ry1+1
-        sta zp_ry+1
+        .LONGA OFF
+        sep #$20
         jsr transform
+        rep #$20
+        .LONGA ON
         lda zp_X
         sta zp_X1
-        lda zp_X+1
-        sta zp_X1+1
         lda zp_Z
         sta zp_Z1
-        lda zp_Z+1
-        sta zp_Z1+1
         lda zp_rx2
         sta zp_rx
-        lda zp_rx2+1
-        sta zp_rx+1
         lda zp_ry2
         sta zp_ry
-        lda zp_ry2+1
-        sta zp_ry+1
+        .LONGA OFF
+        sep #$20
         jsr transform
+        rep #$20
+        .LONGA ON
         lda zp_X
         sta zp_X2
-        lda zp_X+1
-        sta zp_X2+1
         lda zp_Z
         sta zp_Z2
-        lda zp_Z+1
-        sta zp_Z2+1
+        .LONGA OFF
+        sep #$20                     ; ---- 8-bit again
 ?front
         ; --- near-plane clip (match render_view): clip a behind-near endpoint
         ;     to Z=ZNEAR (keep the seg); drop ONLY if both endpoints are behind.
@@ -742,88 +735,80 @@ ds_resume = *
         lda zp_tmp
         bne ?clip1                   ; only Z1 behind -> clip endpoint 1
         ; --- clip endpoint 2 toward endpoint 1: X2 += (X1-X2)*t ; Z2=ZNEAR ---
+        lda #0                       ; m_prod byte 0 -- 8-bit, it is one byte
+        sta m_prod
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         sec                          ; t8 = (ZNEAR - Z2)<<8 / (Z1 - Z2)
         lda #ZNEAR
         sbc zp_Z2
         sta m_prod+1
-        lda #0
-        sbc zp_Z2+1
-        sta m_prod+2
-        lda #0
-        sta m_prod
         sec
         lda zp_Z1
         sbc zp_Z2
         sta m_den
-        lda zp_Z1+1
-        sbc zp_Z2+1
-        sta m_den+1
+        .LONGA OFF
+        sep #$20
         jsr udiv24
+        rep #$20
+        .LONGA ON
         sec                          ; dX = X1 - X2
         lda zp_X1
         sbc zp_X2
         sta m_a
-        lda zp_X1+1
-        sbc zp_X2+1
-        sta m_a+1
         lda m_quot
         sta m_b
-        lda m_quot+1
-        sta m_b+1
+        .LONGA OFF
+        sep #$20
         jsr smul32                   ; m_prod = dX * t8
+        rep #$20
+        .LONGA ON
         clc                          ; X2 += m_prod>>8
         lda zp_X2
         adc m_prod+1
         sta zp_X2
-        lda zp_X2+1
-        adc m_prod+2
-        sta zp_X2+1
         lda #ZNEAR
         sta zp_Z2
-        lda #0
-        sta zp_Z2+1
+        .LONGA OFF
+        sep #$20
         jmp ?z2ok
 ?clip1  ; --- clip endpoint 1 toward endpoint 2: X1 += (X2-X1)*t ; Z1=ZNEAR ---
+        lda #0                       ; m_prod byte 0 -- 8-bit, it is one byte
+        sta m_prod
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         sec                          ; t8 = (ZNEAR - Z1)<<8 / (Z2 - Z1)
         lda #ZNEAR
         sbc zp_Z1
         sta m_prod+1
-        lda #0
-        sbc zp_Z1+1
-        sta m_prod+2
-        lda #0
-        sta m_prod
         sec
         lda zp_Z2
         sbc zp_Z1
         sta m_den
-        lda zp_Z2+1
-        sbc zp_Z1+1
-        sta m_den+1
+        .LONGA OFF
+        sep #$20
         jsr udiv24
+        rep #$20
+        .LONGA ON
         sec                          ; dX = X2 - X1
         lda zp_X2
         sbc zp_X1
         sta m_a
-        lda zp_X2+1
-        sbc zp_X1+1
-        sta m_a+1
         lda m_quot
         sta m_b
-        lda m_quot+1
-        sta m_b+1
+        .LONGA OFF
+        sep #$20
         jsr smul32                   ; m_prod = dX * t8
+        rep #$20
+        .LONGA ON
         clc                          ; X1 += m_prod>>8
         lda zp_X1
         adc m_prod+1
         sta zp_X1
-        lda zp_X1+1
-        adc m_prod+2
-        sta zp_X1+1
         lda #ZNEAR
         sta zp_Z1
-        lda #0
-        sta zp_Z1+1
+        .LONGA OFF
+        sep #$20
 ?z2ok
         ; --- CHEAP FRUSTUM REJECT (SPEED-PLAN-2 P1, at SEG level) -------------
         ; FOCAL and SCREEN_HALF are both 80, so the view is exactly 90 degrees
@@ -839,138 +824,126 @@ ds_resume = *
         ; keeps X+Z / X-Z inside signed 16 bits. Z >= ZNEAR > 0 here (the near
         ; clip ran), so X >= 0 can never be left of view and X < 0 can never be
         ; right of it, and the surviving sums cannot overflow.
-        lda zp_X1+1                  ; both endpoints left of the screen?
+        ; 16-BIT (2026-08-29): the sums are the only thing this block wants and
+        ; every one of them is 16 bits, so the halves, the m_a scratch and the
+        ; `ora` that re-joined them all go -- a 16-bit lda sets N from bit 15
+        ; and Z from all sixteen, which is exactly what the tests ask.
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+        lda zp_X1                    ; both endpoints left of the screen?
         bpl ?fr_nl
         clc                          ; X1 + Z1 < 0 ?
         lda zp_X1
         adc zp_Z1
-        lda zp_X1+1
-        adc zp_Z1+1
         bpl ?fr_nl
-        lda zp_X2+1
+        lda zp_X2
         bpl ?fr_nl
         clc                          ; X2 + Z2 < 0 ?
         lda zp_X2
         adc zp_Z2
-        lda zp_X2+1
-        adc zp_Z2+1
         bmi ?fr_out
-        bpl ?fr_nl                   ; (always: bit 7 was just tested clear)
-?fr_out rts                          ; the seg covers no column -- drop it here,
+        bpl ?fr_nl                   ; (always: the sign was just tested clear)
+?fr_out .LONGA OFF
+        sep #$20
+        rts                          ; the seg covers no column -- drop it here,
                                      ;   exactly as ?skip would have below
-?fr_nl  lda zp_X1+1                  ; both endpoints right of the screen?
+        .LONGA ON                    ; (?fr_nl is reached in 16-bit, always)
+?fr_nl  lda zp_X1                    ; both endpoints right of the screen?
         bmi ?fr_nr
         sec                          ; X1 - Z1 > 0 ?
         lda zp_X1
         sbc zp_Z1
-        sta m_a
-        lda zp_X1+1
-        sbc zp_Z1+1
         bmi ?fr_nr
-        ora m_a
         beq ?fr_nr                   ; X1 == Z1 is the edge column: keep
-        lda zp_X2+1
+        lda zp_X2
         bmi ?fr_nr
         sec                          ; X2 - Z2 > 0 ?
         lda zp_X2
         sbc zp_Z2
-        sta m_a
-        lda zp_X2+1
-        sbc zp_Z2+1
         bmi ?fr_nr
-        ora m_a
         bne ?fr_out
 ?fr_nr
         ; ===== M2c: real wall heights + floor/ceiling (SOLID walls) =====
         ; Transcribes gui.py render_view (fixed). Portals (two-sided) come next;
         ; for now every seg is drawn as a solid floor->ceiling wall.
         ; --- endpoint 1: scale (1/Z) + unclamped screen-X ---
-        lda zp_X1
+        lda zp_X1                    ; (still 16-bit, straight out of the reject)
         sta zp_X
-        lda zp_X1+1
-        sta zp_X+1
         lda zp_Z1
         sta zp_Z
-        lda zp_Z1+1
-        sta zp_Z+1
+        .LONGA OFF
+        sep #$20
         jsr scale_z                  ; m_quot = sc1
+        rep #$20
+        .LONGA ON
         lda m_quot
         sta rs_sc1
-        lda m_quot+1
-        sta rs_sc1+1
+        .LONGA OFF
+        sep #$20
         jsr screenx_signed           ; m_xs = sx1 (signed, unclamped)
+        rep #$20
+        .LONGA ON
         lda m_xs
         sta rs_sx1
-        lda m_xs+1
-        sta rs_sx1+1
-        ; --- endpoint 2 ---
+        ; --- endpoint 2 --- (no sep/rep here: nothing 8-bit stood between
+        ;     them, so the pair was 6 dead cycles x 102 calls -- the class
+        ;     tips-poliak.txt hunts by eye, 2026-08-31)
         lda zp_X2
         sta zp_X
-        lda zp_X2+1
-        sta zp_X+1
         lda zp_Z2
         sta zp_Z
-        lda zp_Z2+1
-        sta zp_Z+1
+        .LONGA OFF
+        sep #$20
         jsr scale_z
+        rep #$20
+        .LONGA ON
         lda m_quot
         sta rs_sc2
-        lda m_quot+1
-        sta rs_sc2+1
+        .LONGA OFF
+        sep #$20
         jsr screenx_signed
+        rep #$20
+        .LONGA ON
         lda m_xs
         sta rs_sx2
-        lda m_xs+1
-        sta rs_sx2+1
         ; --- order left<=right by signed sx (d = sx1 - sx2) ---
         sec
         lda rs_sx1
         sbc rs_sx2
-        sta m_a
-        lda rs_sx1+1
-        sbc rs_sx2+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20                     ; (sep touches M only -- N and Z survive it)
         bmi ?one_l                   ; d<0 -> sx1 is left
-        ora m_a
         beq ?one_l                   ; d==0 -> treat 1 as left
-        ; d>0 -> sx2 is left
-        lda rs_sx2
-        sta rs_sxL
-        lda rs_sx2+1
-        sta rs_sxL+1
-        lda rs_sc2
-        sta rs_scL
-        lda rs_sc2+1
-        sta rs_scL+1
-        lda rs_sx1
-        sta rs_sxR
-        lda rs_sx1+1
-        sta rs_sxR+1
-        lda rs_sc1
-        sta rs_scR
-        lda rs_sc1+1
-        sta rs_scR+1
+        ; d>0 -> sx2 is left. Four 16-bit copies each way (2026-08-29).
         lda #1                       ; v2 is the LEFT endpoint -> u runs L..0
         sta rs_uflip
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+        lda rs_sx2
+        sta rs_sxL
+        lda rs_sc2
+        sta rs_scL
+        lda rs_sx1
+        sta rs_sxR
+        lda rs_sc1
+        sta rs_scR
+        .LONGA OFF
+        sep #$20
         jmp ?ordered
 ?one_l  lda #0                       ; v1 is the LEFT endpoint -> u runs 0..L
         sta rs_uflip
+        rep #$20
+        .LONGA ON
         lda rs_sx1
         sta rs_sxL
-        lda rs_sx1+1
-        sta rs_sxL+1
         lda rs_sc1
         sta rs_scL
-        lda rs_sc1+1
-        sta rs_scL+1
         lda rs_sx2
         sta rs_sxR
-        lda rs_sx2+1
-        sta rs_sxR+1
         lda rs_sc2
         sta rs_scR
-        lda rs_sc2+1
-        sta rs_scR+1
+        .LONGA OFF
+        sep #$20
 ?ordered
         ; --- xa = max(vw_x0, sxL) --- (the window's edge, not the screen's: the
         ;     border columns are solid, so scanning them would be pure waste)
@@ -1186,11 +1159,16 @@ ds_resume = *
         lda rs_wtop+1
         sbc rs_wbot+1
         sta rs_worldh+1
-        jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
+ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
                                      ;   both SHADED with this sector's light
                                      ;   (lights.asm; it also parks the colormap
                                      ;   row in zp_cm for the two wall colours
                                      ;   below). X is preserved.
+                                     ; LABELLED: wp_flight retargets the operand
+                                     ;   to lt_seg_flash while a muzzle flash is
+                                     ;   up (extralight), and back -- so the
+                                     ;   normal frame pays NOTHING for the
+                                     ;   feature (lights.asm, 2026-08-31)
         ldy #SEG_WALL                ; wall_tex @ seg+6: texid + bit6 ML_DONTPEGTOP
         lda [zp_sptr],y              ;   + bit7 impassable (collision-only)
         sta rs_pegf                  ; keep the raw byte -- the peg bit is read below

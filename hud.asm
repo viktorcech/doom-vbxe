@@ -113,26 +113,61 @@
 ;--------------------------------------------------------------
 ; hud_entry -- A = HUD_TAB index -> zp_ptr = &entry, A = width.
 ;--------------------------------------------------------------
+;   X IS THE CALLER'S COLUMN AND MUST SURVIVE. hud_top, hud_glyph and
+;   hud_glyph_left all take it in X, hud_blit's first instruction is `stx hd_x`,
+;   and hud_glyph_left does `txa` the moment this returns. The first attempt at
+;   the move below indexed the table with X (`lda.l HUD_TAB_EXT,x`) and wrecked
+;   every graphic's position on the bar -- 2026-08-30, and no test caught it
+;   because none of them draw the HUD. tools/tests/_verify_hudtab.py does now.
+;   So: A and Y only.
+;   HUD_TAB lives in Rapidus bank $01 (bank01.asm), six bytes a row -- the u24's
+;   high byte is HUD_TAB_HI, one constant for the whole table. The row is copied
+;   DOWN into hud_ent, so hud_blit, fps_emit, the automap's and the finale's
+;   entries into it all read exactly the seven bytes they always read.
+hent_resume = *
+        org HUDENT_BASE
 .proc hud_entry
-        sta m_a                      ; index*7 = *8 - *1
-        lda #0
+        sta m_a                      ; index*6 = *4 + *2 (six, not seven: see
+        asl                          ;   HUD_TAB_HI above)
         sta m_a+1
-        lda m_a
         asl
-        asl
-        asl
-        sec
-        sbc m_a
         clc
-        adc #<HUD_TAB
+        adc m_a+1
+        clc
+        adc #<HUD_TAB                ; HUD_TAB is an OFFSET inside bank $01
         sta zp_ptr
         lda #0
         adc #>HUD_TAB
         sta zp_ptr+1
-        ldy #3
-        lda (zp_ptr),y
+        lda #MAP_EXT_BANK            ; SET THE BANK BYTE, do not inherit it:
+        sta zp_ptr+2                 ;   init_level parks it here for the map
+                                     ;   readers, but the save/load picker draws
+                                     ;   these digits at the TITLE too, before
+                                     ;   init_level has ever run
+        ldy #1                       ; the VRAM address' low 16 bits
+?vram   lda [zp_ptr],y
+        sta hud_ent,y
+        dey
+        bpl ?vram
+        lda #HUD_TAB_HI              ; ...and the byte the table stopped storing
+        sta hud_ent+2
+        ldy #5                       ; w, h, left, top -> hud_ent+3..+6
+?rest   lda [zp_ptr],y
+        sta hud_ent+1,y
+        dey
+        cpy #1
+        bne ?rest
+        lda #<hud_ent
+        sta zp_ptr
+        lda #>hud_ent
+        sta zp_ptr+1
+        lda hud_ent+3                ; the width, as before
         rts
 .endp
+    .if * > HUDENT_END+1
+        ert 'hud_entry outgrew HUDENT_BASE..END (memory_map.inc)'
+    .endif
+        org hent_resume
 
 ;--------------------------------------------------------------
 ; hud_keys -- ST_drawKeys / w3d hud_draw_keys: one STKEYS glyph per PS_KEYS bit
@@ -423,15 +458,27 @@ mst_resume = *
 ;--------------------------------------------------------------
 ; msg_set -- Y = the bonus id that was just TAKEN -> the message for it, armed
 ;   for MSG_VB. p_inter.c assigns player->message inside every arm of the
-;   switch; here the id indexes the strip array, so one routine covers all 31.
-;   The +MSG_IDX0 is the nine automap level names sharing the array (the strips
+;   switch; here the id indexes the strip array, so one routine covers them all.
+;   The +MSG_IDX0 is the automap level names sharing the array (the strips
 ;   are one table so ONE blitter serves both -- automap.asm's header).
+;   GOTMEDINEED (2026-08-31): the medikit's other line. Vanilla tests
+;   health<25 AFTER P_GiveBody(25) (p_inter.c:477-480), which can never be
+;   true -- the famous unreachable message. This is the INTENT instead: the
+;   pickup was usable, so POST-add health < 50 is EXACTLY pre-add < 25 (the
+;   cap at 100 cannot pull a sum below 50). Y is preserved for the caller.
 ;--------------------------------------------------------------
 .proc msg_set
-        tya
+        cpy #2                       ; the medikit is bonus id 2 (GOTMEDIKIT)
+        bne ?norm
+        lda PSTATE+PS_HEALTH
+        cmp #50
+        bcs ?norm
+        lda #35+MSG_IDX0             ; GOTMEDINEED's strip (pack_menu.py)
+        bne ?arm                     ; (always: MSG_IDX0 > 0)
+?norm   tya
         clc
         adc #MSG_IDX0
-        sta msg_i
+?arm    sta msg_i
         lda #MSG_VB
         sta msg_t
         rts

@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
+; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -35,10 +35,12 @@
 ;==============================================================
 
 ;--------------------------------------------------------------
-; qsmul -- INLINED 8x8 -> 16 quarter-square.  qs_p(2) = (:1) * (:2)
+; qsmul -- INLINED 8x8 -> 16 quarter-square.  :3(2) = (:1) * (:2)
 ;   a*b = QSqr[a+b] - QSqr[|a-b|], QSqr[x]=floor(x^2/4) (qs_tables.inc).
 ;   tips2 #3: a macro inlined 4x into umul16 -> no jsr/rts, reads the
 ;   operand bytes directly (no qs_x/qs_y staging). Clobbers A,Y.
+;   :3 is the 16-bit DESTINATION -- qs_p for every caller but umul16's first
+;   product, which lands straight in m_prod and saves the copy that followed.
 ;--------------------------------------------------------------
 
 
@@ -47,31 +49,29 @@
         lda :1
         adc :2                     ; x+y (9-bit: Y=low8, carry=bit8)
         tay
-        bcs ?ext
-        lda QSqrLoBase,y
-        sta qs_p
-        lda QSqrHiBase,y
-        sta qs_p+1
-        jmp ?diff
-?ext    lda QSqrLoExt,y
-        sta qs_p
-        lda QSqrHiExt,y
-        sta qs_p+1
-?diff   sec                        ; |x-y| (0..255 -> Base table)
+        bcc ?base                  ; THE COMMON HALF FALLS THROUGH (2026-08-30).
+        lda QSqrLoExt,y            ;   x+y < 256 is 83 % of the executions
+        sta :3                     ;   (_peep_pc: 861 of 1040 a frame), and it
+        lda QSqrHiExt,y            ;   used to pay `bcs` + a 3-cycle `jmp` to
+        bcs ?have                  ;   skip this block. Now it pays one taken
+?base   lda QSqrLoBase,y           ;   branch and the RARE half carries the
+        sta :3                     ;   jump back -- `bcs` is unconditional
+        lda QSqrHiBase,y           ;   here, the adc's carry is still set
+?have   sta :3+1
+        sec                        ; |x-y| (0..255 -> Base table)
         lda :1
         sbc :2
         bcs ?dok
-        eor #$FF
-        clc
-        adc #1
-?dok    tay
-        sec                        ; qs_p -= QSqr[|x-y|]
-        lda qs_p
+        eor #$FF                   ; the carry is ALREADY clear -- that is what
+        adc #1                     ;   the bcs above just tested -- so the `clc`
+?dok    tay                        ;   that stood here was dead (2 cyc, 83 %)
+        sec                        ; :3 -= QSqr[|x-y|]
+        lda :3
         sbc QSqrLoBase,y
-        sta qs_p
-        lda qs_p+1
+        sta :3
+        lda :3+1
         sbc QSqrHiBase,y
-        sta qs_p+1
+        sta :3+1
 .endm
 
 ;--------------------------------------------------------------
@@ -89,11 +89,13 @@
         ;     multiplying by nothing. Testing for it costs 5 cycles and skips up
         ;     to 260 -- and it is not an approximation: the products it drops
         ;     ARE zero, so the 32-bit result is the same.
-        qsmul m_a, m_b             ; p00 = aL*bL -> bytes 0,1. Every path needs it,
-        lda qs_p                   ;   so it stays inline exactly once -- the
-        sta m_prod                 ;   skipping below is about the OTHER three.
-        lda qs_p+1
-        sta m_prod+1
+        qsmul m_a, m_b, m_prod     ; p00 = aL*bL, written STRAIGHT into bytes 0,1
+                                   ;   (2026-08-30). It used to land in qs_p and
+                                   ;   then be copied here -- 12 cycles on every
+                                   ;   one of the 1040 calls a frame, for nothing:
+                                   ;   only the OTHER three products need qs_p,
+                                   ;   because they are ADDED to m_prod. p00 has
+                                   ;   nothing to add to, so it can just land.
         lda #0                     ; bytes 2,3 start at zero and the products that
         sta m_prod+2               ;   would land there are now ADDED, not stored,
         sta m_prod+3               ;   which is what lets any of them be skipped
@@ -101,10 +103,16 @@
         ora m_b+1
         bne ?more
         rts                        ; both high bytes 0 -> p00 IS the product (44 %)
+?far10  jmp ?p10                   ; TRAMPOLINE (2026-08-30). ?p10 sits past two
+                                   ;   qsmul expansions, out of branch reach, so
+                                   ;   the test used to be `bne ?p01 / jmp ?p10`
+                                   ;   -- a TAKEN branch on the 99 % path. Now
+                                   ;   that path falls through and the 1 % path
+                                   ;   pays the hop. Unreachable by fallthrough:
+                                   ;   the rts above ends the block.
 ?more   lda m_b+1
-        bne ?p01
-        jmp ?p10                   ; bH = 0, aH != 0 -> only p10 is left (1 %)
-?p01    qsmul m_a, m_b+1           ; p01 = aL*bH -> add at byte 1
+        beq ?far10                 ; bH = 0, aH != 0 -> only p10 is left (1 %)
+?p01    qsmul m_a, m_b+1, qs_p     ; p01 = aL*bH -> add at byte 1
         clc
         lda m_prod+1
         adc qs_p
@@ -117,7 +125,7 @@
 ?p11    lda m_a+1
         bne ?p11go
         rts                        ; aH = 0 -> p10 = p11 = 0 (another 32 %)
-?p11go  qsmul m_a+1, m_b+1         ; p11 = aH*bH -> add at byte 2
+?p11go  qsmul m_a+1, m_b+1, qs_p         ; p11 = aH*bH -> add at byte 2
         clc
         lda m_prod+2
         adc qs_p
@@ -125,7 +133,7 @@
         lda m_prod+3
         adc qs_p+1
         sta m_prod+3
-?p10    qsmul m_a+1, m_b           ; p10 = aH*bL -> add at byte 1
+?p10    qsmul m_a+1, m_b, qs_p           ; p10 = aH*bL -> add at byte 1
         clc
         lda m_prod+1
         adc qs_p
@@ -333,6 +341,12 @@ sm14_resume = *
 ;   BIT-IDENTICAL to smul_14 (tools/_verify_fractab.py, 0 mismatches/256 angles).
 ;     |var|*|const| = T[var_lo] + (T[var_hi] << 8)   (2 lookups + shifted add)
 ;   FMUL :1=Tlo :2=Tmi :3=Thi :4=const_sign_var.  in m_a(signed16) -> m_res.
+;   2026-08-31: the tables moved to bank $01 (FRAC_EXT, memory_map.inc) -- the
+;   win2 pages cost 2.9 ms/frame at x11.2 and bank $01 is full speed. There is
+;   no long,y on the 65816, so the mixed ,x/,y read order became TWO X phases:
+;   the hi-index reads first, parked in qs_p, then the lo-index reads join the
+;   same sums in the same carry order (addition commutes; byte1 is kept for its
+;   carry alone either way). Y is no longer touched at all.
 .macro FMUL
         lda :4                     ; total sign = sign(var) XOR sign(const)
         sta m_sign
@@ -350,15 +364,19 @@ sm14_resume = *
         ;     the view transform calls four times per vertex. Same number, not a
         ;     cheaper approximation of it: 4*T[b] is exact (< 2^24) and the sum
         ;     still fits 32 bits, so <<2 never loses a bit here either.
-?abs    ldx m_a                    ; lo byte index
-        ldy m_a+1                  ; hi byte index
+?abs    ldx m_a+1                  ; hi byte index, phase 1
         clc
-        lda :2,x                   ; byte1 = Tmi[lo] + Tlo[hi]  (carry only)
-        adc :1,y
-        lda :3,x                   ; byte2 = Thi[lo] + Tmi[hi] + carry
-        adc :2,y
+        lda.l FRAC_EXT+:2,x        ; Tmi[hi] -> byte2's other half
+        sta qs_p
+        lda.l FRAC_EXT+:3,x        ; Thi[hi] -> byte3, parked in Y (tay/tya is
+        tay                        ;   2 cycles cheaper than a qs_p+1 roundtrip
+        lda.l FRAC_EXT+:1,x        ;   and neither touches the carry)
+        ldx m_a                    ; lo byte index, phase 2 (ldx keeps carry)
+        adc.l FRAC_EXT+:2,x        ; byte1 = Tlo[hi] + Tmi[lo]  (carry only)
+        lda qs_p
+        adc.l FRAC_EXT+:3,x        ; byte2 = Tmi[hi] + Thi[lo] + carry
         sta m_res
-        lda :3,y                   ; byte3 = Thi[hi] + carry
+        tya                        ; byte3 = Thi[hi] + carry
         adc #0
         sta m_res+1
         lda m_sign                 ; apply sign
@@ -373,6 +391,22 @@ sm14_resume = *
 ?done
 .endm
 
+;--------------------------------------------------------------
+; The FRACTAB block ($1920-$1A10): build_frac_tables' body moved to bank $01
+; (b1_build_frac, bank01.asm -- it writes the six table pages, and those live
+; in bank $01 now, so the builder follows them and its 1,536 stores stop
+; paying win2's x11.2 on every rotation frame). What stays here is its thunk
+; -- frame_setup TAIL-JUMPS in, so the rts hands control back to
+; frame_setup's caller -- and the two fmul procs, which grew 17 bytes each on
+; the long,x restructure and no longer fit the byteless $2000 segment.
+;--------------------------------------------------------------
+bft_resume = *
+        org FRACTAB_BASE
+.proc build_frac_tables
+        jsl B1CODE_BASE+b1_build_frac
+        rts
+.endp
+
 .proc fmul_sin
         FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn
         rts
@@ -384,103 +418,24 @@ sm14_resume = *
 .endp
 
 ;--------------------------------------------------------------
-; build_frac_tables -- (re)build TSIN/TCOS so T[b] = 4*|sin|*b, 4*|cos|*b
-;   (b=0..255) via running sum (no multiplies). Also latches sin_sgn/cos_sgn.
-;   Called from frame_setup ONLY when the angle changed since the last build
-;   (frame_ang gate, renderer.asm) -- walking straight costs nothing.
-;   Relocated to FRACTAB_BASE: it runs at most ONCE a frame, so the $2000
-;   segment (which the seg-level frustum reject pushed against its $3C73
-;   ceiling) is the wrong home for 150 bytes of it. Still Rapidus-fast RAM,
-;   because the 24576 cycles it does spend are one tight loop.
+; sq2_lt_init -- mv_reset's per-level tail chain, rerouted through here so the
+;   SQ2 homes get repainted from the bank $01 masters after EVERY level load
+;   (load_things streams the THINGS blob straight over $C900-$CCFE). The ROM
+;   is out for the whole init chain, so the restore's stores land in RAM.
+;   Skip this and every wall is garbage from frame one (paint.asm pt_dy).
 ;--------------------------------------------------------------
-bft_resume = *
-        org FRACTAB_BASE
-.proc build_frac_tables
-        ; --- |sin| + sign -> TSIN ---
-        lda #0
-        sta sin_sgn
-        lda zp_sin
-        sta m_a
-        lda zp_sin+1
-        sta m_a+1
-        bpl ?sp
-        inc sin_sgn
-        jsr m_neg
-?sp     jsr ?step4                 ; m_ma = |sin| << 2 -- the >>14 FMUL used to
-        lda #0                     ;   pay eight shifts for, folded into the
-        sta m_prod                 ;   table once per rotation frame instead
-        sta m_prod+1
-        sta m_prod+2
-        sta TSIN_LO
-        sta TSIN_MI
-        sta TSIN_HI
-        ldx #1
-?sl     clc                        ; acc += 4*|sin|; store T[x]
-        lda m_prod
-        adc m_ma
-        sta m_prod
-        sta TSIN_LO,x
-        lda m_prod+1
-        adc m_ma+1
-        sta m_prod+1
-        sta TSIN_MI,x
-        lda m_prod+2
-        adc m_ma+2
-        sta m_prod+2
-        sta TSIN_HI,x
-        inx
-        bne ?sl
-        ; --- |cos| + sign -> TCOS ---
-        lda #0
-        sta cos_sgn
-        lda zp_cos
-        sta m_a
-        lda zp_cos+1
-        sta m_a+1
-        bpl ?cp
-        inc cos_sgn
-        jsr m_neg
-?cp     jsr ?step4
-        lda #0
-        sta m_prod
-        sta m_prod+1
-        sta m_prod+2
-        sta TCOS_LO
-        sta TCOS_MI
-        sta TCOS_HI
-        ldx #1
-?cl     clc
-        lda m_prod
-        adc m_ma
-        sta m_prod
-        sta TCOS_LO,x
-        lda m_prod+1
-        adc m_ma+1
-        sta m_prod+1
-        sta TCOS_MI,x
-        lda m_prod+2
-        adc m_ma+2
-        sta m_prod+2
-        sta TCOS_HI,x
-        inx
-        bne ?cl
-        rts
-?step4  lda m_a                    ; m_ma(24b) = m_a << 2. |sin| reaches 16384
-        asl                        ;   (Q14 1.0), so 4*|sin| needs 17 bits and
-        sta m_ma                   ;   the running sum needs a 3-byte step.
-        lda m_a+1
-        rol
-        sta m_ma+1
-        lda #0
-        rol
-        sta m_ma+2
-        asl m_ma
-        rol m_ma+1
-        rol m_ma+2
-        rts
+.proc sq2_lt_init
+        jsl B1CODE_BASE+b1_sq2_restore
+        jsr wp_flight                ; extralight off + lt_seg call retargeted
+                                     ;   to normal: wp_init has just parked the
+                                     ;   flash state at WS_NULL, so an exit or
+                                     ;   death MID-FLASH cannot carry a lit
+                                     ;   view into the new level (g_game.c:788
+                                     ;   "cancel gun flashes")
+        jmp lt_init
 .endp
-    .if * > FRACTAB_END+1
-        ert 'build_frac_tables outgrew FRACTAB_BASE..END (memory_map.inc)'
+    .if * > PLKICK2_BASE
+        ert 'the FRACTAB block ran into PL_KICK2 -- $19CB is the REAL ceiling here, not FRACTAB_END (pl_kick2/trig_light took the old slack)'
     .endif
         org bft_resume
 
@@ -489,49 +444,55 @@ bft_resume = *
 ;   (zp_X, zp_Z signed16) via the frac-table muls (frame sin/cos).
 ;     X = (rx*sin - ry*cos) >> 14 ;  Z = (rx*cos + ry*sin) >> 14
 ;--------------------------------------------------------------
+; 16-BIT (2026-08-29): everything here is a 16-bit coordinate, so the halves
+; go. The engine is in 65816 NATIVE mode already (underrom.asm), so a block
+; costs rep/sep = 6 cycles and no clc/xce; M only, X/Y stay 8-bit because the
+; digi IRQ inherits them (sound.asm:316). fmul_sin/fmul_cos are 8-bit code.
 .proc transform
+        rep #$20                   ; ---- 16-bit A
+        .LONGA ON
         lda zp_rx                  ; X = rx*sin - ry*cos
         sta m_a
-        lda zp_rx+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta zp_X
-        lda m_res+1
-        sta zp_X+1
         lda zp_ry
         sta m_a
-        lda zp_ry+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+        rep #$20
+        .LONGA ON
         sec
         lda zp_X
         sbc m_res
         sta zp_X
-        lda zp_X+1
-        sbc m_res+1
-        sta zp_X+1
         lda zp_rx                  ; Z = rx*cos + ry*sin
         sta m_a
-        lda zp_rx+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+        rep #$20
+        .LONGA ON
         lda m_res
         sta zp_Z
-        lda m_res+1
-        sta zp_Z+1
         lda zp_ry
         sta m_a
-        lda zp_ry+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         clc
         lda zp_Z
         adc m_res
         sta zp_Z
-        lda zp_Z+1
-        adc m_res+1
-        sta zp_Z+1
+        .LONGA OFF
+        sep #$20
         rts
 .endp
 
@@ -843,29 +804,31 @@ udiv_resume = *
         sbc m_prod+2
         sta rs_mag+2
         jmp ?mul
-?pos    lda m_prod
-        sta rs_mag
+?pos    rep #$20                   ; ---- 16-bit A: a 24-bit copy is two OVERLAPPING
+        .LONGA ON                  ;   16-bit moves (bytes 0-1 then 1-2), which
+        lda m_prod                 ;   never touches byte 3 and costs four
+        sta rs_mag                 ;   instructions instead of six
         lda m_prod+1
         sta rs_mag+1
-        lda m_prod+2
-        sta rs_mag+2
-?mul    lda rs_mag                 ; lo16 * invm -> rs_acc[0..3], acc[4]=0
+        .LONGA OFF
+        sep #$20
+?mul    rep #$20                   ; lo16 * invm -> rs_acc[0..3], acc[4]=0
+        .LONGA ON
+        lda rs_mag
         sta m_a
-        lda rs_mag+1
-        sta m_a+1
         lda rs_invm
         sta m_b
-        lda rs_invm+1
-        sta m_b+1
+        .LONGA OFF
+        sep #$20
         jsr umul16
+        rep #$20                   ; ...and a 32-bit copy is two 16-bit moves
+        .LONGA ON
         lda m_prod
         sta rs_acc
-        lda m_prod+1
-        sta rs_acc+1
         lda m_prod+2
         sta rs_acc+2
-        lda m_prod+3
-        sta rs_acc+3
+        .LONGA OFF
+        sep #$20
         lda #0
         sta rs_acc+4
         lda rs_mag+2               ; hi8 * invm -> add at byte offset 2

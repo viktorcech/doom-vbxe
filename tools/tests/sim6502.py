@@ -111,9 +111,20 @@ for code, mn, mode, cyc, pc in [
     # Without these two the sim died on opcode $22 the first time an imp
     # needed aif_oct.
     (0x22, 'jsl', LAB, 8, 0), (0x6B, 'rtl', IMP, 6, 0),
+    # ...and JML, the stackless long jump: am_gate is one `jml b1_amgate` and
+    # b1_amgate jml's back into bank-0 code (2026-08-31). Same PBR treatment
+    # as jsl -- the bench mirrors bank $01 code into the same bank-0 addresses,
+    # so the 16-bit pc keeps working (see _bench_frame.py B1_LO/B1_HI).
+    (0x5C, 'jml', LAB, 4, 0),
     (0x90, 'bcc', REL, 2, 0), (0xB0, 'bcs', REL, 2, 0), (0xF0, 'beq', REL, 2, 0),
     (0xD0, 'bne', REL, 2, 0), (0x30, 'bmi', REL, 2, 0), (0x10, 'bpl', REL, 2, 0),
     (0x50, 'bvc', REL, 2, 0), (0x70, 'bvs', REL, 2, 0),
+    # 65C02/65816 BRA. One single use in the whole port (enemy_ai.asm), which
+    # is why it went unnoticed until a level whose AI path reaches it was
+    # profiled: the sim died with "opcode $80 at $3E19" on E1M4. Base cost 2
+    # like the conditional branches; the taken/page-cross cycles are added in
+    # the executor, and BRA is always taken.
+    (0x80, 'bra', REL, 2, 0),
     (0x18, 'clc', IMP, 2, 0), (0x38, 'sec', IMP, 2, 0), (0xD8, 'cld', IMP, 2, 0),
     (0x58, 'cli', IMP, 2, 0), (0x78, 'sei', IMP, 2, 0), (0xB8, 'clv', IMP, 2, 0),
     (0xAA, 'tax', IMP, 2, 0), (0xA8, 'tay', IMP, 2, 0), (0x8A, 'txa', IMP, 2, 0),
@@ -193,6 +204,13 @@ class Sim:
             s.mem[lo:lo + n] = d[i:i + n]
             i += n
         s.sym = load_syms()
+        # NATIVE mode, 8-bit A/X/Y -- the state every engine .proc actually
+        # runs in (underrom.asm's ROM-OUT <=> native invariant). In emulation
+        # a rep #$20 is a no-op, so a harness that forgot this executed the
+        # THIRD byte of a 16-bit immediate as an opcode the moment
+        # calc_nodeptr went 16-bit (opcode $87 at $2CE6, 2026-08-31).
+        # Thirteen _verify_* harnesses relied on the old emulation default.
+        s.e, s.m, s.xf = 0, 1, 1
         return s
 
     # ---- memory --------------------------------------------------------
@@ -562,6 +580,9 @@ class Sim:
             self.sp = (self.sp - 1) & 0xFF
             self.pbr = (addr >> 16) & 0xFF
             nxt = addr & 0xFFFF
+        elif mn == 'jml':                 # 65816: long jump, no stack
+            self.pbr = (addr >> 16) & 0xFF
+            nxt = addr & 0xFFFF
         elif mn == 'rtl':
             self.sp = (self.sp + 1) & 0xFF; lo = self.mem[0x100 + self.sp]
             self.sp = (self.sp + 1) & 0xFF; hi = self.mem[0x100 + self.sp]
@@ -582,10 +603,11 @@ class Sim:
                 self.m, self.xf = (p >> 5) & 1, (p >> 4) & 1
                 widths()                  #   has a PBR byte under the PC
                 self.sp = (self.sp + 1) & 0xFF
-        elif mn in ('bcc', 'bcs', 'beq', 'bne', 'bmi', 'bpl', 'bvc', 'bvs'):
+        elif mn in ('bcc', 'bcs', 'beq', 'bne', 'bmi', 'bpl', 'bvc', 'bvs',
+                    'bra'):
             take = {'bcc': not self.c, 'bcs': self.c, 'beq': self.z,
                     'bne': not self.z, 'bmi': self.n, 'bpl': not self.n,
-                    'bvc': not self.v, 'bvs': self.v}[mn]
+                    'bvc': not self.v, 'bvs': self.v, 'bra': True}[mn]
             if take:
                 self.cyc += 1
                 if (addr & 0xFF00) != ((pc + 2) & 0xFF00):

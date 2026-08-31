@@ -26,6 +26,7 @@ mads.exe
 /map_syms.inc
 /menu_syms.inc
 /mk_tables.inc
+/snd_pitch.inc
 /sound_tables.inc
 /weap_tables.inc
 /wi_syms.inc

@@ -1068,8 +1068,15 @@ pj_ssh  dta 0,0,0,0,0,0,0,0          ;   walk ever reads (PJ_NSLOT of each)
 ; spr_chasec -- spr_add's chase hook, retargeted a second time (sprites.asm
 ;   calls it instead of spr_chaseb): the ball's chain first, then every bolt
 ;   whose leaf is the one the walk is in.
+;   2026-08-31: moved OUT of PJHK_BASE (win2, x11.2) into SPRCHC_BASE, the
+;   $2000 segment's tail hole -- it runs on EVERY subsector of the walk (31.6
+;   calls/frame, 339 us/f of pure chip-rate fetches, _bench_subsys) and its
+;   hot path is four instructions. pj_any rides along: it was the hot path's
+;   one win2 data read. The pj_ctx vars stay at PJHK_BASE, contiguous as
+;   required.
 ;--------------------------------------------------------------
-        org PJHK_BASE
+sprchc_resume = *
+        org SPRCHC_BASE
 .proc spr_chasec
         jsr spr_chaseb
         lda pj_any                   ; nothing flying anywhere (the usual
@@ -1093,6 +1100,14 @@ pj_ssh  dta 0,0,0,0,0,0,0,0          ;   walk ever reads (PJ_NSLOT of each)
         bpl ?lp
 ?out    rts
 .endp
+pj_any  dta 0                        ; OR of the eight pj_ons (pj_orup): 0 = no
+                                     ;   bolt flying anywhere. Lives with its
+                                     ;   only per-frame reader now.
+    .if * > SPRCHC_END+1
+        ert 'spr_chasec + pj_any outgrew SPRCHC_BASE..END (memory_map.inc)'
+    .endif
+        org sprchc_resume
+        org PJHK_BASE
 
 ;--------------------------------------------------------------
 ; THE PER-BOLT CONTEXT (2026-08-09). One shot's whole flight, 31 bytes, and
@@ -1144,9 +1159,8 @@ PJ_CTXN equ *-pj_ctx                 ; 36: was 31, +4 for the z leg and +1 for
 ; ...and the SHARED half: scratch and level state, one copy for all bolts.
 ;--------------------------------------------------------------
 pj_cur  dta 0                        ; the slot the context above belongs to
-pj_any  dta 0                        ; OR of the eight pj_ons (pj_orup): 0 = no
-                                     ;   bolt anywhere, the render walk's first
-                                     ;   and usually only question
+                                     ; (pj_any moved to the FRACTAB block with
+                                     ;   spr_chasec, its per-frame reader)
 pj_ti   dta 0                        ; pj_thit: the caller's X, parked (the
                                      ;   sweep cursor is X itself now)
 pj_bd   dta 0                        ; ...and this candidate's blockdist

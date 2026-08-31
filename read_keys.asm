@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
+; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -214,8 +214,13 @@ CHT_LEN equ * - cht_tab
 ;     needs its pw_aidx indirection because give_bonus hands it a bonus id; here
 ;     the four types ARE PSTATE+PS_BULLETS..PS_CELLS in pw_amax's own order, so
 ;     the same X indexes both and the lookup is three bytes that need not exist.
-;   * DOOM answers with a MESSAGE (STSTR_KFAADDED) and this HUD has no message
-;     line, so the weapon-pickup sound is the acknowledgement instead.
+;   * DOOM answers with a MESSAGE (STSTR_KFAADDED) and nothing else -- no sound.
+;     This used to end `lda #SFX_WPNUP / sta snd_pending` as a stand-in for the
+;     message line the HUD does not have (2026-08-29: removed). st_stuff.c's
+;     cht_CheckCheat block for cheat_ammo sets armour, weapons, ammo and cards
+;     and assigns plyr->message; S_StartSound appears nowhere in it, and none of
+;     the other cheats make a noise either. The acknowledgement is the HUD
+;     itself: the ARMS boxes light up, the armour reads 200 and the keys appear.
 ;--------------------------------------------------------------
         org CHTGIVE_BASE
 .proc cht_give
@@ -230,9 +235,9 @@ CHT_LEN equ * - cht_tab
         sta PSTATE+PS_BULLETS,x
         dex
         bpl ?am
-        lda #SFX_WPNUP
-        sta snd_pending
-        rts
+        rts                           ; SILENT -- see the note above. A cheat that
+                                      ;   announces itself with the weapon-pickup
+                                      ;   sound is not what m_cheat.c does.
 .endp
     .if * > CHTGIVE_END+1
         ert 'cht_give outgrew CHTGIVE_BASE..END (memory_map.inc)'

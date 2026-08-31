@@ -567,14 +567,14 @@ twem_resume = *
     .endif
         lda tw_wt+1                  ; t0 = first texel the span touches
         sta tw_t0
-        qsmul tw_h, rs_tpr           ; m_prod = h*tpr + wt  -> last texel at >>8
+        qsmul tw_h, rs_tpr, qs_p           ; m_prod = h*tpr + wt  -> last texel at >>8
         lda qs_p
         sta m_prod
         lda qs_p+1
         sta m_prod+1
         lda #0
         sta m_prod+2
-        qsmul tw_h, rs_tpr+1
+        qsmul tw_h, rs_tpr+1, qs_p
         clc
         lda m_prod+1
         adc qs_p
@@ -745,7 +745,7 @@ twruns_resume = *
         ; The run is capped anyway, so first just check whether a FULL run would
         ; still land inside the tile -- it usually does, and then the divide is
         ; skipped entirely (it used to cost more than the blit it set up).
-?havoff qsmul tw_cnm1, tw_spy        ; (TW_RUNROWS-1) * spy
+?havoff qsmul tw_cnm1, tw_spy, qs_p        ; (TW_RUNROWS-1) * spy
         clc
         lda qs_p
         adc tw_off
@@ -791,7 +791,7 @@ twruns_resume = *
 ?nfull  lda #TW_RUNROWS
         sta tw_n
 ?haven
-        qsmul tw_n, tw_rpt           ; avail = n*rpt dest rows (multiple of rpt)
+        qsmul tw_n, tw_rpt, qs_p           ; avail = n*rpt dest rows (multiple of rpt)
         lda qs_p
         sta tw_dr
         lda qs_p+1
@@ -838,7 +838,7 @@ twruns_resume = *
         jsr udiv16
         lda m_quot
         sta tw_n1
-        qsmul tw_n1, tw_rpt
+        qsmul tw_n1, tw_rpt, qs_p
         sec                          ; r = dr - n1*rpt  (0..rpt-1 leftover rows)
         lda tw_dr
         sbc qs_p
@@ -859,7 +859,7 @@ twruns_resume = *
 ?rest   lda tw_r
         bne ?dorest
         jmp ?adv
-?dorest qsmul tw_n1, tw_rpt          ; the leftover rows continue the last sample
+?dorest qsmul tw_n1, tw_rpt, qs_p          ; the leftover rows continue the last sample
         clc
         lda tw_row
         adc qs_p
@@ -868,7 +868,7 @@ twruns_resume = *
         sec
         sbc #1
         sta tw_bh
-        qsmul tw_n1, tw_spy          ; source sample off + n1*spy
+        qsmul tw_n1, tw_spy, qs_p          ; source sample off + n1*spy
         clc
         lda tw_off
         adc qs_p
@@ -889,14 +889,14 @@ twruns_resume = *
         bne ?keeprun
         jmp ?fill
 ?keeprun
-        qsmul tw_dr, rs_tpr          ; wt += dr*tpr (dr is a byte -> 2 qsmuls),
+        qsmul tw_dr, rs_tpr, qs_p          ; wt += dr*tpr (dr is a byte -> 2 qsmuls),
         lda qs_p                     ; then reduce mod texH*256
         sta m_prod
         lda qs_p+1
         sta m_prod+1
         lda #0
         sta m_prod+2
-        qsmul tw_dr, rs_tpr+1
+        qsmul tw_dr, rs_tpr+1, qs_p
         clc
         lda m_prod+1
         adc qs_p

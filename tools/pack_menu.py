@@ -112,6 +112,26 @@ NAMES = {
     'E3M5': 'E3M5: Unholy Cathedral', 'E3M6': 'E3M6: Mt. Erebus',
     'E3M7': 'E3M7: Limbo', 'E3M8': 'E3M8: Dis',
     'E3M9': 'E3M9: Warrens',
+    # hu_stuff.c mapnames_commercial (d_englsh.h HUSTR_1..32) -- DOOM II, and
+    # what vanilla shows for a PWAD's MAPxx too: the name comes from the IWAD's
+    # table, not from the map. Without these, converting any MAPxx WAD died
+    # right here on a KeyError with every level already packed. (2026-08-30)
+    'MAP01': 'MAP01: Entryway', 'MAP02': 'MAP02: Underhalls',
+    'MAP03': 'MAP03: The Gantlet', 'MAP04': 'MAP04: The Focus',
+    'MAP05': 'MAP05: The Waste Tunnels', 'MAP06': 'MAP06: The Crusher',
+    'MAP07': 'MAP07: Dead Simple', 'MAP08': 'MAP08: Tricks and Traps',
+    'MAP09': 'MAP09: The Pit', 'MAP10': 'MAP10: Refueling Base',
+    'MAP11': 'MAP11: Circle of Death', 'MAP12': 'MAP12: The Factory',
+    'MAP13': 'MAP13: Downtown', 'MAP14': 'MAP14: The Inmost Dens',
+    'MAP15': 'MAP15: Industrial Zone', 'MAP16': 'MAP16: Suburbs',
+    'MAP17': 'MAP17: Tenements', 'MAP18': 'MAP18: The Courtyard',
+    'MAP19': 'MAP19: The Citadel', 'MAP20': 'MAP20: Gotcha!',
+    'MAP21': 'MAP21: Nirvana', 'MAP22': 'MAP22: The Catacombs',
+    'MAP23': 'MAP23: Barrels o Fun', 'MAP24': 'MAP24: The Chasm',
+    'MAP25': 'MAP25: Bloodfalls', 'MAP26': 'MAP26: The Abandoned Mines',
+    'MAP27': 'MAP27: Monster Condo', 'MAP28': 'MAP28: The Spirit World',
+    'MAP29': 'MAP29: The Living End', 'MAP30': 'MAP30: Icon of Sin',
+    'MAP31': 'MAP31: Wolfenstein', 'MAP32': 'MAP32: Grosse',
 }
 TITLES = tuple(NAMES['E1M%d' % i] for i in range(1, 10))
 
@@ -166,6 +186,19 @@ MESSAGES = (
     'Light Amplification Visor',          # 29 GOTVISOR
     'Invulnerability!',                   # 30 GOTINVUL
     'Berserk!',                           # 31 GOTBERSERK
+    'Picked up a blue skull key.',        # 32 GOTBLUESKUL   (2026-08-31: skulls
+    'Picked up a yellow skull key.',      # 33 GOTYELWSKUL    stopped borrowing
+    'Picked up a red skull key.',         # 34 GOTREDSKULL    the card ids)
+    'A medikit that you REALLY need!',    # 35 GOTMEDINEED -- vanilla tests
+                                          # health<25 AFTER the +25
+                                          # (p_inter.c:477-480), so ITS line
+                                          # never shows; msg_set implements the
+                                          # intent (post-add <50 == pre-add
+                                          # <25). SHORTENED from d_englsh.h's
+                                          # 41 chars: a strip is TITLE_W=128 B
+                                          # wide and the full sentence needs
+                                          # 143 -- widening the stride doubles
+                                          # every strip's VRAM for one line.
 )
 LEVEL_NAMES = ()                 # set_levels fills it; EPI_FIRST needs it
 MSG_IDX0 = len(TITLES) - 1       # strip index of bonus id 1 is MSG_IDX0+1, so
@@ -178,7 +211,10 @@ def set_levels(names):
     --levels). MSG_IDX0 moves with the name count and reaches the engine as a
     menu_syms.inc equ, so hud.asm's `adc #MSG_IDX0` re-numbers itself."""
     global TITLES, MSG_IDX0, LEVEL_NAMES
-    TITLES = tuple(NAMES[nm] for nm in names)
+    # .get, not [] -- a converted WAD may call its maps anything at all, and a
+    # map with no entry in hu_stuff.c's tables gets its own name on the strip
+    # instead of taking the whole build down (2026-08-30).
+    TITLES = tuple(NAMES.get(nm, nm) for nm in names)
     MSG_IDX0 = len(TITLES) - 1
     LEVEL_NAMES = tuple(names)
 

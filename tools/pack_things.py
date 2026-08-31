@@ -251,7 +251,19 @@ SPEC = {                     # special: (flags, floor kind)
                                                  #    case 46 = EV_DoDoor(open)).
                                                  #   E1M2's secret door, and the
                                                  #   only gun line in episode 1
+    # ---- CRUSHERS (2026-08-29, p_ceilng.c EV_DoCeiling) --------------------
+    # Door records again -- the tagged sectors already carry one (pack_map
+    # _doors, LOCK bit3), and the port's only ceiling machinery is the door
+    # mover. What tells trig_fire this is a crusher and not a door is the DST
+    # field, which a door record has never used ("MAP_DOORS has the height"):
+    # CRUSH_SLOW/FAST start it, CRUSH_HALT is EV_CeilingCrushStop. All three
+    # are WR -- no F_ONCE, no fired bit, cross them as often as you like.
+    73: (F_DOOR, 0),                             # WR crushAndRaise (CEILSPEED)
+    77: (F_DOOR, 0),                             # WR fastCrushAndRaise (x2)
+    74: (F_DOOR, 0),                             # WR stop the crusher
 }
+# A door record's dst: 0 = an ordinary door, the rest are p_ceilng.c's.
+CRUSH_SLOW, CRUSH_FAST, CRUSH_HALT = 1, 2, 3
 
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -316,6 +328,19 @@ THINGS_MAX = 0x0F80           # $C000..$CF7F under the OS ROM: 31 whole SECTORS.
                               # and the slot PADDING wiped it -- the 2026-08-04
                               # freeze) -> switch_match moved to $8120 and the
                               # missile sprites (proj.asm) pushed E1M6 to 3821.
+                              # 2026-08-29: this is PIECE 1 only -- header,
+                              # subsector prefix, things, sprite table.
+THINGS_SECT = THINGS_MAX // 128        # 31 -- load_things' first read
+THINGS2_BASE = 0xDA00         # PIECE 2: triggers, raise-and-change, teleport
+THINGS2_MAX = 0x0780          #   destinations, spawnhealth. $DA00..$E17F, the
+                              # map HIGH region's unused tail (pack_map.HI_LIMIT
+                              # stops at $DA00 to hand it over) and the last
+                              # base RAM in the machine that is neither hot nor
+                              # behind a Rapidus bank. It exists because the
+                              # crushers' trigger records (E2M2: 10 WR lines x 3
+                              # tagged sectors) do not fit the 31 sectors above,
+                              # on a map that was ALREADY dropping decorations.
+                              # Ordinary RAM, absolute addressing, same speed.
 # Skill the engine ships with: 2 = "Hey, not too rough" (skills 1 and 2 share the
 # MTF_EASY flag). E1M1 then has 4 monsters instead of 29 on UV -- item and
 # decoration counts barely change.
@@ -337,7 +362,13 @@ BONUS = {
     2010: 12, 2046: 13,          # rocket / box of rockets
     2047: 14, 17: 15,            # cell / cell pack
     2001: 16, 2002: 17, 2003: 18, 2004: 19, 2006: 20, 2005: 21,   # weapons
-    5: 22, 40: 22, 6: 23, 39: 23, 13: 24, 38: 24,                 # keys (card|skull)
+    # keys: cards and skulls open the same locks (the same PS_KEYS bit --
+    # give_bonus's key branch reads BN_AMT alone), but they are SEPARATE bonus
+    # ids since 2026-08-31 so the E2/E3 skulls say "skull key" and not
+    # "keycard" (d_englsh.h GOTBLUESKUL vs GOTBLUECARD; ids 32-34 carry the
+    # same 1/2/4 in BN_AMT).
+    5: 22, 6: 23, 13: 24,                                         # keycards
+    40: 32, 39: 33, 38: 34,                                       # skull keys
     # 25..31 the POWERS + the backpack (2026-08-01, powerups.asm). 2022/2023 are
     # not reachable in episode 1 at SKILL 2, but the id costs nothing and a UV
     # build then needs no change here. 83 (megasphere) is DOOM II only.
@@ -2551,6 +2582,11 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
                               or [sec.light])
                 else:
                     dst = 35
+            elif ld.special in doomspecs.CRUSHER:
+                dst = (CRUSH_SLOW if doomspecs.CRUSHER[ld.special] == 1
+                       else CRUSH_FAST)
+            elif ld.special in doomspecs.CRUSH_STOP:
+                dst = CRUSH_HALT
             elif flags & F_DOOR:
                 dst = 0
             elif kind == 8:                  # RAISE_BY: a fixed climb, and the
@@ -2656,7 +2692,18 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
         'a sector id ran into the flag bits (b8 = gun, b9 = door-close, b10 = tele)'
     assert len(md.sectors) <= 255, \
         f'{len(md.sectors)} sectors: a trigger record only has b0-b7 for the id'
-    p_trig = p_sprtab + len(tab) * 8
+    # ---- PIECE 2 (2026-08-29). Everything from the trigger table on lives at
+    # THINGS2_BASE ($DA00-$E2FF, memory_map.inc), not behind the sprite table:
+    # the 31 sectors at $C000 end at $CF7F with BTNUPD right above, and E2M2
+    # was already dropping decorations and the BFG ball's frames to fit. The
+    # crushers' trigger records (10 lines x 3 sectors on E2M2 alone) did not.
+    # $DA00 is the map HIGH region's unused tail -- HIGH has been 4 sectors
+    # since SSECTORS left for the EXT bank, and pack_map.HI_LIMIT now stops at
+    # $DA00 to say so. It is ORDINARY under-ROM RAM, so nothing that reads a
+    # trigger, a teleport destination or a spawnhealth got slower: the readers
+    # follow the header's absolute pointers and never knew where they pointed.
+    # load_things streams it with a second read_urom (load_things2, diskio.asm).
+    p_trig = THINGS2_BASE
     # the raise-and-change table rides straight behind the triggers, so the
     # engine finds it with no header field of its own: p_trig + n_trig*16.
     # (u8 trigger index, u8 the floor colour that sector takes), $FF ends it.
@@ -2683,20 +2730,21 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
         out += struct.pack('<BBBBBbBB', fid, 0, 0,    # B1: byte 0 = frame id
                            w, h, left, top,
                            bonus_of.get(i, 0) or kind_of.get(i, 0))
+    out2 = bytearray()                 # ...and PIECE 2, based at THINGS2_BASE
     for _ti, (a1, a2, mid, sec_w, dst, spd) in enumerate(trig):   # 16 B each
         # roomA, SPEED, roomB, pad. A sector id is a byte (the assert above), so
         # the two u16 room slots were carrying a zero high byte each; one of them
         # is the per-record floor speed now. $FF = "no room", which cannot be a
         # sector id because the assert stops one short of it.
-        out += struct.pack('<BBBB', a1 & 0xFF, spd, a2 & 0xFF,
-                           xkind.get(_ti, 0)) + mid + struct.pack('<Hh', sec_w, dst)
+        out2 += struct.pack('<BBBB', a1 & 0xFF, spd, a2 & 0xFF,
+                            xkind.get(_ti, 0)) + mid + struct.pack('<Hh', sec_w, dst)
     for ti, pal in chg:                             # p_plats.c raise AND CHANGE
-        out += struct.pack('<BB', ti, pal)
-    out += bytes([0xFF])
+        out2 += struct.pack('<BB', ti, pal)
+    out2 += bytes([0xFF])
     for (tx, ty, tang) in tele:                     # 8 B each (index * 8)
-        out += struct.pack('<hhBBBB', tx, ty, tang, 0, 0, 0)
+        out2 += struct.pack('<hhBBBB', tx, ty, tang, 0, 0, 0)
     for i in range(len(tab)):                       # [len(tab)] u16 spawnhealth,
-        out += struct.pack('<H', hp_of.get(i, 0))   #   0 = not shootable
+        out2 += struct.pack('<H', hp_of.get(i, 0))  #   0 = not shootable
     n_shoot = sum(1 for t in things if t[6])
     if n_shoot:
         print(f'  shootable: {n_shoot} of {len(things)} things, '
@@ -2797,7 +2845,30 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
               f'{pack_los.GRID_N} cells ({len(los)} B .los)')
     print(f'  T4 crop + B1 ftab: {len(frames)} frames, .sprcol {len(sprcol)} B '
           f'(coltabs {SPRCOL_BASE:#06x}+, ftab @+{FTAB_OFF:#06x})')
-    return blob, out, tab, things, dtab, los, sprcol
+    # ---- the .things file is the TWO pieces back to back, with piece 1 padded
+    # out to its whole 31 sectors: load_things reads THINGS_SECT of them to
+    # $C000 and the rest to THINGS2_BASE, so the pad is what puts the second
+    # read on a sector boundary. main() checks piece 1 (and retries with fewer
+    # decorations when it is over); piece 2 has no cosmetics to drop, so it
+    # fails the build outright.
+    if len(out2) > THINGS2_MAX:
+        sys.exit(f'  ERROR: {md.name} piece 2 is {len(out2)} B > {THINGS2_MAX} '
+                 f'(${THINGS2_BASE:04X}..${THINGS2_BASE+THINGS2_MAX-1:04X} is '
+                 f'all there is between the map HIGH region and USERAY_BASE '
+                 f'-- see memory_map.inc THINGS2_BASE)')
+    print(f'  RAM blob: piece 1 {len(out)}/{THINGS_MAX} B at ${THINGS_BASE:04X}, '
+          f'piece 2 {len(out2)}/{THINGS2_MAX} B at ${THINGS2_BASE:04X} '
+          f'({len(trig)} triggers)')
+    blk = bytes(out) + bytes(max(0, THINGS_MAX - len(out))) + bytes(out2)
+    return blob, blk, tab, things, dtab, los, sprcol
+
+
+def things_p1_len(blk):
+    """Piece 1's real length, out of the blob's own header: the sprite table is
+    the last thing in it. main()'s decoration-cut retry gates on this, not on
+    len(blk) -- the file carries piece 2 behind the padding now."""
+    p_sprtab = struct.unpack_from('<H', blk, 9)[0]
+    return p_sprtab + blk[4] * 8 - THINGS_BASE
 
 
 def main():
@@ -2821,7 +2892,7 @@ def main():
                                          (96, 12), (96, 32), (160, 64))]:
             blob, blk, tab, things, dtab, los, sprcol = pack(md, sp, skill,
                                                              dc, oc, bfg)
-            if len(blk) <= THINGS_MAX:
+            if things_p1_len(blk) <= THINGS_MAX:
                 if not bfg:
                     print(f'  {nm}: RAM blob over ${THINGS_MAX:04X} -- dropped '
                           f'the BFG BALL\'s frames (the shot lands at once here)')
@@ -2840,11 +2911,13 @@ def main():
             f.write(los)                                  # already a fixed slot
         with open(os.path.join(OUT_DIR, f'{nm}.sprcol'), 'wb') as f:
             f.write(sprcol)                               # coltabs + FTAB (B1)
+        p1 = things_p1_len(blk)
         print(f'{nm}: {len(things)} things, {len(tab)} sprites | '
               f'pool now {len(blob)} B -> SDRAM (arena-cached, B2) | '
-              f'RAM blob {len(blk)} B (${THINGS_BASE:04X}..${THINGS_BASE+len(blk):04X})')
-        if len(blk) > THINGS_MAX:
-            sys.exit(f'  ERROR: {nm}.things is {len(blk)} B > {THINGS_MAX} '
+              f'RAM blob {p1} B (${THINGS_BASE:04X}..${THINGS_BASE+p1:04X}) '
+              f'+ {len(blk)-THINGS_MAX} B at ${THINGS2_BASE:04X}')
+        if p1 > THINGS_MAX:
+            sys.exit(f'  ERROR: {nm}.things piece 1 is {p1} B > {THINGS_MAX} '
                      f'(the sector-rounded slot would run into BTNUPD at '
                      f'$CFC8 -- see memory_map.inc)')
 

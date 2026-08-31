@@ -83,12 +83,15 @@ mn_ld_tab                            ;   block: see MNLDTAB_BASE in
         dta a(MENU_SEC1), MENU_TCHUNKS, MENU_TBANK
         dta a(MENU_SEC1 + MENU_TCHUNKS*32), MENU_PCHUNKS, MENU_PBANK
         dta a(MENU_SEC1 + [MENU_TCHUNKS+MENU_PCHUNKS]*32), MENU_OCHUNKS, MENU_OBANK
-        dta a(MENU_SEC1 + MENU_ACHUNK*32), 1, AMOVL_BANK
-                                     ; the AUTOMAP overlay needs a row of its
-                                     ; own: load_vram walks CONSECUTIVE banks and
-                                     ; the one after the savegame overlay's $0F
-                                     ; is FRAME_B. See AMOVL_BANK in
-                                     ; memory_map.inc for where it does go.
+                                     ; the AUTOMAP overlay's row is GONE
+                                     ; (2026-08-31): it lives in Rapidus bank
+                                     ; $01 now (AMOVL_EXT), rides the XEX at
+                                     ; AMOVL_STAGE and b1_to_ext copies it up --
+                                     ; VRAM had no chunk left once the HU strips
+                                     ; grew and the wipe moved ($008000 = the
+                                     ; XDLs, $00B000 = MENUPATCH, $00F000 = the
+                                     ; savegame overlay; the free-list prose in
+                                     ; the VRAM map was three times stale).
         dta a(MENU_SEC1 + MENU_WICH*32), MENU_WICHUNKS, WI_BANK
                                      ; the INTERMISSION (wi.asm): pixels, then
                                      ; the 7-byte rows, then its code overlay --

@@ -35,7 +35,7 @@ _PROJ = os.path.dirname(_HERE)
 WADMAPS = os.path.join(_PROJ, 'build', 'assets', 'wadmaps')
 BOOT_BIN = os.path.join(_PROJ, 'build', 'boot.bin')
 XEX = os.path.join(_PROJ, 'build', 'doom_bsp.xex')
-OUT_ATR = os.path.join(_PROJ, 'build', 'doom_e1.atr')
+OUT_ATR = os.path.join(_PROJ, 'build', 'doom.atr')
 OUT_INC = os.path.join(_PROJ, 'atr_layout.inc')
 
 SECTOR_SIZE = 128

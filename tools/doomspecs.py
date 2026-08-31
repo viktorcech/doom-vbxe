@@ -86,8 +86,24 @@ LIGHT_LINE = {35,
                          #   level is a pack-time constant per line, so it
                          #   rides the same kind-7 record with a computed dst
 
+# ---- CRUSHERS (p_ceilng.c EV_DoCeiling / T_MoveCeiling) --------------------
+# The ceiling that comes down on your head, goes back up and does it again for
+# ever. Episodes 1-3 use exactly three of the six DOOM crusher actions, all WR:
+#   73 crushAndRaise      CEILSPEED     (E2M2/E2M4/E2M6/E3M4/E3M5)
+#   77 fastCrushAndRaise  CEILSPEED*2   (E2M2/E2M4)
+#   74 EV_CeilingCrushStop -- park it where it stands (24 lines, every map that
+#      has a crusher has some), and a later 73/77 starts it again.
+# 6/25/49/141 have no user in E1-E3 and are NOT here: nothing would exercise
+# them, and the value is per action, not per number.
+# The port drives them through the DOOR ceiling machinery (doors.asm), which is
+# why the tagged sectors become DOOR records in pack_map._doors -- a crusher is
+# a door that never parks, aims at floor+8 instead of the floor, and hurts.
+CRUSHER = {73: 1, 77: 2}             # value = the port's speed class (slow/fast)
+CRUSH_STOP = {74}
+
 DOORS = MANUAL_DOOR | TAG_DOOR | GUN_DOOR
-SUPPORTED = DOORS | FLOORS | EXIT | SCROLL | TELEPORT
+SUPPORTED = (DOORS | FLOORS | EXIT | SCROLL | TELEPORT
+             | set(CRUSHER) | CRUSH_STOP)
 
 # The one trigger in episode 1 that has NO LINEDEF. p_enemy.c A_BossDeath: on
 # E1M8, when the last MT_BRUISER dies, the engine builds a JUNK line carrying
@@ -462,7 +478,8 @@ def main():
         sys.path.insert(0, _HERE)
         import pack_things
         keys = set(pack_things.SPEC)
-        mine = FLOORS | TAG_DOOR | GUN_DOOR | TELEPORT | LIGHT_LINE
+        mine = (FLOORS | TAG_DOOR | GUN_DOOR | TELEPORT | LIGHT_LINE
+                | set(CRUSHER) | CRUSH_STOP)
         if keys != mine:
             print(f'  ! pack_things.SPEC disagrees: only there {sorted(keys - mine)}, '
                   f'only here {sorted(mine - keys)}')

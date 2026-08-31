@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
+; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -255,55 +255,59 @@ cbc_resume = *
         ; PINNED FAST (2026-08-11): ~50 runs a frame; win2 cost it 6.1% of the
         ; frame -- never move it back to $8000-$BFFF.
         org CBCORN_BASE
+; 16-BIT (2026-08-29): four (bbox edge - player) subtractions and four 16-bit
+; results, all of them halves before. fmul_cos/fmul_sin are 8-bit code, so the
+; mode goes back for each call and comes straight out again into the next
+; argument. M only; X/Y stay 8-bit (sound.asm:316).
 .proc cb_corners
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         sec                          ; --- top: cos, then sin ---
         lda cb_top
         sbc zp_py
         sta m_a
-        lda cb_top+1
-        sbc zp_py+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_prod
-        lda m_res+1
-        sta m_prod+1
         sec
         lda cb_top
         sbc zp_py
         sta m_a
-        lda cb_top+1
-        sbc zp_py+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_prod+2
-        lda m_res+1
-        sta m_prod+3
         sec                          ; --- bottom: cos, then sin ---
         lda cb_bottom
         sbc zp_py
         sta m_a
-        lda cb_bottom+1
-        sbc zp_py+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_ma
-        lda m_res+1
-        sta m_ma+1
         sec
         lda cb_bottom
         sbc zp_py
         sta m_a
-        lda cb_bottom+1
-        sbc zp_py+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_ma+2
-        lda m_res+1
-        sta m_ma+3
+        .LONGA OFF
+        sep #$20
         lda #0
         sta cb_cnt
         sec                          ; --- left: sin, then cos -> corners 0, 2 ---

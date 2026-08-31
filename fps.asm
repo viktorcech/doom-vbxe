@@ -5,17 +5,17 @@
 ; bar any more, so it is not in that file any more either (2026-08-28).
 ;
 ; WHAT IT SHOWS, AND WHY IT IS EXACT. doors.asm's frame_dt already measures
-; dt_vbl = the VBLANKs the last frame took, and on PAL the frame rate is 50/dt_vbl
-; -- a frame of 8 VBLANKs is 6.25 frames a second, not "about 6". The readout
-; this replaced counted RENDERED FRAMES in a one-second window, which can only
-; ever produce a whole number and is a second out of date; it threw away
-; precision the engine already had.
+; dt_vbl = the VBLANKs the last frame took; hud_tail sums a 4-frame window and
+; the rate of that window is EXACTLY 4 frames / sum VBLANKs = 200/sum on PAL.
+; The readout this replaced counted RENDERED FRAMES in a one-second window
+; (whole numbers, a second stale); its successor averaged mean=floor(sum/4)
+; and showed 50/mean, which overstated the rate by up to 12 % whenever the sum
+; was not divisible by 4 (2026-08-31, "ci sa FPS zobrazuje uplne presne").
 ;
-; NO DIVISION AT RUNTIME. 5000/n for every frame time n can take (1..DOOR_DTMAX
-; = 64) is 64 rows of three decimal digits, built by MADS at assembly time
-; (bank01.asm fps_tab, a .rept) and parked in Rapidus bank $01 -- 192 B of a
-; bank with ~26 KB spare, against 273 B of free base RAM in the whole machine.
-; Reading it is three lda.l.
+; NO DIVISION AT RUNTIME. 200/sum for every sum a window can reach (4..255) is
+; three 252-byte digit tables built by MADS at assembly time (FPSSUM_BASE, end
+; of this file) in the win2 pages the SQ2 mirror vacated. Reading them is
+; three plain lda,x per window.
 ;
 ; PARKED PIECEWISE. Base RAM has no hole that holds this whole, so each proc
 ; sits in its own gap with the usual org + ert guard. Per frame:
@@ -188,32 +188,33 @@ fps_resume = *
 
         org FPSFET_BASE
 ;--------------------------------------------------------------
-; fps_fetch -- the window's MEAN frame time -> fd_d0/d1/d2, the three decimal
-;   digits of 50/mean. C=0 means the window is not full yet (at boot, or the
-;   first frame after a toggle): fps_draw2 retries next frame rather than paint
-;   a number it never fetched.
-;   FPS_HOLD+1 frames per window and that is 4, so the divide is two shifts.
-;   frame_dt clamps dt_vbl to DOOR_DTMAX = 64 and hud_tail saturates the sum, so
-;   the mean lands in 1..64 -- exactly the table's length, and the index cannot
-;   run off the end.
+; fps_fetch -- fd_d0/d1/d2 = the three decimal digits of the window's EXACT
+;   rate. C=0 means the window is not full yet (at boot, or the first frame
+;   after a toggle -- sum < 4 is precisely the old mean==0 test): fps_draw2
+;   retries next frame rather than paint a number it never fetched.
+;
+;   EXACT BY SUM (2026-08-31, "ci sa FPS zobrazuje uplne presne"): the rate of
+;   a 4-frame window is 4 frames / (sum VBLANKs) = 200/sum -- no mean at all.
+;   The old floor(sum/4) -> 50/mean path overstated the rate whenever the sum
+;   was not divisible by 4: sum 34 (a typical 8,9,9,8 stretch) showed 6,25 for
+;   a true 5,88 -- up to +12 %, always in the flattering direction. Three
+;   252-byte tables indexed by sum-4 replace the divide AND the error; they
+;   sit in the win2 pages the SQ2 mirror vacated, read three times per
+;   window (~0.7 s), where x11.2 costs nothing.
+;   frame_dt clamps dt_vbl to DOOR_DTMAX and hud_tail saturates the sum at
+;   255, so sum-4 lands in 0..251 -- exactly the tables' length.
 ;--------------------------------------------------------------
 .proc fps_fetch
         lda fd_sum
-        lsr
-        lsr                          ; / 4 -- the window's mean frame time
-        beq ?none                    ; not four frames' worth yet
-        sec
-        sbc #1
-        sta fd_t
-        asl
-        clc
-        adc fd_t                     ; *3
+        cmp #4                       ; four 1-VBLANK frames is the fastest
+        bcc ?none                    ;   possible full window
+        sbc #4                       ; carry is set: bcc just fell through
         tax
-        lda.l FPS_TAB_EXT,x
+        lda FPS_SUMI,x
         sta fd_d0
-        lda.l FPS_TAB_EXT+1,x
+        lda FPS_SUMD1,x
         sta fd_d1
-        lda.l FPS_TAB_EXT+2,x
+        lda FPS_SUMD2,x
         sta fd_d2
         sec
         rts
@@ -320,5 +321,29 @@ fd_d1     dta 0
 fd_d2     dta 0
     .if * > FPSDRW_END+1
         ert 'the fps_* state outgrew FPSDRW_BASE..END (memory_map.inc)'
+    .endif
+
+        org FPSSUM_BASE
+;--------------------------------------------------------------
+; The EXACT-rate tables (see fps_fetch): entry s-4 holds the three decimal
+; digits of 200/s, s = the 4-frame window's VBLANK sum, 4..255. Truncated,
+; never rounded up -- the readout may understate by 0,01 but never flatter.
+; Parked in the win2 pages the SQ2 mirror vacated (2026-08-31): three reads
+; per ~0.7 s is what x11.2 was made for.
+;--------------------------------------------------------------
+FPS_SUMI
+        .rept 252,#
+        dta [20000/[#+4]]/100
+        .endr
+FPS_SUMD1
+        .rept 252,#
+        dta [[20000/[#+4]]/10]%10
+        .endr
+FPS_SUMD2
+        .rept 252,#
+        dta [20000/[#+4]]%10
+        .endr
+    .if * > FPSSUM_END+1
+        ert 'the FPS sum tables outgrew FPSSUM_BASE..END (memory_map.inc)'
     .endif
         org fps_resume

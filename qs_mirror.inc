@@ -7,48 +7,24 @@
 ;   SQ2 + (255-b) the index a reads f(a-b) with no absolute value and no
 ;   branch -- see gen_qs.py's header and pt_dy in paint.asm.
 ;   Only the painted build assembles it.
-;   2026-08-11 pm: it lives at $A400 now -- the win2 KB QSqr vacated. pt_dy is
-;   the ONLY reader of this half (m1b/m1d/m2b/m2d/m3b/m3d), while QSqr is read
-;   by qsmul as well (umul16 x4 + paint_col's inline pair), so when exactly one
-;   of the two 1 KB tables has to sit in the slow window it must be this one.
-;   See bsp_main.asm's icl site for the measurement (11.1 ms/frame).
+; 2026-08-31: the tables RUN at SQ2L_HOME/SQ2H_HOME -- under-ROM RAM, fast,
+;   dead in the shipped XEX (SGOVL's lifted parking) -- and the XEX PARKS the
+;   bytes at SQ2L_STAGE/SQ2H_STAGE in win2 (two-address org, the overlay
+;   trick). b1_to_ext copies the staged bytes to the bank $01 masters at boot
+;   and init_level's `jsl b1_sq2_restore` repaints the homes after every
+;   level load (load_things streams the THINGS blob straight over them).
+;   All five addresses live in memory_map.inc; this file only spends them.
+;   The win2 read cost this killed: 12,172 reads/frame at x11.2 = 5.8 ms.
 ;==============================================================
     .if TEX_RUNS
+; SQ2H comes FIRST on purpose: MADS merges a two-address org into the open
+; segment when its RUN address equals the current one -- adr2 and all -- so
+; SQ2L-then-SQ2H (runs $C900, $CB00 = contiguous) parked BOTH tables at
+; SQ2L_STAGE and ran the segment into the MEMAC window. H-then-L makes each
+; org's run address discontiguous with the previous stream, forcing the two
+; file headers this layout needs (caught by check_xex, 2026-08-31).
 qsm_resume = *
-        org $A400
-SQ2L
-        dta $80,$01,$82,$04,$86,$09,$8C,$10,$94,$19,$9E,$24,$AA,$31,$B8,$40
-        dta $C8,$51,$DA,$64,$EE,$79,$04,$90,$1C,$A9,$36,$C4,$52,$E1,$70,$00
-        dta $90,$21,$B2,$44,$D6,$69,$FC,$90,$24,$B9,$4E,$E4,$7A,$11,$A8,$40
-        dta $D8,$71,$0A,$A4,$3E,$D9,$74,$10,$AC,$49,$E6,$84,$22,$C1,$60,$00
-        dta $A0,$41,$E2,$84,$26,$C9,$6C,$10,$B4,$59,$FE,$A4,$4A,$F1,$98,$40
-        dta $E8,$91,$3A,$E4,$8E,$39,$E4,$90,$3C,$E9,$96,$44,$F2,$A1,$50,$00
-        dta $B0,$61,$12,$C4,$76,$29,$DC,$90,$44,$F9,$AE,$64,$1A,$D1,$88,$40
-        dta $F8,$B1,$6A,$24,$DE,$99,$54,$10,$CC,$89,$46,$04,$C2,$81,$40,$00
-        dta $C0,$81,$42,$04,$C6,$89,$4C,$10,$D4,$99,$5E,$24,$EA,$B1,$78,$40
-        dta $08,$D1,$9A,$64,$2E,$F9,$C4,$90,$5C,$29,$F6,$C4,$92,$61,$30,$00
-        dta $D0,$A1,$72,$44,$16,$E9,$BC,$90,$64,$39,$0E,$E4,$BA,$91,$68,$40
-        dta $18,$F1,$CA,$A4,$7E,$59,$34,$10,$EC,$C9,$A6,$84,$62,$41,$20,$00
-        dta $E0,$C1,$A2,$84,$66,$49,$2C,$10,$F4,$D9,$BE,$A4,$8A,$71,$58,$40
-        dta $28,$11,$FA,$E4,$CE,$B9,$A4,$90,$7C,$69,$56,$44,$32,$21,$10,$00
-        dta $F0,$E1,$D2,$C4,$B6,$A9,$9C,$90,$84,$79,$6E,$64,$5A,$51,$48,$40
-        dta $38,$31,$2A,$24,$1E,$19,$14,$10,$0C,$09,$06,$04,$02,$01,$00,$00
-        dta $00,$01,$02,$04,$06,$09,$0C,$10,$14,$19,$1E,$24,$2A,$31,$38,$40
-        dta $48,$51,$5A,$64,$6E,$79,$84,$90,$9C,$A9,$B6,$C4,$D2,$E1,$F0,$00
-        dta $10,$21,$32,$44,$56,$69,$7C,$90,$A4,$B9,$CE,$E4,$FA,$11,$28,$40
-        dta $58,$71,$8A,$A4,$BE,$D9,$F4,$10,$2C,$49,$66,$84,$A2,$C1,$E0,$00
-        dta $20,$41,$62,$84,$A6,$C9,$EC,$10,$34,$59,$7E,$A4,$CA,$F1,$18,$40
-        dta $68,$91,$BA,$E4,$0E,$39,$64,$90,$BC,$E9,$16,$44,$72,$A1,$D0,$00
-        dta $30,$61,$92,$C4,$F6,$29,$5C,$90,$C4,$F9,$2E,$64,$9A,$D1,$08,$40
-        dta $78,$B1,$EA,$24,$5E,$99,$D4,$10,$4C,$89,$C6,$04,$42,$81,$C0,$00
-        dta $40,$81,$C2,$04,$46,$89,$CC,$10,$54,$99,$DE,$24,$6A,$B1,$F8,$40
-        dta $88,$D1,$1A,$64,$AE,$F9,$44,$90,$DC,$29,$76,$C4,$12,$61,$B0,$00
-        dta $50,$A1,$F2,$44,$96,$E9,$3C,$90,$E4,$39,$8E,$E4,$3A,$91,$E8,$40
-        dta $98,$F1,$4A,$A4,$FE,$59,$B4,$10,$6C,$C9,$26,$84,$E2,$41,$A0,$00
-        dta $60,$C1,$22,$84,$E6,$49,$AC,$10,$74,$D9,$3E,$A4,$0A,$71,$D8,$40
-        dta $A8,$11,$7A,$E4,$4E,$B9,$24,$90,$FC,$69,$D6,$44,$B2,$21,$90,$00
-        dta $70,$E1,$52,$C4,$36,$A9,$1C,$90,$04,$79,$EE,$64,$DA,$51,$C8,$40
-        dta $B8,$31,$AA,$24,$9E,$19,$94,$10,$8C,$09,$86,$04,$82,$01,$80,$00
+        org SQ2H_HOME, SQ2H_STAGE
 SQ2H
         dta $3F,$3F,$3E,$3E,$3D,$3D,$3C,$3C,$3B,$3B,$3A,$3A,$39,$39,$38,$38
         dta $37,$37,$36,$36,$35,$35,$35,$34,$34,$33,$33,$32,$32,$31,$31,$31
@@ -82,8 +58,45 @@ SQ2H
         dta $2A,$2B,$2B,$2B,$2C,$2C,$2D,$2D,$2D,$2E,$2E,$2F,$2F,$30,$30,$31
         dta $31,$31,$32,$32,$33,$33,$34,$34,$35,$35,$35,$36,$36,$37,$37,$38
         dta $38,$39,$39,$3A,$3A,$3B,$3B,$3C,$3C,$3D,$3D,$3E,$3E,$3F,$3F,$40
-    .if * > $A800
-        ert 'qs_mirror.inc ran into the TCOS frac pages at $A800 (ram_map RESERVED)'
+    .if * > SQ2H_HOME+$200
+        ert 'SQ2H outgrew its page pair (memory_map.inc SQ2H_HOME)'
+    .endif
+        org SQ2L_HOME, SQ2L_STAGE
+SQ2L
+        dta $80,$01,$82,$04,$86,$09,$8C,$10,$94,$19,$9E,$24,$AA,$31,$B8,$40
+        dta $C8,$51,$DA,$64,$EE,$79,$04,$90,$1C,$A9,$36,$C4,$52,$E1,$70,$00
+        dta $90,$21,$B2,$44,$D6,$69,$FC,$90,$24,$B9,$4E,$E4,$7A,$11,$A8,$40
+        dta $D8,$71,$0A,$A4,$3E,$D9,$74,$10,$AC,$49,$E6,$84,$22,$C1,$60,$00
+        dta $A0,$41,$E2,$84,$26,$C9,$6C,$10,$B4,$59,$FE,$A4,$4A,$F1,$98,$40
+        dta $E8,$91,$3A,$E4,$8E,$39,$E4,$90,$3C,$E9,$96,$44,$F2,$A1,$50,$00
+        dta $B0,$61,$12,$C4,$76,$29,$DC,$90,$44,$F9,$AE,$64,$1A,$D1,$88,$40
+        dta $F8,$B1,$6A,$24,$DE,$99,$54,$10,$CC,$89,$46,$04,$C2,$81,$40,$00
+        dta $C0,$81,$42,$04,$C6,$89,$4C,$10,$D4,$99,$5E,$24,$EA,$B1,$78,$40
+        dta $08,$D1,$9A,$64,$2E,$F9,$C4,$90,$5C,$29,$F6,$C4,$92,$61,$30,$00
+        dta $D0,$A1,$72,$44,$16,$E9,$BC,$90,$64,$39,$0E,$E4,$BA,$91,$68,$40
+        dta $18,$F1,$CA,$A4,$7E,$59,$34,$10,$EC,$C9,$A6,$84,$62,$41,$20,$00
+        dta $E0,$C1,$A2,$84,$66,$49,$2C,$10,$F4,$D9,$BE,$A4,$8A,$71,$58,$40
+        dta $28,$11,$FA,$E4,$CE,$B9,$A4,$90,$7C,$69,$56,$44,$32,$21,$10,$00
+        dta $F0,$E1,$D2,$C4,$B6,$A9,$9C,$90,$84,$79,$6E,$64,$5A,$51,$48,$40
+        dta $38,$31,$2A,$24,$1E,$19,$14,$10,$0C,$09,$06,$04,$02,$01,$00,$00
+        dta $00,$01,$02,$04,$06,$09,$0C,$10,$14,$19,$1E,$24,$2A,$31,$38,$40
+        dta $48,$51,$5A,$64,$6E,$79,$84,$90,$9C,$A9,$B6,$C4,$D2,$E1,$F0,$00
+        dta $10,$21,$32,$44,$56,$69,$7C,$90,$A4,$B9,$CE,$E4,$FA,$11,$28,$40
+        dta $58,$71,$8A,$A4,$BE,$D9,$F4,$10,$2C,$49,$66,$84,$A2,$C1,$E0,$00
+        dta $20,$41,$62,$84,$A6,$C9,$EC,$10,$34,$59,$7E,$A4,$CA,$F1,$18,$40
+        dta $68,$91,$BA,$E4,$0E,$39,$64,$90,$BC,$E9,$16,$44,$72,$A1,$D0,$00
+        dta $30,$61,$92,$C4,$F6,$29,$5C,$90,$C4,$F9,$2E,$64,$9A,$D1,$08,$40
+        dta $78,$B1,$EA,$24,$5E,$99,$D4,$10,$4C,$89,$C6,$04,$42,$81,$C0,$00
+        dta $40,$81,$C2,$04,$46,$89,$CC,$10,$54,$99,$DE,$24,$6A,$B1,$F8,$40
+        dta $88,$D1,$1A,$64,$AE,$F9,$44,$90,$DC,$29,$76,$C4,$12,$61,$B0,$00
+        dta $50,$A1,$F2,$44,$96,$E9,$3C,$90,$E4,$39,$8E,$E4,$3A,$91,$E8,$40
+        dta $98,$F1,$4A,$A4,$FE,$59,$B4,$10,$6C,$C9,$26,$84,$E2,$41,$A0,$00
+        dta $60,$C1,$22,$84,$E6,$49,$AC,$10,$74,$D9,$3E,$A4,$0A,$71,$D8,$40
+        dta $A8,$11,$7A,$E4,$4E,$B9,$24,$90,$FC,$69,$D6,$44,$B2,$21,$90,$00
+        dta $70,$E1,$52,$C4,$36,$A9,$1C,$90,$04,$79,$EE,$64,$DA,$51,$C8,$40
+        dta $B8,$31,$AA,$24,$9E,$19,$94,$10,$8C,$09,$86,$04,$82,$01,$80,$00
+    .if * > SQ2L_HOME+$200
+        ert 'SQ2L outgrew its page pair (memory_map.inc SQ2L_HOME)'
     .endif
         org qsm_resume
     .endif

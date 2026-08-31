@@ -71,7 +71,10 @@ def main():
     # carries its own offset (WI_OVL_OFF).
     ovls = [(equ('memory_map.inc', 'MNOVL_STAGE'), 'menu.asm', off + 0 * CHUNK),
             (equ('memory_map.inc', 'SGOVL_STAGE'), 'savegame.asm', off + 1 * CHUNK),
-            (equ('memory_map.inc', 'AMOVL_STAGE'), 'automap.asm', off + 2 * CHUNK),
+            # the AUTOMAP overlay is NOT lifted any more (2026-08-31): it rides
+            # the XEX at AMOVL_STAGE and b1_to_ext copies it into Rapidus bank
+            # $01 (AMOVL_EXT) -- its old menu.bin chunk (off + 2*CHUNK) stays
+            # reserved and zeroed so every other stream's sector stays put.
             (equ('memory_map.inc', 'WIOVL_STAGE'), 'wi.asm stage 1',
              equ('menu_syms.inc', 'WI_OVL_OFF')),
             # ...and its stage 2, which runs in the MAP SLOT and is therefore

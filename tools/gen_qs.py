@@ -77,6 +77,19 @@ QSqrLoBase
         fh.write('QSqrLoExt\n' + rows(f[256:], 0) + '\n')
         fh.write('SQ1H\nQSqrHiBase\n' + rows(f[:256], 8) + '\n')
         fh.write('QSqrHiExt\n' + rows(f[256:], 8) + '\n')
+        # THE TAIL GUARD. It was hand-written into the generated file and this
+        # generator never emitted it, so the first `python tools/gen_qs.py`
+        # deleted it (2026-08-29). Both .inc files were hand-edited after
+        # generation -- the mirror's org and this guard -- and neither edit came
+        # back here, which is exactly how a generator and its output drift apart.
+        fh.write("""; 2026-08-11 pm: this KB lives at TEXIX_BASE ($6100, win1 = FAST) since it
+; swapped homes with qs_mirror.inc -- qsmul reads it on every umul16 and it was
+; costing 11.1 ms/frame in win2 (bsp_main.asm's icl site has the measurement).
+; TEXIX_MAX is the ceiling the column-index blob would have used here.
+    .if * > TEXIX_BASE+TEXIX_MAX
+        ert 'qs_tables.inc outgrew the freed TEXIX_BASE block (memory_map.inc)'
+    .endif
+""")
     print(f'wrote {OUT} (f(x) 0..511, SQ1L/SQ1H contiguous)')
 
     g = [f[abs(m - 255)] for m in range(512)]      # SQ2[m] = f(m-255)
@@ -85,23 +98,42 @@ QSqrLoBase
         fh.write("""; SQ2[m] = f(m - 255), the MIRRORED quarter-square table. With base2 =
 ;   SQ2 + (255-b) the index a reads f(a-b) with no absolute value and no
 ;   branch -- see gen_qs.py's header and pt_dy in paint.asm.
-;   Only the painted build assembles it, on the base RAM the column index
-;   vacated when it moved to SDRAM (TEXIX_BASE).
+;   Only the painted build assembles it.
+; 2026-08-31: the tables RUN at SQ2L_HOME/SQ2H_HOME -- under-ROM RAM, fast,
+;   dead in the shipped XEX (SGOVL's lifted parking) -- and the XEX PARKS the
+;   bytes at SQ2L_STAGE/SQ2H_STAGE in win2 (two-address org, the overlay
+;   trick). b1_to_ext copies the staged bytes to the bank $01 masters at boot
+;   and init_level's `jsl b1_sq2_restore` repaints the homes after every
+;   level load (load_things streams the THINGS blob straight over them).
+;   All five addresses live in memory_map.inc; this file only spends them.
+;   The win2 read cost this killed: 12,172 reads/frame at x11.2 = 5.8 ms.
 ;==============================================================
     .if TEX_RUNS
+; SQ2H comes FIRST on purpose: MADS merges a two-address org into the open
+; segment when its RUN address equals the current one -- adr2 and all -- so
+; SQ2L-then-SQ2H (runs $C900, $CB00 = contiguous) parked BOTH tables at
+; SQ2L_STAGE and ran the segment into the MEMAC window. H-then-L makes each
+; org's run address discontiguous with the previous stream, forcing the two
+; file headers this layout needs (caught by check_xex, 2026-08-31).
 qsm_resume = *
-        org TEXIX_BASE
+        org SQ2H_HOME, SQ2H_STAGE
+SQ2H
+""")
+        fh.write(rows(g, 8) + '\n')
+        fh.write("""    .if * > SQ2H_HOME+$200
+        ert 'SQ2H outgrew its page pair (memory_map.inc SQ2H_HOME)'
+    .endif
+        org SQ2L_HOME, SQ2L_STAGE
 SQ2L
 """)
         fh.write(rows(g, 0) + '\n')
-        fh.write('SQ2H\n' + rows(g, 8) + '\n')
-        fh.write("""    .if * > TEXIX_BASE+TEXIX_MAX
-        ert 'qs_mirror.inc outgrew the freed TEXIX_BASE block (memory_map.inc)'
+        fh.write("""    .if * > SQ2L_HOME+$200
+        ert 'SQ2L outgrew its page pair (memory_map.inc SQ2L_HOME)'
     .endif
         org qsm_resume
     .endif
 """)
-    print(f'wrote {OUT_MIRROR} (SQ2 mirror, 1 KB at TEXIX_BASE)')
+    print(f'wrote {OUT_MIRROR} (SQ2 mirror: runs at SQ2L_HOME/SQ2H_HOME, parks at *_STAGE)')
     # the identity, checked here so the asm never has to be trusted on it
     for a in (0, 1, 7, 63, 128, 200, 255):
         for b in (0, 1, 3, 16, 100, 255):

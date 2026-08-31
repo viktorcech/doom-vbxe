@@ -33,7 +33,7 @@ sys.path.insert(0, TOOLS)                        # ...and TOOLS AHEAD of it:
 # guard below turned into a permanent SKIP. The simulated boot had not run
 # since 2026-08-10 because of the search order alone.
 
-ATR = os.path.join(ROOT, "build", "doom_e1.atr")
+ATR = os.path.join(ROOT, "build", "doom.atr")
 XEX = os.path.join(ROOT, "build", "doom_bsp.xex")
 
 def fail(msg):

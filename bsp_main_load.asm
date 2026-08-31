@@ -275,8 +275,9 @@ apf_t   dta 0,0
         lda #>THG_SECTORS
         sta ll_stride+1
         jsr lvl_offset
-        lda #THG_SECTORS             ; the blob lives UNDER the ROM ($C000) -- it
-        sta ll_left                  ; outgrew the old $BAC0 hole once the build was
+        lda #THINGS_SECT             ; PIECE 1 only: the blob lives UNDER the ROM
+        sta ll_left                  ; ($C000) -- it outgrew the old $BAC0 hole once
+                                     ; the build was
         lda #<THINGS_BASE            ; a whole episode, so it stages across like the
                                      ; map's HIGH region
         sta ll_dst
@@ -335,8 +336,11 @@ apf_t   dta 0,0
 ?mv     sta MV_TAB,x
         dex
         bpl ?mv
-        jmp load_dtab                ; the death-frame table rides along (diskio):
-.endp                                ;   still inside the SIO window, ROM in
+        jmp load_things2             ; the blob's PIECE 2 -> THINGS2_BASE, then on
+.endp                                ;   into load_dtab: still inside the SIO
+                                     ;   window, ROM in. Nothing between the read
+                                     ;   above and here touches ll_sec, so the
+                                     ;   second read simply continues (diskio.asm)
 ps_started dta 0                     ; 0 until the boot-time PSTATE init has run
         org bcbt_resume
 

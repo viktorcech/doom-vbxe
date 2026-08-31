@@ -385,18 +385,20 @@ def switch_button(wt, name, tx, w, h):
     mate = wt.texdefs.get((doomspecs.switch_mate(name) or '').upper())
     button = []
     if mate is not None:
-        at = {(ox, oy): wt.pnames[p].upper() for p, ox, oy in mate[2]}
+        # a texdef's patches are NAMES since 2026-08-30 (wadtex._read_textures:
+        # the index only ever meant something in its own file's PNAMES)
+        at = {(ox, oy): p.upper() for p, ox, oy in mate[2]}
         button = [(p, ox, oy) for p, ox, oy in td[2]
-                  if at.get((ox, oy), wt.pnames[p].upper()) != wt.pnames[p].upper()]
+                  if at.get((ox, oy), p.upper()) != p.upper()]
     if not button:
-        button = [p for p in td[2] if SWITCH_PATCH.match(wt.pnames[p[0]].upper())]
+        button = [p for p in td[2] if SWITCH_PATCH.match(p[0].upper())]
     if not button:
         print(f'    ! {name}: no button patch recognised, shipping it whole')
         return tx
     dom = Counter(px for col in tx for px in col).most_common(1)[0][0]
     out = [[dom] * h for _ in range(w)]
-    for (pidx, ox, oy) in button:
-        pat = wt.get_patch(wt.pnames[pidx])
+    for (pname, ox, oy) in button:
+        pat = wt.get_patch(pname)
         if pat is None:
             continue
         pw, _ph, cols = pat
@@ -585,15 +587,43 @@ def pack_map_textures(md, wt, xpool=None):
 
         functional = _functional_names(md, slots)
 
+        def _reads_as(n):
+            """Does this texture CARRY A MESSAGE -- switch, key colour, door
+            slab, EXIT lettering, or a scrolling copy? Those are the surfaces a
+            player acts on, so they may neither be aliased away nor painted
+            onto an ordinary wall. It is a question about the NAME, not about
+            the geometry: `functional` below finds the faces a door actually
+            hangs on, which on E2M6 includes plain WOOD1/WOOD3/BROWN1 -- real
+            wall textures that merely happen to face a door, and perfectly good
+            things for another wall to alias onto."""
+            b = tex_base(n)
+            return (is_switch(b) or SCROLL_TAG in n or KEY_DOOR_TEX.match(b)
+                    or 'DOOR' in b or b == 'EXITSIGN')
+
         def _protected(n):
             # Functional surfaces never alias: switches (p_switch.c's list),
             # scroll walls, key doors, and every door / lift / track face.
             # The protected set is 45 names at its worst (E2M6) -- see
             # tools/tests/_audit_texalias.py -- so 18+ ids are always left for
             # the ordinary walls the alias is actually meant to merge.
-            return (is_switch(tex_base(n)) or SCROLL_TAG in n
-                    or n.endswith(ROLE_TAG) or n in functional
-                    or KEY_DOOR_TEX.match(tex_base(n)))
+            #   ...and any texture the WAD NAMES as a door face, whether or not
+            # a door hangs on it. `functional` above asks the GEOMETRY, so it
+            # only sees doors that move; a DOOR3 painted on a plain one-sided
+            # wall is decoration to the geometry and was the rarest name on the
+            # map, i.e. the alias pass's first victim. Seven such faces were
+            # being folded into ordinary walls across episodes 2-3 -- E2M6's
+            # DOOR3 (the recess 107 units from the player start, the first
+            # thing the level shows you) became GRAY2, E2M2's became AASTINKY.
+            # A door that reads as a wall is the one substitution a player
+            # always notices, so the name decides it: DOOR3, BIGDOOR*,
+            # EXITDOOR, ICKDOOR1, DOORTRAK/DOORSTOP and the key doors all carry
+            # DOOR in the name and none of them may alias.
+            #   ...and EXITSIGN, for the same reason one step further: it is
+            # LETTERING. Protecting the doors above pushed E2M6's exit sign out
+            # of the keeper set (it had been one), and E2M2/E2M7/E3M3 were
+            # already folding it into STEPTOP -- an exit the player cannot read
+            # is worth more than any wall the alias would merge instead.
+            return (_reads_as(n) or n.endswith(ROLE_TAG) or n in functional)
 
         def _dom_h(n):
             t = wt.get_texture(tex_base(n), n in masked)
@@ -621,7 +651,7 @@ def pack_map_textures(md, wt, xpool=None):
             cands = [k for k in used
                      if k != n and k not in alias and info[k] is not None
                      and (k in masked) == (n in masked)]
-            # ... and nothing may alias ONTO a functional surface either:
+            # ... and nothing may alias ONTO a protected surface either:
             # that is how an ordinary wall ends up painted as a switch the
             # player walks up and presses (E2M6 sent DOOR3 to SW1COMM, right
             # where the level's first door is), as a locked door, as a door
@@ -629,14 +659,31 @@ def pack_map_textures(md, wt, xpool=None):
             # worst -- onto the SCROLL copy, whose pixels slide every tic.
             # They stay keepers, never targets; fall back only if the map
             # offers nothing else at all.
-            plain = [k for k in cands
-                     if not is_switch(tex_base(k)) and SCROLL_TAG not in k
-                     and not KEY_DOOR_TEX.match(tex_base(k))
-                     and k not in functional]
+            #   This is _reads_as, the same predicate the protection above
+            # is built on -- keeping the two halves as separate hand-kept lists
+            # is what let E2M6 paint a STEP5 band with the red EXIT sign, E2M2
+            # paint STONE/STONE2 as DOORSTOP and AASTINKY as a DOOR3 slab, and
+            # E2M7 paint GRAYPOIS/SHAWN3 as DOOR3. A wall that reads EXIT or
+            # DOOR is worse than any wall that merely reads wrong.
+            plain = [k for k in cands if not _reads_as(k)]
             cands = plain or cands
             if not cands:
                 continue
             alias[n] = min(cands, key=lambda k: _dist(n, k))
+        # NO CHAINS. The loop above runs rarest-first and a name may pick a
+        # target that is itself aliased further down the list, so the hops
+        # compose into something neither step chose: E2M6 sent WOODSKUL and
+        # WOODGARG to WOOD4, WOOD4 to STARBR2 and STARBR2 to STARG2, i.e. five
+        # brown wooden walls all ended up grey-green. The set of survivors is
+        # only known once the loop has finished, so re-point every alias at the
+        # nearest one of THOSE.
+        if alias:
+            keep = [k for k in used if k not in alias and info[k] is not None]
+            for n in list(alias):
+                c = [k for k in keep if (k in masked) == (n in masked)]
+                c = [k for k in c if not _reads_as(k)] or c
+                if c:
+                    alias[n] = min(c, key=lambda k: _dist(n, k))
         if alias:
             used = [n for n in used if n not in alias]
             print(f'  texid alias ({len(alias)} merged, {len(used)} ids): '

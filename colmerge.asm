@@ -62,41 +62,43 @@
         lda rs_bot
         cmp cm_bot
         bne ?no
+        ; --- the five 16-bit words of the signature, COMPARED 16 bits at a
+        ;     time (2026-08-29). Same trade as cm_save's stores: rep/sep is 6
+        ;     cycles against the ten lda/cmp/bne triples it replaces, and
+        ;     cm_test runs 521 times a frame (_bench_subsys) -- the most-called
+        ;     .proc in the merge path. The early exits have to leave 8-bit, so
+        ;     they go through ?no16; sep touches only M, and ?no clears C after
+        ;     it anyway.
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         lda rs_ycacc+1
         cmp cm_sig
-        bne ?no
-        lda rs_ycacc+2
-        cmp cm_sig+1
-        bne ?no
+        bne ?no16
         lda rs_yfacc+1
         cmp cm_sig+2
-        bne ?no
-        lda rs_yfacc+2
-        cmp cm_sig+3
-        bne ?no
+        bne ?no16
         lda rs_ybcacc+1
         cmp cm_sig+4
-        bne ?no
-        lda rs_ybcacc+2
-        cmp cm_sig+5
-        bne ?no
+        bne ?no16
         lda rs_ybfacc+1
         cmp cm_sig+6
-        bne ?no
-        lda rs_ybfacc+2
-        cmp cm_sig+7
-        bne ?no
+        bne ?no16
         lda rs_rpt                   ; the painter's per-column scale. It was
         cmp cm_sig+8                 ;   rs_dscr until 2026-08-27, and rs_dscr
-        bne ?no                      ;   went with tw_setup; rpt is the stricter
-        lda rs_rpt+1                 ;   test anyway -- it is what the texel walk
-        cmp cm_sig+9                 ;   actually uses, and the accumulator bytes
-        bne ?no                      ;   above already pin dscr to within 1/16 row
+        bne ?no16                    ;   went with tw_setup; rpt is the stricter
+                                     ;   test anyway -- it is what the texel walk
+                                     ;   actually uses, and the accumulator bytes
+                                     ;   above already pin dscr to within 1/16 row
+        .LONGA OFF
+        sep #$20                     ; ---- 8-bit again
         lda rs_uacc+1
         cmp cm_sig+10
         bne ?no
         sec
         rts
+?no16
+        .LONGA OFF
+        sep #$20
 ?no     clc
         rts
 .endp
@@ -108,32 +110,36 @@
 ;--------------------------------------------------------------
 .proc cm_save
         stx cm_x
-        lda #0
-        sta cm_n
+        stz cm_n                     ; not `lda #0`+`sta`: A is rewritten two
+                                     ;   ops down, so the load was pure cost --
+                                     ;   405 executions/frame (_an_waste)
         lda rs_top
         sta cm_top
         lda rs_bot
         sta cm_bot
+        ; --- the signature is five 16-bit values: take them 16 BITS AT A TIME.
+        ;     The frame loop is already in 65816 NATIVE mode (underrom.asm's
+        ;     ROM-OUT <=> native invariant), so this costs rep/sep = 6 cycles
+        ;     and no clc/xce -- against the 10 lda/sta pairs it replaces that is
+        ;     24 cycles and 26 bytes a call, and cm_save runs 375 times a frame
+        ;     (_bench_subsys). Only M goes 16-bit: X and Y stay 8, because the
+        ;     3958 Hz digi IRQ inherits M/X and `sep #$10` would zero the high
+        ;     halves of X/Y on the way out (sound.asm's note, and the automap's
+        ;     stray lines before it was written).
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON                    ;   ...and MADS with it
         lda rs_ycacc+1
         sta cm_sig
-        lda rs_ycacc+2
-        sta cm_sig+1
         lda rs_yfacc+1
         sta cm_sig+2
-        lda rs_yfacc+2
-        sta cm_sig+3
         lda rs_ybcacc+1
         sta cm_sig+4
-        lda rs_ybcacc+2
-        sta cm_sig+5
         lda rs_ybfacc+1
         sta cm_sig+6
-        lda rs_ybfacc+2
-        sta cm_sig+7
         lda rs_rpt                   ; ... and the same in the saved signature
         sta cm_sig+8
-        lda rs_rpt+1
-        sta cm_sig+9
+        .LONGA OFF
+        sep #$20                     ; ---- back to the engine's 8-bit discipline
         lda rs_uacc+1
         sta cm_sig+10
         lda solid_arr,x              ; the post-state, whichever path drew it

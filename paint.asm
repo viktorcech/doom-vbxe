@@ -378,11 +378,21 @@ m3d     sbc SQ2H+$FF,y
         sta pc_dy+1
         bcc ?done
         inc pc_dy+2
-?done   lda #0                       ; pc_f is the ANCHOR run's part-texel and the
-        sta pc_f                     ;   m3 product above has just consumed it.
-                                     ;   Every later run enters with it already 0,
-                                     ;   so clearing it costs them nothing and saves
-                                     ;   ?found a store after the call.
+?done   stz pc_f                     ; pc_f is the ANCHOR run's part-texel and the
+                                     ;   m3 product above has just consumed it.
+                                     ; STZ, not `lda #0`+`sta`: it needs no
+                                     ;   accumulator and sets no flags, and both
+                                     ;   are dead here -- every entry falls into
+                                     ;   pc_paint, whose first op (`?rcol lda.l`)
+                                     ;   rewrites A and N/Z. -2 cyc on EVERY one
+                                     ;   of 5637 executions a frame = 11273 cyc/f
+                                     ;   (tools/tests/_an_waste.py), and -2 bytes
+                                     ;   out of the full $0900 block. _opt816.py
+                                     ;   cannot find it: it skips paint.asm whole
+                                     ;   for self-modifying code.
+                                     ;   Every later run enters with it already 0;
+                                     ;   the store still has to happen, but with
+                                     ;   stz it no longer drags a `lda #0` along.
         jmp paint_col.pc_paint       ; TAIL JUMP into the column loop: both call
                                      ;   sites used to pay jsr + rts, and the run
                                      ;   loop a jmp on top -- 15 cycles on a path
@@ -478,8 +488,12 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         adc #0
         iny
         sta (zp_pt),y
-        lda zp_pt                    ; slot += 21
-        clc
+        lda zp_pt                    ; slot += 21. NO clc: row_hi maxes at $7C
+                                     ;   (the $0BBE deletion's own argument), so
+                                     ;   the `adc #0` above cannot carry out and
+                                     ;   C is 0 on every path here -- measured
+                                     ;   100% redundant at 838 hits/frame by
+                                     ;   _an_waste (2026-08-31).
         adc #BCB_SIZE
         sta zp_pt
         bcc ?nc
@@ -563,7 +577,7 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
 ?apos   lda m_a+1                    ; (spa-peg) is a BYTE unless the peg row is far
         beq ?byte                    ;   off-screen (a close wall): then, and only
         jmp ?wide                    ;   then, pay for the full 16x16. The byte
-?byte   qsmul m_a, rs_tpr            ;   path is TWO quarter-squares against
+?byte   qsmul m_a, rs_tpr, qs_p            ;   path is TWO quarter-squares against
         lda qs_p                     ;   umul16's four plus its carry chain --
         sta m_prod                   ;   ~200 cycles a column, and it is the
                                      ;   common case.
@@ -572,7 +586,7 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         lda #0
         sta m_prod+2
         sta m_prod+3
-        qsmul m_a, rs_tpr+1          ; + (lo * tpr_hi) << 8
+        qsmul m_a, rs_tpr+1, qs_p          ; + (lo * tpr_hi) << 8
         clc
         lda m_prod+1
         adc qs_p
@@ -746,7 +760,12 @@ pc_paint
         ldy #BCB_DST_ADDR+1
         sta (zp_pt),y
         lda zp_pt                    ; slot += 21
-        clc
+                                     ; No `clc` here: the `adc #0` above adds to
+                                     ;   row_hi, whose largest entry is >(199*160)
+                                     ;   = $7C, so it can never carry out -- and
+                                     ;   nothing between them touches C (ldy/sta/
+                                     ;   lda set none) nor branches in. Dead on
+                                     ;   100 % of 19074 runs, 6358 cyc/f.
         adc #BCB_SIZE
         sta zp_pt
         bcc ?pnc

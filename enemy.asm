@@ -1490,6 +1490,74 @@ en_th2  sta m_prod
     .if * > ENBOOM_END+1
         ert 'en_boom outgrew ENBOOM_BASE..END (memory_map.inc)'
     .endif
+enray_resume = *
+        org ENRAY_BASE
+;--------------------------------------------------------------
+; en_dray -- PIT_RadiusAttack, both halves, for one candidate:
+;     if (dist >= bombdamage) return;              <- en_dist
+;     if ( P_CheckSight (thing, bombspot) ) ...    <- the ray below
+;   en_bdist tail-jumps HERE instead of at en_dist, so the sweep's call site is
+;   the same three bytes it always was (en_bthings has no spare byte).
+;
+;   WHY THE RAY (2026-08-30, "raketou zabijem enemy aj ked je za dverami"):
+;   en_los answers out of a PRECOMPUTED grid, and tools/pack_los.py builds one
+;   per BARREL. Every other blast -- the rocket, a monster's own death burst --
+;   reaches en_los with en_lp = 0, and en_los waves those through by design
+;   ("no grid for this thing -> everything visible"). So the rocket had no sight
+;   test at all and killed through shut doors. A barrel still uses its grid;
+;   everything else now walks the real p_sight.c ray, the one ai_sight spends.
+;
+;   ORDER IS DOOM'S: the range test first, the sight test second, so a blast
+;   walks the BSP a handful of times, not once per thing on the map.
+;     IN  sp_ptr = the candidate's record (x +0, y +2, as spr_proj packs it),
+;         en_bx/en_by = where the blast went off, m_a/m_b = the signed deltas.
+;     OUT C=1 and A = the damage, or C=0. sp_ptr, m_a and m_b survive, which is
+;         what en_bthings' loop needs.
+;--------------------------------------------------------------
+.proc en_dray
+        jsr en_dist                  ; range (and a barrel's grid) first
+        bcc ?out
+        pha                          ; the damage, across the ray
+        lda en_lp
+        ora en_lp+1
+        bne ?ok                      ; a barrel: en_los has already answered
+        ldx #3                       ; the player, parked for sg_bsp's restore --
+?pl     lda zp_px,x                  ;   it BORROWS zp_px/zp_py for the walk's
+        sta sg_pl,x                  ;   sample point and puts sg_pl back after
+        dex
+        bpl ?pl
+        ldy #3                       ; USE_PT_B = the candidate
+?tb     lda (sp_ptr),y
+        sta USE_PT_B,y
+        dey
+        bpl ?tb
+        ldx #3                       ; USE_PT_A = the blast point
+?ba     lda en_bx,x
+        sta USE_PT_A,x
+        dex
+        bpl ?ba
+        lda #$FF                     ; no leaf tested yet ($FFFF is not a leaf
+        sta USE_SS                   ;   id), as ai_sight primes it
+        sta USE_SS+1
+        stz sg_zon                   ; a FLAT walk, no sill test: sg_set resolves
+                                     ;   a z only for a PLAYER target and a blast
+                                     ;   has no eye, so this takes the same flat
+                                     ;   answer an infighting pair gets. sg_bsp
+                                     ;   clears sg_zon itself on the way out.
+        jsr sg_bsp                   ; C=1 = nothing crossed the ray
+        bcc ?no
+?ok     pla
+        sec
+        rts
+?no     pla
+?out    clc
+        rts
+.endp
+    .if * > ENRAY_END+1
+        ert 'en_dray outgrew ENRAY_BASE..END (memory_map.inc)'
+    .endif
+        org enray_resume
+
         org ENBVAR_BASE
 en_bx   dta 0,0                      ; where the blast went off
 en_by   dta 0,0
@@ -1668,10 +1736,11 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         lda en_by+1
         sbc (sp_ptr),y
         sta m_b+1
-        jsr en_bdist                 ; PIT_RadiusAttack's boss exemption, THEN
-        bcc ?next                    ;   its range test (enemy_ai.asm). Same
-        jsr en_bhit                  ;   three bytes the `jsr en_dist` here used
-        jsr en_thrust_bl             ;   to be, which is all this block had.
+        jsr en_bdist                 ; PIT_RadiusAttack's boss exemption, its
+        bcc ?next                    ;   range test AND its P_CheckSight, all
+        jsr en_bhit                  ;   three behind the same three bytes the
+        jsr en_thrust_bl             ;   `jsr en_dist` here used to be -- which
+                                     ;   is all this block has ever had.
 ?next   inc en_bi                    ;   ...and P_DamageMobj's kick, if it lived
         bne ?lp
 ?done   rts

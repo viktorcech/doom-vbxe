@@ -289,3 +289,72 @@ lt_u    dta 0
     .if * > LIGHTS_END+1
         ert 'lights.asm outgrew LIGHTS_BASE..LIGHTS_END (memory_map.inc)'
     .endif
+
+;--------------------------------------------------------------
+; THE MUZZLE FLASH (A_Light1/A_Light2, 2026-08-31 -- see the FLASH banner in
+; memory_map.inc). Two procs, both OUTSIDE every per-frame path:
+;
+; lt_seg_flash -- lt_seg with `row -= EXTRALIGHT` (clamped at 0, DOOM's own
+;   brightest-row clamp). It is jsr'd ONLY while a flash is up: wp_flight
+;   retargets process_seg.ltsj here and back, so the normal frame runs the
+;   untouched lt_seg and pays nothing. Same contract: A/Y clobbered, X
+;   PRESERVED.
+;--------------------------------------------------------------
+ltsf_resume = *
+        org LTSEGF_BASE
+.proc lt_seg_flash
+        ldy #4                       ; sector->lightlevel
+        lda (zp_ptr),y
+        eor #$FF                     ; row = (255 - light) >> 3
+        lsr @
+        lsr @
+        lsr @
+        sec                          ; ... minus the flash's 2 or 4 rows --
+        sbc EXTRALIGHT               ;   DOOM's lightnum+extralight on this
+        bcs ?cl                      ;   port's 32-row ladder
+        lda #0                       ; brighter than row 0 IS row 0 (r_main.c
+?cl     clc                          ;   clamps lightnum the same way)
+        adc #>CMAP_EXT               ; a page per row, so the row IS the high byte
+        sta zp_cm+1
+        iny                          ; floor_pal @5
+        lda (zp_ptr),y
+        tay
+        lda [zp_cm],y
+        sta rs_floorcol
+        ldy #6                       ; ceil_pal @6
+        lda (zp_ptr),y
+        tay
+        lda [zp_cm],y
+        sta rs_ceilcol
+        rts
+.endp
+
+;--------------------------------------------------------------
+; wp_flight -- wp_fenter's tail (P_SetPsprite for ps_flash ends here): read the
+;   NEW flash state's extralight off WS_LIGHT and point process_seg's lt_seg
+;   call at the right variant. Runs 2-4 times per SHOT, never per frame; the
+;   win2 table read is as cold as the transition itself. Entering WS_NULL is
+;   DOOM's S_LIGHTDONE/A_Light0: value 0, the plain lt_seg comes back.
+;   sq2_lt_init jsr's it per level too, so an exit mid-flash cannot carry a
+;   lit view into the next map (g_game.c "cancel gun flashes").
+;--------------------------------------------------------------
+.proc wp_flight
+        ldy wp_fstate
+        lda WS_LIGHT,y
+        sta EXTRALIGHT
+        beq ?off
+        lda #<lt_seg_flash
+        sta process_seg.ltsj+1
+        lda #>lt_seg_flash
+        sta process_seg.ltsj+2
+        rts
+?off    lda #<lt_seg
+        sta process_seg.ltsj+1
+        lda #>lt_seg
+        sta process_seg.ltsj+2
+        rts
+.endp
+    .if * > LTSEGF_END+1
+        ert 'lt_seg_flash + wp_flight outgrew LTSEGF_BASE..END (memory_map.inc)'
+    .endif
+        org ltsf_resume

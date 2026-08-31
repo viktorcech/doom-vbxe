@@ -662,9 +662,42 @@ pld_i    dta 0
         org pld_resume
 
 ; ---------------------------------------------------------------
+; load_things2 -- the .things blob's SECOND read (2026-08-29). Piece 1 (header,
+;   subsector prefix, things, sprite table) went to $C000 in THINGS_SECT whole
+;   sectors; everything from the TRIGGER TABLE on lives at THINGS2_BASE
+;   ($DA00), the map HIGH region's unused tail. read_urom left ll_sec on the
+;   first sector of piece 2 and load_things touched neither ll_sec nor ll_cnt
+;   after it, so all this has to say is where the bytes go and how many.
+;   The blob's header carries ABSOLUTE pointers (p_trig/p_tele/p_hp), so no
+;   reader knows or cares that the two pieces are not adjacent.
+;   Parked at THG2LD_BASE: read_urom drives SIOV, which must stay below $C000.
+; ---------------------------------------------------------------
+thg2_resume = *
+        org THG2LD_BASE
+.proc load_things2
+    .if THG_SECTORS > THINGS_SECT
+        lda #<THINGS2_BASE
+        sta ll_dst
+        lda #>THINGS2_BASE
+        sta ll_dst+1
+        lda #[THG_SECTORS-THINGS_SECT]
+        sta ll_left
+        jsr read_urom
+    .endif
+        jmp load_dtab                ; the death-frame table rides along
+.endp
+    .if * > THG2LD_END+1
+        ert 'load_things2 outgrew THG2LD_BASE..END (memory_map.inc)'
+    .endif
+    .if [THG_SECTORS-THINGS_SECT]*128 > [THINGS2_END+1-THINGS2_BASE]
+        ert 'the .things blob piece 2 overruns THINGS2_BASE..END'
+    .endif
+        org thg2_resume
+
+; ---------------------------------------------------------------
 ; load_dtab -- stream this level's death-animation frame table (pack_things
 ;   pack_death) into Rapidus SRAM bank $01 at DTAB_EXT. Chained off the end of
-;   load_things, so it runs inside the same SIO window with the OS ROM in.
+;   load_things2, so it runs inside the same SIO window with the OS ROM in.
 ;   Parked at DTBLD_BASE: read_ext drives SIOV, which must stay below $C000.
 ; ---------------------------------------------------------------
 dtbld_resume = *

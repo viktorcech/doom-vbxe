@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
+; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -351,8 +351,9 @@ plrs_resume = *
         sta.l DOOR_FRAC,x
         lda DOOR_STEP
         adc #0
-        sta DOOR_DELTA
-        lda.l DOOR_STATE,x
+        jsr crush_pre                ; stores DOOR_DELTA, halves it for a SLOW
+                                     ;   crusher (CEILSPEED is half VDOORSPEED)
+                                     ;   and comes back with DOOR_STATE in A
         cmp #1
         beq ?opening
         cmp #2
@@ -379,16 +380,18 @@ plrs_resume = *
         bmi ?shut
         ora m_a
         beq ?shut
-        cpx DOOR_PLR                 ; player under THIS door?
-        bne ?move
-        lda m_a+1                    ; opening >= 256 -> he fits, no crush
-        bne ?move
+        lda m_a+1                    ; opening >= 256 -> everything under this
+        bne ?move                    ;   ceiling still fits (P_ThingHeightClip)
         lda m_a
         cmp #PLAYER_H
         bcs ?move
-        lda #1                       ; crushed: T_MovePlane restores the ceiling and
-        sta.l DOOR_STATE,x           ;   T_VerticalDoor sends a normal door back up
+        cpx DOOR_PLR                 ; ...it does not. The player under it?
+        bne ?crmon
+        jsr door_crush               ; a normal door goes back up and stops here;
+        bcs ?crmon                   ;   a CRUSHER hurts him instead, and the
+        jsr crush_things             ;   fast one keeps coming down
         jmp ?next                    ; (cur untouched -> nothing to write)
+?crmon  jsr crush_things             ; P_ChangeSector: the MONSTERS under it too
 ?move   lda m_ma
         sta.l DOOR_CURLO,x
         lda m_ma+1
@@ -400,9 +403,9 @@ plrs_resume = *
         iny
         lda (zp_ptr),y
         sta.l DOOR_CURHI,x
-        lda #0
-        sta.l DOOR_STATE,x
-        dec DOOR_NACT                ; door parked: one less to scan next frame
+        ldy #1                       ; a CRUSHER turns straight round and rises
+        lda #0                       ; a door PARKS shut: one less to scan next
+        jsr door_end                 ;   frame (door_end gives DOOR_NACT back)
         jmp ?writ                    ; (other doors may still be live -- no branch trick)
 ?opening ; cur += delta, clamp to open, then state=open + dwell timer
         clc
@@ -422,11 +425,10 @@ plrs_resume = *
         sta.l DOOR_CURLO,x
         lda.l DOOR_OPNH,x
         sta.l DOOR_CURHI,x
-        lda #2
-        sta.l DOOR_STATE,x
-        lda #DOOR_DWELL_VB
-        sta.l DOOR_WAIT,x
-        bne ?writ                    ; DOOR_DWELL_VB != 0 -> always taken
+        ldy #3                       ; a CRUSHER reverses at the top instead --
+        lda #2                       ;   no dwell, and DOOR_WAIT keeps its speed
+        jsr door_end                 ;   class (p_ceilng.c T_MoveCeiling case 1)
+        jmp ?writ
 ?dwell  lda.l DOORSTAY,x             ; a switch parked this door OPEN (103/2 --
         bne ?writ                    ;   p_doors.c case open: thinker removed)
         lda.l DOOR_WAIT,x            ; the dwell counts VBLANKs, not frames
@@ -1004,7 +1006,11 @@ sw_hit  dta 0
                                      ;   them apart and comes back to tl_once
 ?have
         tax
-        ldy #13
+        ldy #14                      ; DST. A door record has never used it ("the
+        lda (zp_ptr),y               ;   height is in MAP_DOORS"), so it is where
+        beq ?nc                      ;   p_ceilng.c's action rides: 1 = 73
+        jmp trig_crush               ;   crushAndRaise, 2 = 77 fast, 3 = 74 stop
+?nc     dey                          ; ...and back to 13, the flags
         lda (zp_ptr),y
         and #$08                     ; b11 = the door parks OPEN (103 / type 2)
         beq ?fo
@@ -1358,3 +1364,279 @@ sda_x   dta 0
         ert 'snd_q_door_at outgrew SNDDIST (memory_map.inc)'
     .endif
         org sda_resume
+
+;==============================================================
+; CRUSHERS -- p_ceilng.c EV_DoCeiling / T_MoveCeiling, on the door mover.
+;
+; The ceiling that comes down on your head, rises, and does it again for ever.
+; Episodes 1-3 use three of DOOM's six crusher actions, all WR walkovers:
+;   73  crushAndRaise      CEILSPEED     E2M2/E2M4/E2M6/E3M4/E3M5
+;   77  fastCrushAndRaise  CEILSPEED*2   E2M2/E2M4
+;   74  EV_CeilingCrushStop              every map that has one
+; and until 2026-08-29 the port had none of them: the tagged sectors sat
+; motionless, so E2M2's mincer corridor (the reported bug -- "drvice nefunguju",
+; 91,-306, which is right on top of ld1564, a 77) was a walk-through.
+;
+; WHY IT IS A DOOR. The door mover already animates a sector CEILING between two
+; heights at a VBLANK-scaled speed, already writes it back into MAP_SECTORS for
+; the renderer and collision, and already has the "is the player under it" test
+; (DOOR_PLR). A crusher is that machine with three answers changed, and each one
+; is a jsr on a path that had the bytes to spare:
+;   crush_pre    the SPEED (CEILSPEED is half the VDOORSPEED a door moves at)
+;   door_crush   what happens when it catches the player: HURT, do not bounce
+;   door_end     what happens at each end of the travel: REVERSE, never park
+; plus the one thing a door never had to do at all:
+;   crush_things P_ChangeSector's sweep -- the MONSTERS under it die too
+; pack_map._doors gives the tagged sectors ordinary door records (open_ceil =
+; the sector's own map ceiling, LOCK bit3 = CRUSH_BIT, bit5 = no PUSH line, so
+; the spacebar and the monsters are refused exactly as on any remote-only door),
+; and pack_things puts p_ceilng.c's action in the trigger record's dst.
+;
+; The whole block is parked at CRUSH_BASE: 384 B under the ROM that the map's
+; HIGH region stopped needing when SSECTORS left for the Rapidus EXT bank.
+;==============================================================
+crush_resume = *
+        org CRUSH_BASE
+
+;--------------------------------------------------------------
+; crush_pre -- A = the whole-unit ceiling step door X takes this frame.
+;   Stores it as DOOR_DELTA, halves it for a SLOW crusher, and hands back the
+;   door's STATE so update_doors can dispatch. It replaces the
+;   `sta DOOR_DELTA / lda.l DOOR_STATE,x` that was there, so an ordinary door
+;   pays one jsr and nothing else.
+;   The halving is of the WHOLE part, after DOOR_FRAC has taken the Q8 carry, so
+;   a slow crusher runs a few per cent under CEILSPEED rather than exactly on
+;   it -- the alternative is a second 16-bit accumulate per door per frame, and
+;   nobody can see 3.2 units a frame against 3.5 on a ceiling.
+;--------------------------------------------------------------
+.proc crush_pre
+        sta DOOR_DELTA
+        lda MAP_DOORLOCK,x           ; (under-ROM read: the frame loop banks the
+        and #CRUSH_BIT              ;   OS ROM out -- bsp_main.asm's rom_out)
+        beq ?out
+        jsr snd_q_grind              ; T_MoveCeiling plays sfx_stnmov on
+                                     ;   !(leveltime&7), which is snd_q_grind's
+                                     ;   own gate (sound.asm) -- and it is
+                                     ;   WEAK-queued, so the grind never eats a
+                                     ;   real event. A crusher you cannot hear
+                                     ;   coming is not the same trap DOOM sets.
+                                     ;   Preserves X.
+        lda.l DOOR_WAIT,x            ; the crusher's speed class: 0 = CEILSPEED,
+        bne ?out                     ;   1 = CEILSPEED*2 (special 77)
+        lsr DOOR_DELTA
+?out    lda.l DOOR_STATE,x
+        rts
+.endp
+
+;--------------------------------------------------------------
+; door_crush -- the descending ceiling has caught the player (update_doors'
+;   opening < PLAYER_H test). p_doors.c sends a `normal` door back UP, and that
+;   is what T_MovePlane's `crushed` means for a door. A CRUSHER does not bounce:
+;   T_MoveCeiling keeps it coming and PIT_ChangeSector takes health off whatever
+;   is under it -- crushAndRaise drops to CEILSPEED/8 while it is crushing,
+;   fastCrushAndRaise does not slow at all.
+;   The port's CEILSPEED/8 is "hold still this frame", which at these frame
+;   rates is the same picture and costs no state.
+;   OUT: C=1 = go on moving (a fast crusher), C=0 = leave the ceiling alone.
+;--------------------------------------------------------------
+.proc door_crush
+        lda MAP_DOORLOCK,x
+        and #CRUSH_BIT
+        bne ?hurt
+        lda #1                       ; an ordinary door: back up (p_doors.c:151)
+        sta.l DOOR_STATE,x
+        clc
+        rts
+?hurt   lda dt_vbl                   ; P_DamageMobj(player, NULL, NULL, 10) every
+        asl                          ;   4 tics = CRUSH_DMG_VB a VBLANK, scaled
+        jsr en_plr_hurt              ;   by the frame like every other timer
+                                     ;   here. X survives it (enemy.asm) --
+                                     ;   update_damage leans on the same fact
+        lda.l DOOR_WAIT,x            ; slow -> CEILSPEED/8 -> stand still
+        beq ?stop
+        sec
+        rts
+?stop   clc
+        rts
+.endp
+
+;--------------------------------------------------------------
+; door_end -- door X has arrived at one end of its travel.
+;   IN: A = the state an ORDINARY door takes there (2 = dwell at the top,
+;           0 = parked shut)
+;       Y = the state a CRUSHER takes instead (3 = straight back down at the
+;           top, 1 = straight back up at the bottom)
+;   A crusher never parks and never dwells, so it never gives DOOR_NACT back:
+;   update_doors keeps scanning it for the rest of the level, which is exactly
+;   what DOOM does by leaving the thinker in the list. That is the standing cost
+;   of a running crusher -- the door scan plus door_at_point's one BSP descent,
+;   and any moving door already pays both.
+;--------------------------------------------------------------
+.proc door_end
+        pha
+        lda MAP_DOORLOCK,x
+        and #CRUSH_BIT
+        beq ?door
+        pla
+        tya                          ; the crusher's other direction
+        sta.l DOOR_STATE,x
+        rts
+?door   pla
+        sta.l DOOR_STATE,x           ; (A survives the store, for the cmp)
+        cmp #2
+        beq ?dwell
+        dec DOOR_NACT                ; parked: one less to scan next frame
+        rts
+?dwell  lda #DOOR_DWELL_VB           ; the dwell counts VBLANKs
+        sta.l DOOR_WAIT,x
+        rts
+.endp
+
+;--------------------------------------------------------------
+; trig_crush -- a crusher line was crossed (trig_fire, off the record's dst).
+;   IN: A = 1 (73 crushAndRaise) | 2 (77 fastCrushAndRaise) | 3 (74 stop)
+;       X = the door index the record's tagged sector maps to
+;   EV_DoCeiling walks every sector with the line's tag and skips the ones
+;   already running ("if (sec->specialdata) continue"); here the packer emits
+;   one record per tagged sector, so the walk IS the trigger scan and the skip
+;   is the DOOR_STATE test. A crusher that 74 put in stasis restarts DOWNWARD
+;   rather than in the direction it was going -- P_ActivateInStasisCeiling
+;   remembers that and this does not; the cost is one wrong half-cycle, once,
+;   on a machine that then repeats for ever.
+;--------------------------------------------------------------
+.proc trig_crush
+        cmp #3
+        beq ?halt
+        pha
+        lda.l DOOR_STATE,x
+        bne ?pull                    ; already running -> leave it alone
+        inc DOOR_NACT                ; one more live ceiling for update_doors
+        lda #3                       ; EV_DoCeiling: direction = -1, i.e. DOWN
+        sta.l DOOR_STATE,x
+        pla
+        lsr                          ; dst 1 -> speed 0 (CEILSPEED),
+        sta.l DOOR_WAIT,x            ;     dst 2 -> speed 1 (CEILSPEED*2)
+        bpl ?out                     ; (always: the lsr cleared bit 7)
+?pull   pla
+?out    jmp trig_fire.tl_once        ; the tail every fired trigger ends on
+?halt   lda.l DOOR_STATE,x           ; EV_CeilingCrushStop: park it where it
+        beq ?out                     ;   stands, and stop scanning it
+        dec DOOR_NACT
+        lda #0
+        sta.l DOOR_STATE,x
+        beq ?out                     ; (always)
+.endp
+
+;--------------------------------------------------------------
+; crush_things -- P_ChangeSector(sector, true) for the crusher whose door index
+;   is X: the MONSTERS under the descending ceiling, not only the player.
+;   p_map.c PIT_ChangeSector runs over the sector and, for every thing
+;   P_ThingHeightClip cannot fit, takes 10 health off it every 4 tics; a thing
+;   that is ALREADY dead becomes S_GIBS instead, and a dropped item is removed.
+;   The port keeps the first of those three and states the other two: it has no
+;   gib state to put a corpse into, and nothing it drops is in anyone's way.
+;
+;   The sweep is en_bthings' (A_Explode's), for the same reason -- the cheap
+;   rejects come first and almost everything leaves on health 0 or "already
+;   dying", so the linear walk costs about what a blockmap walk would once the
+;   port's cells (512 units, WRAPPED into 8x8) have handed back their strangers.
+;   What decides membership is door_at_point, which answers "which door's sector
+;   is this point in" exactly, and is the same descent update_doors makes for
+;   the player every frame anyway.
+;
+;   The caller has already established that the opening is under PLAYER_H, so
+;   none of this runs until the ceiling is low enough to hurt something.
+;   Preserves X and m_ma (the ceiling ?move is about to store) and rebuilds
+;   zp_ptr, which door_at_point clobbers.
+;--------------------------------------------------------------
+.proc crush_things
+        lda MAP_DOORLOCK,x
+        and #CRUSH_BIT
+        bne ?go
+?rts    rts                          ; an ordinary door crunches nobody here:
+                                     ;   P_ChangeSector(crunch=false) only says
+                                     ;   "no fit", and what this port does with
+                                     ;   that is send the door back up
+?go     stx ct_d
+        lda m_ma                     ; ?move still wants the new ceiling, and
+        sta ct_m                     ;   door_at_point/en_bhit own the maths
+        lda m_ma+1                   ;   registers between here and there
+        sta ct_m+1
+        lda zp_px                    ; ...and the player's probe point, which
+        sta ct_p                     ;   door_at_point reads
+        lda zp_px+1
+        sta ct_p+1
+        lda zp_py
+        sta ct_p+2
+        lda zp_py+1
+        sta ct_p+3
+        lda #0
+        sta en_bi
+?lp     lda en_bi
+        cmp THINGS_BASE              ; the thing count (blob header +0)
+        bcs ?done
+        ldy en_bi
+        lda #<TH_HPL                 ; (every bank $01 page has low byte 0)
+        sta zp_ptr
+        lda #>TH_HPL
+        sta zp_ptr+1
+        lda [zp_ptr],y
+        sta m_a
+        lda #>TH_HPH
+        sta zp_ptr+1
+        lda [zp_ptr],y
+        ora m_a
+        beq ?next                    ; 0 health: a decoration, or already dead
+        lda #>TH_STATE
+        sta zp_ptr+1
+        lda [zp_ptr],y
+        bne ?next                    ; already dying -- PIT_ChangeSector gibs a
+                                     ;   corpse; there is no gib state here
+        lda en_bi                    ; its x/y -> the point to place
+        jsr en_thing.en_th2
+        ldy #0
+        lda (sp_ptr),y
+        sta zp_px
+        iny
+        lda (sp_ptr),y
+        sta zp_px+1
+        ldy #2
+        lda (sp_ptr),y
+        sta zp_py
+        iny
+        lda (sp_ptr),y
+        sta zp_py+1
+        jsr door_at_point            ; standing in THIS crusher's sector?
+        cmp ct_d
+        bne ?next
+        lda dt_vbl                   ; the same 10-every-4-tics the player takes
+        asl                          ;   (CRUSH_DMG_VB), scaled by the frame
+        jsr en_bhit                  ; P_DamageMobj: health, death, the scream
+?next   inc en_bi
+        bne ?lp                      ; (always: the count is a byte)
+?done   lda ct_p
+        sta zp_px
+        lda ct_p+1
+        sta zp_px+1
+        lda ct_p+2
+        sta zp_py
+        lda ct_p+3
+        sta zp_py+1
+        lda ct_m
+        sta m_ma
+        lda ct_m+1
+        sta m_ma+1
+        ldx ct_d                     ; update_doors' door index and its sector
+        lda.l DOOR_SECL,x            ;   pointer, both of which the descent and
+        sta zp_ptr                   ;   the damage above went through
+        lda.l DOOR_SECH,x
+        sta zp_ptr+1
+        rts
+.endp
+ct_d    dta 0                        ; the door being crushed under
+ct_m    dta 0,0                      ; m_ma across the sweep
+ct_p    dta 0,0,0,0                  ; the player's probe point across it
+    .if * > CRUSH_END+1
+        ert 'the crusher block outgrew CRUSH_BASE..END (memory_map.inc)'
+    .endif
+        org crush_resume

@@ -178,28 +178,32 @@
         lda sp_scale+1
         sta m_den+1
         jsr udiv24                   ; m_quot = spy8 = samples per row at z = 8
-        clc
+        ; 16-BIT A (2026-08-31, tips-poliak.txt round two -- "S. Ten kawalek
+        ; jest przecudny"): this built (m_quot+4)>>3 by STORING the sum and
+        ; then shifting it IN MEMORY, six lsr/ror abs pairs at 12 cycles each,
+        ; with an lda/ora/bne re-load to test what the accumulator had just
+        ; held. The whole thing is one 16-bit accumulator expression now --
+        ; and `inc @` fixes a latent bug on the way: the old minified-path
+        ; clamp tested sp_spy's LOW byte alone, so a value of exactly $0100
+        ; would have been "zero" and bumped to $0101.
+        rep #$20
+        .LONGA ON
         lda m_quot
-        adc #4
-        sta sp_spy
-        lda m_quot+1
-        adc #0
-        sta sp_spy+1
-        lsr sp_spy+1
-        ror sp_spy
-        lsr sp_spy+1
-        ror sp_spy
-        lsr sp_spy+1
-        ror sp_spy
+        clc
+        adc #4                       ; rounding
+        lsr @
+        lsr @
+        lsr @                        ; /8 -- in A, 2 cycles a shift
+        bne ?spyok
+        inc @                        ; never zero (65816 inc a)
+?spyok  sta sp_spy
+        .LONGA OFF
+        sep #$20
         ; z IS 1 -- always, since 2026-08-04 (the note above). Everything that
         ; used to key off it is gone with it: sp_zsh (written 0 here and read
         ; nowhere else), the spr_zm rounding table, the spr_zoom BCB table and
         ; the three shift loops they fed. 74 B and the reads that went with it.
-        lda sp_spy
-        ora sp_spy+1
-        bne ?spyok
-        inc sp_spy                   ; never zero
-?spyok  lda #8                       ; the scratch always holds 8 samples/texel
+        lda #8                       ; the scratch always holds 8 samples/texel
         sta sp_s
         lda sp_scale+1               ; minified 4x or more: skip the expansion and
         bne ?fine                    ; sample the raw column (nothing to gain),
@@ -208,15 +212,17 @@
         bcs ?fine
         lda #1
         sta sp_s
-        lsr sp_spy+1
-        ror sp_spy
-        lsr sp_spy+1
-        ror sp_spy
-        lsr sp_spy+1
-        ror sp_spy
+        rep #$20
+        .LONGA ON
         lda sp_spy
-        bne ?fine
-        inc sp_spy
+        lsr @
+        lsr @
+        lsr @
+        bne ?nz2
+        inc @                        ; never zero -- ALL 16 bits tested now
+?nz2    sta sp_spy
+        .LONGA OFF
+        sep #$20
 ?fine   lda #0                       ; texels per screen column = 65536 / hs (Q8)
         sta m_prod
         sta m_prod+1
@@ -394,8 +400,11 @@ sb_resume = *
         sta MEMW+MEMW_SP_OFF+BCB_DST_ADDR+2
         lda sp_bh                    ; HEIGHT = source reads - 1
         sta MEMW+MEMW_SP_OFF+BCB_HEIGHT
-        lda #0                       ; ZOOM_Y = 0: z is 1, one row per read
-        sta MEMW+MEMW_SP_OFF+BCB_ZOOM
+        stz MEMW+MEMW_SP_OFF+BCB_ZOOM ; ZOOM_Y = 0: z is 1, one row per read.
+                                     ;   stz, not `lda #0`+`sta`: A is reloaded
+                                     ;   right after blitter_wait, and this code
+                                     ;   runs from win2 at x11.2 -- the dead
+                                     ;   load was ~540 cyk/frame (_an_waste)
         jsr blitter_wait             ; a START while busy is silently dropped
         lda #<VRAM_BCB_SPR
         sta VBXE_BL_ADR0

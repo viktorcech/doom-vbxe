@@ -1,6 +1,6 @@
 # Build the DOOM BSP engine XEX -- the ENGINE ONLY, no assets and no ATR.
 # For something you can boot, use .\build_atr.ps1 (that one packs the level
-# assets, runs this same chain, and writes build/doom_e1.atr).
+# assets, runs this same chain, and writes build/doom.atr).
 # Run from anywhere; paths are relative to this script.
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot

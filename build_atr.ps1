@@ -30,6 +30,12 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+# WHICH INTERPRETER RUNS THE PACKERS. 'python' normally -- a developer checkout
+# has one. The packaged wadconv.exe (tools/make_exe.py) has no Python on the
+# user's machine at all, so it sets DOOM_PY to ITSELF and every packer below is
+# re-run through the EXE, which carries the interpreter, numpy and PIL with it.
+# Unset = exactly what this script always did.
+$py = if ($env:DOOM_PY) { $env:DOOM_PY } else { 'python' }
 $mads = Join-Path (Split-Path $PSScriptRoot -Parent) 'mads.exe'
 if (-not (Test-Path $mads)) { $mads = Join-Path $PSScriptRoot 'mads.exe' }
 if (-not (Test-Path build)) { New-Item -ItemType Directory build | Out-Null }
@@ -56,12 +62,12 @@ function Lap([string]$what) {                    # -Time: one line per step
 # 1. boot loader -> raw boot.bin (strip the 6-byte XEX header, like woll3d)
 & $mads -i:. boot.asm -o:build/boot.xex
 if ($LASTEXITCODE -ne 0) { Write-Error 'boot assemble failed'; exit 1 }
-python -c "open('build/boot.bin','wb').write(open('build/boot.xex','rb').read()[6:])"
+& $py -c "open('build/boot.bin','wb').write(open('build/boot.xex','rb').read()[6:])"
 Lap 'boot loader'
 
 # 1b. digitized SFX blob + sound_tables.inc (both are inputs to the layout below:
 #     SND_CHUNKS sizes the ATR slot, the tables are icl'd by sound.asm)
-python tools\wadsound.py
+& $py tools\wadsound.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'sound extract failed'; exit 1 }
 
 # 1c. weapon psprites + weap_tables.inc (same deal: WEAP_CHUNKS sizes the slot,
@@ -80,7 +86,7 @@ if (-not $weapDo) {
   if ($inN -and $outO.LastWriteTimeUtc -lt $inN.LastWriteTimeUtc) { $weapDo = $true }
 }
 if ($weapDo) {
-  python tools\pack_weap.py
+  & $py tools\pack_weap.py
   if ($LASTEXITCODE -ne 0) { Write-Error 'weapon extract failed'; exit 1 }
 } else {
   Write-Host 'weapon psprites up to date -- pack_weap skipped. Force with -Full' -ForegroundColor DarkGray
@@ -90,14 +96,14 @@ if ($weapDo) {
 #       flat surface with. Map-independent and chunk-sized, so it rides into
 #       Rapidus SRAM behind the weapon master (make_atr_doom.py CMAP_EXT) --
 #       it sizes that slot, so it has to exist before the layout is emitted.
-python tools\pack_cmap.py
+& $py tools\pack_cmap.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'colormap extract failed'; exit 1 }
 
 # 1c-3. status bar + every widget glyph -> hud.bin/hud.tab. Ran by hand until
 #       2026-08-07 and it bit exactly the way pack_things once did: adding the
 #       OUCH faces moved the table, the engine indexed face 26 and the ATR still
 #       carried the 26-lump blob that has no face 26 in it.
-python tools\pack_hud.py
+& $py tools\pack_hud.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'hud pack failed'; exit 1 }
 Lap 'wad assets (sound/weap/cmap/hud)'
 
@@ -120,7 +126,7 @@ Write-Host "build version 0.$v"
 #            set (WILV name lumps, wi_lvx, wi_par, lnodes -- all per level).
 #            Must run BEFORE pack_menu (menu.bin swallows wi.bin) and before
 #            mads (wi.asm ins-es wi.tab + icl's wi_syms.inc).
-python tools\pack_wi.py --levels ($lvls -join ',')
+& $py tools\pack_wi.py --levels ($lvls -join ',')
 if ($LASTEXITCODE -ne 0) { Write-Error 'wi pack failed'; exit 1 }
 # 1c-bis-fin. the END-OF-EPISODE finale (f_finale.c): fin.bin, the small
 #             resident half (hu_font + the three flats + the three story
@@ -130,9 +136,9 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'wi pack failed'; exit 1 }
 #             finpic.bin is NOT swallowed -- 38 chunks would walk the boot
 #             stream through FRAME_C -- it is its own ATR region (FIN_SEC1)
 #             that the finale pulls into the sprite arena on demand.
-python tools\pack_fin.py
+& $py tools\pack_fin.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'finale pack failed'; exit 1 }
-python tools\pack_menu.py --levels ($lvls -join ',')
+& $py tools\pack_menu.py --levels ($lvls -join ',')
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu pack failed'; exit 1 }
 Lap 'menu + version'
 
@@ -209,11 +215,11 @@ if (-not $repack) {
 }
 if ($repack) {
   Write-Host "packing levels: $why"
-  python tools\pack_map.py $lvls
+  & $py tools\pack_map.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'map pack failed'; exit 1 }
-  python tools\pack_textures.py $lvls
+  & $py tools\pack_textures.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'texture pack failed'; exit 1 }
-  python tools\pack_things.py $lvls
+  & $py tools\pack_things.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'things pack failed'; exit 1 }
   Set-Content $stamp "$($env:DOOMWAD)|$($env:DOOMPWAD)|$($lvls -join ' ')" -Encoding ascii
 } else {
@@ -222,7 +228,7 @@ if ($repack) {
 Lap 'level assets'
 
 # 2. level layout (atr_layout.inc) BEFORE building the XEX (load_level needs it)
-python tools\make_atr_doom.py --dir $lvls
+& $py tools\make_atr_doom.py --dir $lvls
 if ($LASTEXITCODE -ne 0) { Write-Error 'layout emit failed'; exit 1 }
 
 # 3. engine XEX (now atr_layout.inc is correct)
@@ -237,7 +243,7 @@ Lap 'mads'
 # 3a. the menu CODE overlay out of the XEX and into menu.bin's reserved chunk.
 #     It is assembled for $1000 and parked at $C000, so it must be gone before
 #     check_xex.py looks (and before the boot loader ever writes it to RAM).
-python tools\split_menu_ovl.py
+& $py tools\split_menu_ovl.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu overlay split failed'; exit 1 }
 
 # 3b. no segment may land in RAM that is overwritten at runtime (TEX_STAGE!)
@@ -247,10 +253,10 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'menu overlay split failed'; exit 1 }
 #     It was deleted on 2026-08-14, so both are skipped until it is back. The .asm
 #     `ert` guards still catch every parked block that outgrows its hole.
 if (Test-Path tools/ram_map.py) {
-    python tools/ram_map.py --update | Out-Null   # refresh the RAM budget comment
-    python tools/bank_map.py --check
+    & $py tools/ram_map.py --update | Out-Null   # refresh the RAM budget comment
+    & $py tools/bank_map.py --check
 if ($LASTEXITCODE -ne 0) { Write-Error 'two Rapidus bank $01 regions overlap'; exit 1 }
-python tools/check_xex.py build/doom_bsp.xex
+& $py tools/check_xex.py build/doom_bsp.xex
     if ($LASTEXITCODE -ne 0) { Write-Error 'segment lands in reserved RAM'; exit 1 }
 } else {
     Write-Host 'SKIP RAM guards (tools/ram_map.py is missing)'
@@ -258,7 +264,7 @@ python tools/check_xex.py build/doom_bsp.xex
 Lap 'overlay split + RAM guards'
 
 # 4. assemble the bootable ATR (boot.bin + doom_bsp.xex + maps)
-python tools\make_atr_doom.py $lvls
+& $py tools\make_atr_doom.py $lvls
 if ($LASTEXITCODE -ne 0) { Write-Error 'atr build failed'; exit 1 }
 Lap 'ATR image'
 
@@ -371,7 +377,7 @@ if ($Check) {
     # via cmd so the 2>&1 merge happens OUTSIDE PowerShell: with this script's
     # $ErrorActionPreference='Stop', a native command's stderr line becomes a
     # terminating NativeCommandError right at the assignment
-    $tout = cmd /c "python tools/tests/_verify_$t.py 2>&1"
+    $tout = cmd /c "$py tools/tests/_verify_$t.py 2>&1"
     if ($LASTEXITCODE -ne 0) {
       # 2026-08-10: _prof_procs/_verify_bootload exist only as .pyc compiled by
       # a NEWER Python than the installed 3.12 ("bad magic number"), so these
@@ -394,16 +400,16 @@ if ($Check) {
   # to a missing script aborted the build HERE -- before the ATR was ever
   # written. The engine had meanwhile grown past the sector window, unseen.
   if (Test-Path "tools/tests/_verify_save.py") {
-    python "tools/tests/_verify_save.py" | Select-Object -Last 1
+    & $py "tools/tests/_verify_save.py" | Select-Object -Last 1
     if ($LASTEXITCODE -ne 0) { Write-Error '_verify_save failed'; exit 1 }
   } else {
     Write-Host 'SKIP _verify_save (tools/tests/_verify_save.py is missing)' -ForegroundColor Yellow
   }
-  python tools\check_boot.py
+  & $py tools\check_boot.py
   if ($LASTEXITCODE -ne 0) { Write-Error 'boot check failed -- this ATR would not boot'; exit 1 }
   Lap 'verify gates'
 } else {
   Write-Host 'gates skipped: boot sim + _verify_* (-Check runs them)' -ForegroundColor DarkGray
 }
 
-Write-Host ("OK -> build/doom_e1.atr  ({0:N1}s)" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
+Write-Host ("OK -> build/doom.atr  ({0:N1}s)" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green

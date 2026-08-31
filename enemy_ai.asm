@@ -2104,7 +2104,8 @@ ai_resume = *                        ; BEFORE the org, never after: `org label`
         lda [zp_ptr],y
         cmp #MK_NOBLAST_R
         bcs ?no
-        jmp en_dist                  ; ordinary thing -> PIT_RadiusAttack proper
+        jmp en_dray                  ; ordinary thing -> PIT_RadiusAttack proper,
+                                     ;   range test AND P_CheckSight (enemy.asm)
 ?no     clc                          ; a boss: `return true`, no damage, no kick
         rts                          ;   (a jmp and not a branch: en_dist is at
 .endp                                ;    $EA68 and this block is at $3D9C)

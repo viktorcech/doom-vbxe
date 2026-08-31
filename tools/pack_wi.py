@@ -103,11 +103,52 @@ PARS = {'E1M1': 30, 'E1M2': 75, 'E1M3': 120, 'E1M4': 90, 'E1M5': 165,
         'E3M1': 90, 'E3M2': 45, 'E3M3': 90, 'E3M4': 150, 'E3M5': 90,
         'E3M6': 90, 'E3M7': 165, 'E3M8': 30, 'E3M9': 135}
 
+# DOOM II keeps its par times in a SEPARATE table, cpars[32] (g_game.c:987),
+# indexed gamemap-1 -- not pars[episode][map]. Final Doom (TNT, Plutonia) has
+# no table of its own: doom2.exe's cpars is what tnt.exe and plutonia.exe
+# shipped with, so a MAPxx conversion gets these whatever the WAD is.
+CPARS = (30, 90, 120, 120, 90, 150, 120, 120, 270, 90,          # MAP01-10
+         210, 150, 150, 150, 210, 150, 420, 150, 210, 150,      # MAP11-20
+         240, 150, 180, 150, 150, 300, 330, 420, 300, 180,      # MAP21-30
+         120, 30)                                               # MAP31-32
+
 E1_MAPS = tuple('E1M%d' % i for i in range(1, 10))
 
 
+def is_mapxx(nm):
+    """DOOM II / Final Doom level naming -- MAP01..MAP32 instead of ExMy."""
+    return nm[:3] == 'MAP' and nm[3:].isdigit()
+
+
+def epsd_map(nm):
+    """(episode, map) as wi_stuff.c indexes them, both 0-based.
+
+    A MAPxx level has no episode and, in DOOM II, no map screen at all --
+    WI_drawShowNextLoc just draws INTERPIC. This port has one background slot
+    and the WAD layering fills it from the IWAD (WIMAP0, episode 1's map), so
+    a MAPxx level is placed on THAT map: episode 0, and the nine lnode spots
+    reused round-robin. It is a spot on a picture, nothing reads it back."""
+    if is_mapxx(nm):
+        return 0, (int(nm[3:]) - 1) % len(LNODES[0])
+    return int(nm[1]) - 1, int(nm[3]) - 1
+
+
+def par_of(nm):
+    """Par time in seconds. 0 = "no par" -- DOOM itself shows the par line
+    regardless, and a WAD with levels outside both tables (MAP33+, or a name
+    like TITLEMAP) used to take the whole build down with a KeyError."""
+    if is_mapxx(nm):
+        i = int(nm[3:]) - 1
+        return CPARS[i] if 0 <= i < len(CPARS) else 0
+    return PARS.get(nm, 0)
+
+
 def wilv(nm):
-    """The level-name lump: hu_stuff's WILV<episode-1><map-1> (E2M1->WILV10)."""
+    """The level-name lump. Two schemes, and wi_stuff.c:1570 picks between
+    them on gamemode: commercial (MAPxx) caches CWILV00..CWILV31, everything
+    else WILV<episode-1><map-1> (E2M1 -> WILV10)."""
+    if is_mapxx(nm):
+        return 'CWILV%.2d' % (int(nm[3:]) - 1)
     return 'WILV%d%d' % (int(nm[1]) - 1, int(nm[3]) - 1)
 
 
@@ -128,6 +169,9 @@ def wilv(nm):
 # path that could want it is unreachable here.
 
 
+LVNAME = {}                       # level -> the name lump finally used
+
+
 def _set_maps(maps):
     global MAPS, LEVELS, PAR, LUMPS, WI_VRAM_BASE
     global I_BG, I_LV0, I_FINISH, I_ENTER, I_KILLS, I_ITEMS, I_SECRET
@@ -140,7 +184,7 @@ def _set_maps(maps):
     WI_VRAM_BASE = (0x040000 + nstrips * pack_menu.TITLE_STRIDE
                     + 0xFFF) & ~0xFFF             # no strip) -- keep clear of
                                                   # the HU strip run above
-    PAR = tuple(PARS[nm] for nm in MAPS)
+    PAR = tuple(par_of(nm) for nm in MAPS)
     LUMPS = (['WIMAP0']                                      # 0    background
              + [wilv(nm) for nm in MAPS]                     # 1    level names
              + ['WIF', 'WIENTER']                            # n+1  finished/entering
@@ -159,6 +203,8 @@ def _set_maps(maps):
     I_PCNT, I_COLON = n + 19, n + 20
     I_SPLAT, I_YAH0, I_YAH1 = n + 21, n + 22, n + 23
     I_ANIM0 = n + 24
+    LVNAME.clear()                    # what wilv() ASKS for, until emit() has
+    LVNAME.update((nm, wilv(nm)) for nm in MAPS)   # seen the WAD and found it
 
 
 _set_maps(E1_MAPS)
@@ -182,8 +228,32 @@ def halve(wt, nm):
     return bytes(img), hw, h, left // 2, top
 
 
+def _resolve_lvnames(wad):
+    """Swap in a level-name lump that is actually THERE.
+
+    A map-only PWAD full of MAPxx levels layered over the DOOM IWAD asks for
+    CWILV00.., and the IWAD underneath has none -- registered DOOM never
+    shipped them. halve() would sys.exit on the first one and take the build
+    down over a caption. Fall back to the WILVxx slot in the same position:
+    the wrong words, but the intermission comes up."""
+    have = {n for n, _o, _s in wad.lumps}
+    for i, nm in enumerate(MAPS):
+        want = wilv(nm)
+        if want in have:
+            continue
+        alt = 'WILV%d%d' % (0, i % 9)              # episode 1's nine captions
+        if alt not in have:
+            sys.exit('  ERROR: neither %s nor %s is in the WAD -- %s has no '
+                     'level-name graphic' % (want, alt, nm))
+        print('  %s: no %s in the WAD, using %s (a map-only PWAD brings no '
+              'level-name graphic)' % (nm, want, alt))
+        LUMPS[I_LV0 + i] = alt
+        LVNAME[nm] = alt
+
+
 def emit():
     wad = Wad(DEFAULT_WAD)
+    _resolve_lvnames(wad)
     wt = WadTextures(wad)
     blob = bytearray()
     tab = bytearray()
@@ -221,7 +291,7 @@ def emit():
 def emit_syms(dims, chunks, nlumps):
     numw, numh = dims['WINUM0'][:2]
     lh = (3 * numh) // 2                          # WI_drawStats' line height
-    lvh = dims[wilv(MAPS[0])][1]
+    lvh = dims[LVNAME[MAPS[0]]][1]
     p = os.path.join(ROOT, 'wi_syms.inc')
     with open(p, 'w') as f:
         w = f.write
@@ -290,9 +360,9 @@ def emit_syms(dims, chunks, nlumps):
         w(';       divide, and the widths are pack-time constants anyway) ---\n')
         w('wi_lvx\n')
         for nm in MAPS:
-            lw = dims[wilv(nm)][0]
+            lw = dims[LVNAME[nm]][0]
             w('        dta %d    ; %s (%s), %d B wide\n'
-              % ((SCREEN_W - lw) // 2, wilv(nm), nm, lw))
+              % ((SCREEN_W - lw) // 2, LVNAME[nm], nm, lw))
         w('wi_finx dta %d    ; WIF\n' % ((SCREEN_W - dims['WIF'][0]) // 2))
         w('wi_entx dta %d    ; WIENTER\n' % ((SCREEN_W - dims['WIENTER'][0]) // 2))
         w(';   --- lnodes[episode][map]: where each level sits on its OWN\n')
@@ -300,7 +370,7 @@ def emit_syms(dims, chunks, nlumps):
         w(';       BUILD level index, so wi_yahput needs no arithmetic. ---\n')
         nodes, ebase, nanim = [], [], []
         for nm in MAPS:
-            e, mp = int(nm[1]) - 1, int(nm[3]) - 1
+            e, mp = epsd_map(nm)
             nodes.append(LNODES[e][mp] if e < len(LNODES) else LNODES[0][mp])
             b = 'E%dM1' % (e + 1)
             ebase.append(MAPS.index(b) if b in MAPS else 0)

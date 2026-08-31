@@ -59,18 +59,20 @@ INC = os.path.join(ROOT, 'memory_map.inc')
 
 
 def _things_slot_end():
-    """load_things streams the WHOLE ATR slot (THG_SECTORS x 128 B) to $C000,
-    so the zero padding behind the blob lands in RAM too. The reserve must
+    """load_things streams PIECE 1 of the blob -- THINGS_SECT whole sectors --
+    to $C000, so the zero padding behind it lands in RAM too. The reserve must
     cover the SLOT, not the biggest blob: 2026-08-04 the blobs grew to 30
     sectors, the padding reached $CEFF and wiped switch_match at $CECA -- the
-    first USE at any switch hit a BRK (the E1M8 start-switch freeze). Derived
-    from atr_layout.inc so blob growth can never outrun this list again."""
+    first USE at any switch hit a BRK (the E1M8 start-switch freeze).
+    2026-08-29: the count comes from memory_map.inc's THINGS_SECT, not from
+    atr_layout's THG_SECTORS -- the latter covers BOTH pieces now, and piece 2
+    lands at THINGS2_BASE ($DA00), which has a reserve of its own below."""
     try:
-        src = open(os.path.join(ROOT, 'atr_layout.inc')).read()
-        n = int(re.search(r'^THG_SECTORS\s+equ\s+(\d+)', src, re.M).group(1))
+        src = open(os.path.join(ROOT, 'memory_map.inc')).read()
+        n = int(re.search(r'^THINGS_SECT\s+equ\s+(\d+)', src, re.M).group(1))
         return 0xC000 + n * 128 - 1
     except (OSError, AttributeError):
-        return 0xCEFF
+        return 0xCF7F
 
 def _tex_runs():
     """Is this a PAINTED-wall build? pack_map.py writes the flag into
@@ -110,7 +112,9 @@ RESERVED = [
     # (memory_map.inc). Equated variables carry no XEX segment, so without this
     # line the budget below offers those 20 bytes as free code space -- the same
     # trap rs_utL/rs_utR at $03C1 sit in, one block further up.
-    (0x0340, 0x0356, "PAINT_VARS: paint.asm per-column state (pc_*/rs_rpt/rs_drpt/ptm_last/pc_ytop)"),
+    # ... +0x0357 = EXTRALIGHT, the muzzle flash's 0/2/4 (memory_map.inc,
+    # lights.asm wp_flight/lt_seg_flash, 2026-08-31).
+    (0x0340, 0x0357, "PAINT_VARS + EXTRALIGHT: paint.asm per-column state / muzzle flash"),
     # ...and the two the line above already named as the same trap "one block
     # further up" without ever reserving them: rs_utL/rs_utR = OSFREE_BASE+$81/
     # +$83 (memory_map.inc). They sat inside the 39 B block the budget offered
@@ -145,12 +149,10 @@ RESERVED = [
     # without this entry free_blocks() offers $3DB0 as code space and the next
     # relocated proc parks on top of every hitscan.
     (0x3DB0, 0x3DD7, "vs_ybt: vissprite last-row array (memory_map.inc)"),
-    # 2026-07-28: the frac tables swapped homes with the per-column texture code
-    # (tw_setup + the blit segment now run from the fast $1500 pages as XEX
-    # segments; the tables are runtime-built at $8D00/$A800 -- no XEX segment,
-    # so they must be carried HERE or free_blocks() re-advertises the pages).
-    (0x8D00, 0x8FFF, "TSIN frac table pages (runtime-built, build_frac_tables)"),
-    (0xA800, 0xAAFF, "TCOS frac table pages (runtime-built, build_frac_tables)"),
+    # 2026-08-31: the frac tables moved to Rapidus bank $01 ($9900-$9EFF,
+    # memory_map.inc FRAC_EXT) -- their old $8D00/$A800 win2 pages now park the
+    # STAGED SQ2 master data (real XEX segments, so no entry is needed here)
+    # and are dead once b1_to_ext has copied them up.
     # 2026-07-31: the seg records (14,896 B, $47F0-$821F) went to Rapidus bank
     # $03 and the slot collapsed from 17.9 KB to the 2.7 KB of header + sectors
     # + textab + yoffs. $4C00-$85FF is ordinary RAM now -- and per Altirra
@@ -169,6 +171,11 @@ RESERVED = [
     (0x9000, 0x9FFF, "MEMAC-A window: writes go to VBXE, not RAM"),
     # 2026-07-28: the vissprite RECORDS went per-field ($0800 page + $BF50+),
     # so $BAC0-$BF4F freed up -- coll_seg/collide_leaf (COLLFAST) live there now.
+    # 2026-08-30: hud_ent, the 7-byte row hud_entry copies down out of
+    # Rapidus bank $01. An equ with no XEX segment -- the PAINT_VARS/vs_ybt
+    # trap again, and without this line free_blocks() offers $BE60 at the
+    # TOP of its list (the 205 B the table itself freed).
+    (0xBE60, 0xBE66, "hud_ent: the HUD_TAB row hud_entry fetched (memory_map.inc)"),
     (0xBF50, 0xBFFF, "vissprite arrays vs_sch/cpl/sid/ord (sprites.asm)"),
     # 2026-08-02: vs_th and USE_PT. Both are equs with no XEX segment, so
     # free_blocks() advertised them as code holes ("$E6F8-$E71F 40 B",
@@ -197,7 +204,12 @@ RESERVED = [
     # region (SECTORS is LOW now too -- ssectors + door records) ends well below
     # $E300; USERAY/MVUSED/SEGYOFF code lives at $E300+ (pack_map.py HI_LIMIT
     # fails the pack before the stream could ever reach them).
-    (0xD800, 0xE2FF, "map HIGH region (SSECTORS + doors, streamed -- pack_map.py)"),
+    # 2026-08-29: HIGH keeps its four sectors and the tail it never used since
+    # SSECTORS left goes to the .things blob's SECOND piece (memory_map.inc
+    # THINGS2_BASE, pack_map.py HI_LIMIT). Both are streamed, neither is an XEX
+    # segment, so both have to be here.
+    (0xD800, 0xD9FF, "map HIGH region (doors + doorlock, streamed -- pack_map.py)"),
+    (0xDA00, 0xE17F, "THINGS blob piece 2 (triggers.., streamed -- pack_things.py)"),
     # 2026-08-18: the 12 door arrays left $F000 for Rapidus bank $01 (DOOR_EXT,
     # memory_map.inc) so DOORS_NMAX could go 32 -> 48 and E2/E3 stopped needing
     # welded-open doors. $F000-$F17F is ordinary under-ROM code space again --
@@ -245,6 +257,17 @@ STAGED = [
     # savegame.asm's ($C800-) -- b1_to_ext copies it out before the first
     # load_things, and the things slot then has it back.
     (0xC500, 0xC7FF, "B1CODE_STAGE -> bank $01 (bank01.asm), then the things slot"),
+    # 2026-08-31: the SECOND bank01 block (b1_build_frac + b1_sq2_restore),
+    # staged in the raw-XEX hole behind SGOVL's parking. Copied up by the same
+    # b1_to_ext pass; the things stream owns the pages afterwards. The SQ2
+    # runtime HOMES ($C900-$CCFE) carry no XEX segment at all -- b1_sq2_restore
+    # repaints them from bank $01 after every load (memory_map.inc).
+    (0xCD00, 0xCF7F, "B1CODE2_STAGE -> bank $01 (bank01.asm), then the things slot"),
+    # 2026-08-31 pm: the automap overlay stopped riding menu.bin -- the XEX
+    # keeps its two-address-org segment at AMOVL_STAGE and b1_to_ext copies it
+    # to bank $01 (AMOVL_EXT) before the first level load streams doors/things
+    # over these pages.
+    (0xD800, 0xDCFF, "AMOVL_STAGE -> bank $01 (automap.asm), then map HIGH + things2"),
     # 2026-08-25: sound_tables.inc's five per-SFX arrays (280 B) stage in the gap
     # BEHIND xdl.asm's display-list data ($1302-$1340 is the last of it) and run
     # on into bsp_stack. recip_to_ext's tail (snd_to_ext) copies them to Rapidus

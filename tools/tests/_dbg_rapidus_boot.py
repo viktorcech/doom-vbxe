@@ -35,7 +35,7 @@ import os
 from sim6502 import Sim, load_syms
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-ATR = os.path.join(ROOT, 'build', 'doom_e1.atr')
+ATR = os.path.join(ROOT, 'build', 'doom.atr')
 
 SIOV = 0xE459
 VBI_PERIOD = 30000                   # ~1 frame at 1.79 MHz; the engine only

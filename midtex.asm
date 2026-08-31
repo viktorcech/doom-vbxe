@@ -184,10 +184,10 @@ mtx_peg_resume = *
 .endp
 
 
-; --- the two stand-ins that did NOT fit the fast block. Both are a handful of
-;     bytes called once a seg, so at x11.2 instruction fetches they cost about
-;     half a percent of a frame each -- against 1.5 % for anything bigger, and
-;     against not having the feature at all.
+; --- the other stand-ins. They lived in win2 ("nowhere fast left") until
+;     2026-08-31, when the day's evictions opened the $1EF0/$4D3C holes and
+;     MTXBACK_BASE/MTXPEG_BASE moved there -- ~1 ms/frame of x11.2 fetches
+;     back at ~29 mid-segs (memory_map.inc).
 mtx_back_resume = *
         org MTXBACK_BASE
 .proc mtx_back                       ; = cmp #NO_SECTOR
@@ -253,8 +253,10 @@ mtx_back_resume = *
         clc                          ; A 160-column seg is 80 bytes at 2 B each
         adc #1                       ;   and the pool is ONE page shared with the
         asl @                        ;   sprites -- two wide struts and the third
-        clc                          ;   fell off the end and was dropped, which
+                                     ;   fell off the end and was dropped, which
         adc sp_clip                  ;   is a strut that blinks as you turn
+                                     ;   (NO clc: (xb-xa)>>2+1 <= 40, so the asl
+                                     ;   cannot carry out -- 2026-08-31)
         bcs ?drop                    ;   (measured: 77 columns = 154 B, tools/
                                      ;    tests/_dbg_midtex.py). Quartering costs
                                      ;   at most three columns of lag where a
@@ -414,8 +416,9 @@ mtx_back_resume = *
         lda (sp_clip),y
         sta ybotc_arr,x
         dey
-        lda #0
-        sta solid_arr,x
+        stz solid_arr,x              ; 65816 stz abs,x: 2 cycles and 2 bytes off
+                                     ;   EVERY replayed column (tips-poliak.txt
+                                     ;   hand-review, 2026-08-31)
         txa                          ; the snapshot samples every FOURTH column
         and #3                       ;   (mseg_snap ?put): the three between it
         cmp #3                       ;   reuse the pair just read, and the cursor

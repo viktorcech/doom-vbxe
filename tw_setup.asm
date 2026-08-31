@@ -14,66 +14,58 @@ twclip_resume = *
 ;   max + min/2 - max/8, ~3% high; a constant per-seg scale error is invisible,
 ;   a sqrt per seg would not be. Clobbers A/Y and m_a/m_b.
 ;--------------------------------------------------------------
+; 16-BIT (2026-08-29). The two differences, the unsigned compare that orders
+; them, the swap and the shifts are all 16-bit quantities; only m_neg/m_negb
+; are 8-bit code. `sep` touches M alone, so the N the subtract set survives it
+; and the `bpl` still reads the sign of the 16-bit result.
 .proc seg_len
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         sec                          ; m_a = |dx|
         lda zp_rx2
         sbc zp_rx1
         sta m_a
-        lda zp_rx2+1
-        sbc zp_rx1+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         bpl ?dxp
         jsr m_neg
-?dxp    sec                          ; m_b = |dy|
+?dxp    rep #$20
+        .LONGA ON
+        sec                          ; m_b = |dy|
         lda zp_ry2
         sbc zp_ry1
         sta m_b
-        lda zp_ry2+1
-        sbc zp_ry1+1
-        sta m_b+1
+        .LONGA OFF
+        sep #$20
         bpl ?dyp
         jsr m_negb
-?dyp    lda m_a+1                    ; order so m_a = max, m_b = min
-        cmp m_b+1
-        bcc ?swap
-        bne ?omax
+?dyp    rep #$20
+        .LONGA ON
+        lda m_a                      ; order so m_a = max, m_b = min -- one
+        cmp m_b                      ;   unsigned 16-bit compare, not the
+        bcs ?omax                    ;   hi/lo pair it was
+        lda m_b                      ; (Y is 8-bit, so the swap goes through the
+        pha                          ;   STACK, which IS 16 bits wide here)
         lda m_a
-        cmp m_b
-        bcs ?omax
-?swap   lda m_a
-        ldy m_b
-        sty m_a
         sta m_b
-        lda m_a+1
-        ldy m_b+1
-        sty m_a+1
-        sta m_b+1
-?omax   lsr m_b+1                    ; min/2
-        ror m_b
+        pla
+        sta m_a
+?omax   lsr m_b                      ; min/2
         lda m_a                      ; max/8 -> m_res
         sta m_res
-        lda m_a+1
-        sta m_res+1
-        lsr m_res+1
-        ror m_res
-        lsr m_res+1
-        ror m_res
-        lsr m_res+1
-        ror m_res
+        lsr m_res
+        lsr m_res
+        lsr m_res
         clc                          ; L = max + min/2 - max/8
         lda m_a
         adc m_b
         sta rs_seglen
-        lda m_a+1
-        adc m_b+1
-        sta rs_seglen+1
         sec
         lda rs_seglen
         sbc m_res
         sta rs_seglen
-        lda rs_seglen+1
-        sbc m_res+1
-        sta rs_seglen+1
+        .LONGA OFF
+        sep #$20
     .if TEX_HALFW
         ; 2:1 HORIZONTAL DOWNSAMPLE (pack_textures.py HALF_W). The stored texture
         ; is half as wide, so one texel spans TWO world units along the wall. u is
@@ -146,18 +138,36 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         sta rs_texh_cur
         jsr tw_texmask               ; tile mask + pow2 flag for this texture
     .if TEX_RUNS
-        lda #0                       ; a stored column is TEX_RUNK runs of
-        sta qs_p+1                   ;   (rows, colour) -- a FIXED record again,
-        lda rs_txx                   ;   so the address is still base + index *
-        ldy #TEX_RUNSH               ;   stride, only the stride is a power of
-?rsh    asl @                        ;   two now: five shifts, no multiply
-        rol qs_p+1
-        dey
-        bne ?rsh
-        sta qs_p
-    .else
-        qsmul rs_txx, rs_wtexh       ; qs_p = tex_x * texH  (<=127*128, fits 16b)
+    .if TEX_RUNSH <> 6
+        ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
     .endif
+        ; 16-BIT A (2026-08-31, the tips-poliak.txt hand-review): the split
+        ; shift (hi = x>>2, lo = x<<6) and the halved add were 50 cycles;
+        ; x<<6 in one 16-bit accumulator lands STRAIGHT in the tsrc add --
+        ; no qs_p staging at all. 37 cycles, bit-identical, and the 16-bit
+        ; adc's carry rides into the bank byte through the sep (M only).
+        rep #$20
+        .LONGA ON
+        lda rs_txx
+        and #$FF                     ; the 16-bit load drags rs_txx+1 along
+        asl @
+        asl @
+        asl @
+        asl @
+        asl @
+        asl @                        ; tex_x * 64 = the stored column's offset
+        clc
+        adc rs_wtexad                ; rs_tsrc = wtexad + (txx<<6)
+        sta rs_tsrc
+        .LONGA OFF
+        sep #$20
+        lda rs_wtexad+2              ; ... + the SDRAM bank byte, with the
+        adc #0                       ;     16-bit add's carry
+        sta rs_tsrc+2
+        ldy #0                       ; the old loop always exited with Y=0; keep that
+        rts
+    .else
+        qsmul rs_txx, rs_wtexh, qs_p       ; qs_p = tex_x * texH  (<=127*128, fits 16b)
         clc                          ; rs_tsrc = wtexad + qs_p
         lda rs_wtexad
         adc qs_p
@@ -169,6 +179,7 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         adc #0
         sta rs_tsrc+2
         rts
+    .endif
 .endp
 
 .proc low_src
@@ -188,18 +199,31 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         sta rs_texh_cur
         jsr tw_texmask               ; tile mask + pow2 flag for this texture
     .if TEX_RUNS
-        lda #0                       ; run records: base + index*2*TEX_RUNK
-        sta qs_p+1
-        lda rs_txx
-        ldy #TEX_RUNSH
-?lsh    asl @
-        rol qs_p+1
-        dey
-        bne ?lsh
-        sta qs_p
-    .else
-        qsmul rs_txx, rs_ltexh
+    .if TEX_RUNSH <> 6
+        ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
     .endif
+        rep #$20                     ; same 16-bit fusion as wall_src above
+        .LONGA ON
+        lda rs_txx
+        and #$FF
+        asl @
+        asl @
+        asl @
+        asl @
+        asl @
+        asl @
+        clc
+        adc rs_ltexad                ; rs_tsrc = ltexad + (txx<<6)
+        sta rs_tsrc
+        .LONGA OFF
+        sep #$20
+        lda rs_ltexad+2
+        adc #0
+        sta rs_tsrc+2
+        ldy #0                       ; the old loop always exited with Y=0; keep that
+        rts
+    .else
+        qsmul rs_txx, rs_ltexh, qs_p
         clc
         lda rs_ltexad
         adc qs_p
@@ -211,6 +235,7 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         adc #0
         sta rs_tsrc+2
         rts
+    .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -226,10 +251,9 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         cmp rs_top
         bcc ?atop
         cmp rs_bot
-        beq ?ara
-        bcs ?out
-?ara    lda rs_ra
-        jmp ?aset
+        bcc ?aset                    ; cmp does not touch A, so A IS rs_ra here:
+        bne ?out                     ;   the old ?ara reloaded what it had, and
+        beq ?aset                    ;   the jmp round it went away with it
 ?atop   lda rs_top
 ?aset   sta rs_spa
         lda rs_rb+1                  ; b = min(rs_rb, bot); <top -> nothing
@@ -239,24 +263,26 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         cmp rs_top
         bcc ?out
         cmp rs_bot
-        bcc ?brb
-        beq ?brb
+        bcc ?bset                    ; same as above -- A is still rs_rb, and
+        beq ?bset                    ;   ?bbot now FALLS THROUGH to ?bset
 ?bbot   lda rs_bot
-        jmp ?bset
-?brb    lda rs_rb
 ?bset   sta rs_spb
-        lda rs_spb                   ; draw only if spb >= spa
-        cmp rs_spa
-        bcc ?out
-        sec
+        cmp rs_spa                   ; draw only if spb >= spa; A is the value
+        bcc ?out                     ;   just stored, so no reload
+    .if TEX_RUNS
+        ; THE HEIGHT/TOP HANDOFF IS DEAD HERE (2026-08-30). paint_col reads the
+        ; span back out of rs_spa/rs_spb itself and kills A (lda rs_texh_cur)
+        ; and Y (jsr pt_mul) before either could be read -- it only ever took
+        ; A/Y because it stepped into draw_twall_col's calling convention. The
+        ; sec/sbc/clc/adc/tay/lda that built them cost 20 cycles a column.
+        jmp paint_col                ; tail-call (preserves X) -- paint.asm
+    .else
+        sec                          ; draw_twall_col DOES take A=top, Y=height
         sbc rs_spa
         clc
         adc #1
         tay                          ; height = spb-spa+1
         lda rs_spa                   ; top row
-    .if TEX_RUNS
-        jmp paint_col                ; tail-call (preserves X) -- paint.asm
-    .else
         jmp draw_twall_col           ; tail-call (preserves X)
     .endif
 ?out    rts

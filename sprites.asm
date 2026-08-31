@@ -46,6 +46,11 @@ BN_STAT dta 0, PS_HEALTH, PS_HEALTH, PS_HEALTH, PS_HEALTH, PS_ARMOR, PS_ARMOR, P
         dta 8,8,8,8,8,8, 8,8,8
 ;        -- 25 bpack 26 blur 27 suit 28 map 29 visor 30 invul 31 berserk
         dta 9,9,9,9,9,9,9            ; 9 = a POWER: give_bonus hands it to pw_give
+;        -- 32..34 SKULL keys (2026-08-31): the E2/E3 skulls got ids of their
+;        own so the message says "skull key" (pack_things/pack_menu); the BITS
+;        are the cards' own 1/2/4, so give_bonus's key branch (cpy #22 / bcs)
+;        and every PS_KEYS reader work unchanged.
+        dta 8,8,8
 BN_AMT  dta 0, 10, 25, 1, 100, 1, 100, 200
         dta 10, 50, 4, 20, 1, 5, 20, 100
 ; 16..21 weapons: the bit is 1<<wp_*, so PS_WEAPONS IS DOOM's weapon bitfield
@@ -54,10 +59,12 @@ BN_AMT  dta 0, 10, 25, 1, 100, 1, 100, 200
 ; bit the player spawns with). 22..24 keys, unchanged.
         dta 4, 8, 16, 32, 64, 128,  1, 2, 4
         dta 0,0,0,0,0,0,0            ; the powers carry no amount: pw_give knows
+        dta 1, 2, 4                  ; 32..34 skulls: the SAME key bits as 22..24
 BN_MAX  dta 0, 100, 100, 200, 200, 200, 100, 200
         dta 200, 200, 50, 50, 50, 50, 255, 255
         dta 0,0,0,0,0,0, 0,0,0
         dta 0,0,0,0,0,0,0            ; ...and no cap either
+        dta 0,0,0                    ; 32..34 skulls: bits, no cap
     .if * > BNTAB_END+1
         ert 'the BN_* tables outgrew BNTAB_BASE..END (memory_map.inc)'
     .endif
@@ -213,82 +220,82 @@ sr_resume = *
 ;   plus a snapshot of the open window over its columns.
 ;   Thing record: i16 x, i16 y, i16 z (anchor = sector floor), u8 sprite id.
 ;--------------------------------------------------------------
+; 16-BIT (2026-08-29): the thing's position, both differences, the Z test and
+; the scale are 16-bit quantities. `lda (sp_ptr),y` reads a whole coordinate in
+; one go, so the `iny` between the halves goes with them; transform/scale_z are
+; 8-bit code. M only -- X/Y stay 8-bit (sound.asm:316).
 .proc spr_proj
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         ldy #0                       ; rx = x - px, ry = y - py
         sec
         lda (sp_ptr),y
         sbc zp_px
         sta zp_rx
-        iny
-        lda (sp_ptr),y
-        sbc zp_px+1
-        sta zp_rx+1
-        iny
+        ldy #2
         sec
         lda (sp_ptr),y
         sbc zp_py
         sta zp_ry
-        iny
-        lda (sp_ptr),y
-        sbc zp_py+1
-        sta zp_ry+1
+        .LONGA OFF
+        sep #$20
         jsr transform                ; -> zp_X, zp_Z (view space)
-        lda zp_Z+1                   ; too close / behind the eye?
-        bmi ?skip
-        bne ?zok
-        lda zp_Z
-        cmp #SPR_MINZ
+        rep #$20
+        .LONGA ON
+        lda zp_Z                     ; too close / behind the eye?
+        bmi ?skip16
+        cmp #SPR_MINZ                ; (unsigned 16-bit: Z >= 256 passes it too)
         bcs ?zok
+?skip16 .LONGA OFF
+        sep #$20
 ?skip   rts
-?zok    jsr scale_z                  ; m_quot = VFOCAL*256/Z (Q8, vertical)
+?zok    .LONGA OFF
+        sep #$20
+        jsr scale_z                  ; m_quot = VFOCAL*256/Z (Q8, vertical)
+        rep #$20
+        .LONGA ON
         lda m_quot
         sta sp_scale
+        lsr                          ; horizontal scale = vertical/2 (FOCAL 80:160)
         sta sp_hs
-        lda m_quot+1
-        sta sp_scale+1
-        sta sp_hs+1
-        lsr sp_hs+1                  ; horizontal scale = vertical/2 (FOCAL 80 : 160)
-        ror sp_hs
-        lda sp_hs+1
-        bne ?wide
-        lda sp_hs
         cmp #SPR_HSMIN               ; too far to be worth a vissprite
+        .LONGA OFF
+        sep #$20
         bcc ?skip
 ?wide   ldy #$FF                     ; $FF = COMPUTE the rotation (zp_rx/ry are
         sty sp_dfix                  ;   fresh here); spr_one replays instead
         lda sp_i                     ; dying? then the frame comes from the death
         jsr spr_dyn                  ;   table, already in sp_tab (enemy.asm)
-        bcs ?have
-        ldy #6                       ; sprite table entry = th_sprtab + id*8
+        ; --- 16-BIT A for the table-entry math and the header copy
+        ;     (2026-08-31, the tips-poliak.txt hand-review): id*8 was an 8-bit
+        ;     shift ladder through m_prod and the header four lda/sta pairs --
+        ;     ~100 cycles a sprite; this is ~63. sp_w/sp_h/sp_left/sp_top are
+        ;     CONTIGUOUS in record order (memory_map.inc), so two 16-bit moves
+        ;     copy all four; @7 rides into the id load and `and #$FF` drops it.
+        bcc ?comp
+        rep #$20                     ; dying: spr_dyn already set sp_tab
+        .LONGA ON
+        bra ?have
+        .LONGA OFF
+?comp   ldy #6                       ; sprite table entry = th_sprtab + id*8
+        rep #$20
+        .LONGA ON
         lda (sp_ptr),y
-        sta m_prod
-        lda #0
-        sta m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
+        and #$FF
+        asl @
+        asl @
+        asl @
         clc
-        lda m_prod
         adc th_sprtab
         sta sp_tab
-        lda m_prod+1
-        adc th_sprtab+1
-        sta sp_tab+1
 ?have   ldy #3
-        lda (sp_tab),y
+        lda (sp_tab),y               ; w @3, h @4
         sta sp_w
-        iny
-        lda (sp_tab),y
-        sta sp_h
-        iny
-        lda (sp_tab),y
+        ldy #5
+        lda (sp_tab),y               ; left @5, top @6
         sta sp_left
-        iny
-        lda (sp_tab),y
-        sta sp_top
+        .LONGA OFF
+        sep #$20
         jsr screenx_signed           ; m_xs = centre column (unclamped, signed)
         ldx #0                       ; x1 = centre - (leftoffset*hs)>>8
         lda sp_left

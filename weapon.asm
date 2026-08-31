@@ -369,7 +369,10 @@ wpf_resume = *
         tay
         lda WS_DUR,y
         sta wp_ftic
-        rts
+        jmp wp_flight                ; ... and the state's extralight: retarget
+                                     ;   process_seg's lt_seg call (lights.asm,
+                                     ;   the muzzle flash -- transitions only,
+                                     ;   never a per-frame cost)
 .endp
 
 ;--------------------------------------------------------------
@@ -972,6 +975,40 @@ WS_NXT
         dta WS_BFGFLASH2,WS_NULL
     .if * > WSNXT_END+1
         ert 'WS_NXT outgrew WSNXT_BASE..END (memory_map.inc)'
+    .endif
+
+; ---- per-state extralight (the muzzle flash, 2026-08-31) --------------------
+; The fifth column: 0 everywhere except the flash states, which carry DOOM's
+; A_Light1/A_Light2 as the VALUE 2/4 (info.c's action column, premultiplied
+; for this port's 32-row colormap ladder -- see the FLASH banner in
+; memory_map.inc). MISFLASH2 has no action in DOOM and so KEEPS Light1: the
+; absolute 2 here encodes exactly that. wp_flight reads it on every flash
+; transition; nothing reads it per frame, so win2 is the right price.
+        org WSLIGHT_BASE
+WS_LIGHT
+        dta 0                                              ; NULL
+        dta 0,0,0,0,0,0,0,0                                ; punch 1..8
+        dta 0,0,0,0,0,0,0                                  ; pistol 9..15
+        dta 2                                              ; PISFLASH (A_Light1)
+        dta 0,0,0,0,0,0,0,0,0,0,0,0                        ; sgun 17..28
+        dta 2,4                                            ; SGFLASH1/2 (L1,L2)
+        dta 0,0,0,0,0,0                                    ; chain 31..36
+        dta 2,4                                            ; CHFLASH1/2 (L1,L2)
+        dta 0,0,0,0,0,0,0                                  ; saw 39..45
+        dta 0,0,0,0,0,0                                    ; missile 46..51
+        dta 2,2,4,4                                        ; MISFLASH1..4 (L1,-,L2,L2)
+        dta 0,0,0,0,0                                      ; plasma 56..60
+        dta 2,2                                            ; PLSFLASH1/2 (L1,L1)
+        dta 0,0,0,0,0,0,0                                  ; bfg 63..69
+        dta 2,4                                            ; BFGFLASH1/2 (L1,L2)
+    .if * != WSLIGHT_BASE + WS_BFGFLASH2 + 1
+        ert 'WS_LIGHT is not exactly one byte per state (WS_BFGFLASH2 is the last id)'
+    .endif
+    .if [WS_PISFLASH != 16] | [WS_SGFLASH1 != 29] | [WS_CHFLASH1 != 37] | [WS_MISFLASH1 != 52] | [WS_PLSFLASH1 != 61] | [WS_BFGFLASH1 != 70]
+        ert 'the WS_* state ids moved -- rewrite WS_LIGHT to match (weapon.asm)'
+    .endif
+    .if * > WSLIGHT_END+1
+        ert 'WS_LIGHT outgrew WSLIGHT_BASE..END (memory_map.inc)'
     .endif
         org wsn_resume
 
@@ -1676,8 +1713,10 @@ wp_t    dta a(0)                     ; wp_rowskip's shifting copy of SRC_STEPY
 ;   only when the chosen palette CHANGES (DOOM's st_palette test).
 ;--------------------------------------------------------------
 .proc update_flash
-        lda fl_dmg
-        beq ?bon
+        jsr fl_cnt                   ; ST_doPaletteStuff's cnt = max(damagecount,
+        beq ?bon                     ;   the berserk's bzc). Same three bytes the
+                                     ;   `lda fl_dmg` was: this block ends at
+                                     ;   $F7FD with two to spare.
         clc                          ; palette = (cnt+7)>>3, DOOM's 1..7
         adc #7
         lsr                          ;   (cnt <= 100, so this cannot carry)

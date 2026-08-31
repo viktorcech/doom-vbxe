@@ -184,9 +184,18 @@ LOW_LIMIT = 0x4C00                   # first byte the LOW region may NOT touch.
                                      # shrank to $4000-$4BFF and $4C00-$85FF is
                                      # ordinary free RAM. tools/ram_map.py
                                      # RESERVED must match this constant.
-HI_LIMIT = 0xE300                    # USERAY_BASE.. relocated code sits above this
-                                     # (memory_map.inc); was $F800 before the door
-                                     # runtime arrays moved to $F000
+HI_LIMIT = 0xDA00                    # 2026-08-29: was $E300 (USERAY_BASE). The
+                                     # THINGS blob's second piece lives at
+                                     # $DA00-$E2FF now (memory_map.inc
+                                     # THINGS2_BASE) -- the crusher trigger
+                                     # records did not fit the 31 sectors at
+                                     # $C000 on E2M2/E2M4/E3M5, and the 2.3 KB
+                                     # this region has never used since SSECTORS
+                                     # left for the EXT bank was the only base
+                                     # RAM in the machine that was free AND
+                                     # needs no long addressing. HIGH itself is
+                                     # 396 B (44 doors) of the 512 that leaves.
+                                     # tools/ram_map.py RESERVED must match.
 EXT_LIMIT = 0x6000                   # DOOR_EXT (memory_map.inc): the streamed map
                                      # shares bank $01 with the AI tables, and
                                      # THAT is the real ceiling, not the bank end.
@@ -810,6 +819,36 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
 Caps = collections.namedtuple(
     'Caps', 'verts sectors segs ssect nodes tex doors yoff lights lines mtx')
 
+# ---- the capacity FLOOR, for a build that is not the whole game -------------
+# Capacities are the max over the levels BEING BUILT, and every section address
+# in map_syms.inc is derived from them -- so a one-level build lays the map blob
+# out differently from the 27-level one. The shipping game only ever builds all
+# 27, so that layout is the only one that has ever been played; a smaller set
+# produces a layout nothing has ever run, and its ATR comes up with broken wall
+# textures. Measured 2026-08-30: build_atr.ps1 -Full E1M5 (no wadconv anywhere)
+# is broken, while the same single level built at the 27-level capacities is
+# correct.
+#
+# A wadconv conversion is ALWAYS a small set -- that is the whole point of it --
+# so it asks for this floor and gets the layout the engine is known to run. The
+# numbers are the shipping build's own capacities; max() keeps anything a
+# foreign WAD needs MORE of, and pack_map's region asserts still catch a map
+# that will not fit. Off unless DOOM_CAPS_FLOOR is set, so the project's own
+# build is bit-for-bit what it always was.
+CAPS_FLOOR = Caps(verts=1626, sectors=226, segs=2438, ssect=818, nodes=817,
+                  tex=NO_TEX, doors=44, yoff=59, lights=21, lines=1764, mtx=8)
+
+
+def _floor_caps(caps):
+    if not os.environ.get('DOOM_CAPS_FLOOR'):
+        return caps
+    out = Caps(*(max(a, b) for a, b in zip(caps, CAPS_FLOOR)))
+    if out != caps:
+        moved = [f'{f} {a}->{b}' for f, a, b in zip(Caps._fields, caps, out)
+                 if a != b]
+        print(f'  capacity floor (DOOM_CAPS_FLOOR): {", ".join(moved)}')
+    return out
+
 
 def emit_map_syms(caps):
     """Write map_syms.inc -- the section bases the engine is assembled against.
@@ -1205,6 +1244,17 @@ def _doors(md):
     LOCK = {26: 1, 27: 2, 28: 4,
             32: 0x81, 33: 0x84, 34: 0x82,
             31: 0x80, 118: 0x80}
+    # Bit3 = THIS "DOOR" IS A CRUSHER (2026-08-29, p_ceilng.c). The port's only
+    # ceiling machinery is the door mover, so a crusher sector gets a door
+    # record like any other tagged ceiling -- and this bit is what tells
+    # update_doors the three things a crusher does differently: it aims at
+    # floor+8 instead of the floor, it reverses at both ends instead of parking,
+    # and it HURTS on the way down. Bit3 is outside use_door_go's `and #$27`,
+    # so it is invisible to the spacebar; bit5 below (no PUSH line reaches
+    # these sectors) is what actually refuses USE, exactly as it does for every
+    # other remote-only door.
+    CRUSH_LOCK = 0x08
+    CRUSHER, CRUSH_STOP = doomspecs.CRUSHER, doomspecs.CRUSH_STOP
     # Bit6 = ML_SECRET (doomdata.h:126). P_UseSpecialLine's monster gate is
     #   if (!thing->player) { if (line->flags & ML_SECRET) return false; ... }
     # (p_switch.c:300-306) -- a monster may never open a secret door, and E1M5's
@@ -1243,6 +1293,20 @@ def _doors(md):
                 if s.tag == ld.tag:
                     want.append((i, 0))
                     spec_of.setdefault(i, set()).add(ld.special)
+        elif (ld.special in CRUSHER or ld.special in CRUSH_STOP) and ld.tag:
+            # A crusher's tagged sectors need a door record for the SAME reason
+            # a tagged door's do: the record is where the mover keeps the
+            # sector pointer and the ceiling it travels to. A STOP line (74)
+            # tags the same sectors, and listing it here means a map whose
+            # crusher is only ever stopped still gets its records.
+            for i, s in enumerate(md.sectors):
+                if s.tag == ld.tag:
+                    want.append((i, CRUSH_LOCK))
+                    spec_of.setdefault(i, set()).add(ld.special)
+    crush_sec = {ds for ds, lk in want if lk & CRUSH_LOCK}
+    assert not (crush_sec & {ds for ds, lk in want if not lk & CRUSH_LOCK}), \
+        f'{md.name}: a sector is both a crusher and an ordinary door -- one ' \
+        f'record cannot carry two open_ceil values'
     for ds, lk in want:
         locks[ds] = locks.get(ds, 0) | lk
         if ds in door_sectors:
@@ -1258,7 +1322,13 @@ def _doors(md):
             elif bs == ds and fs != ds:
                 neigh.add(fs)
         ceils = [md.sectors[n].ceil_h for n in neigh]
-        if not ceils:
+        if ds in crush_sec:
+            # p_ceilng.c EV_DoCeiling: a crusher's topheight is the sector's
+            # OWN ceiling -- where the map ships it -- and its bottomheight is
+            # floor+8 (the mover computes that end; only the top is a record).
+            # Neighbours have no say, unlike every other door here.
+            open_ceil = md.sectors[ds].ceil_h
+        elif not ceils:
             open_ceil = md.sectors[ds].ceil_h
         elif spec_of.get(ds) == {40}:
             # p_ceilng.c raiseToHighest: 40 raises the ceiling to the HIGHEST
@@ -1395,6 +1465,7 @@ def main():
                 lights=max(v[3] for v in pre.values()),
                 lines=max(len(m.linedefs) for m in mds.values()),
                 mtx=max(1, max(v[4] for v in pre.values())))
+    caps = _floor_caps(caps)
     # Pass 1 interned every payload; freeze the layout so pass 2 gets real
     # offsets. ONE blob for the whole episode instead of one per level.
     pool_blob = xpool.finish()

@@ -207,8 +207,12 @@ snda_resume = *
         sty snd_best
         bcc ?scan                    ; (always -- we just took the bigger one)
 ?take   ldy snd_best
-?got    rts
-.endp
+?got    rts                          ; (the pitch roll would fit beautifully as
+.endp                                ;   a tail call from here -- Y = voice*2
+                                     ;   and X = the SFX id are exactly
+                                     ;   snd_pstep's inputs -- but this block
+                                     ;   ends flush at $BE52 with PLTHR5 next,
+                                     ;   so snd_play makes the call instead.)
     .if * > SNDALLOC_END+1
         ert 'snd_alloc outgrew SNDALLOC_BASE..END (memory_map.inc)'
     .endif
@@ -260,6 +264,11 @@ snda_resume = *
     .else
         sei
         jsr snd_alloc                ; -> Y = voice*2, X still the SFX id
+        jsr snd_pstep                ; ...and THIS PLAY'S PITCH into the voice
+                                     ;   (s_sound.c:326-345). Same X and Y, and
+                                     ;   it gives both back. The 3 bytes come
+                                     ;   out of the IRQ below, which got shorter
+                                     ;   when the nibble phase moved into sv_frc.
         lda.l SFX_LO_EXT,x           ; the five arrays are in Rapidus bank $01
         sta sv_al,y                  ;   since 2026-08-25 (SNDX_EXT) -- staged in
         lda.l SFX_HI_EXT,x           ;   the map slot, copied up by recip_to_ext.
@@ -409,28 +418,35 @@ snda_resume = *
         sta IRQEN_R                  ; (X is already saved, full width, at entry)
 
         ldx #SND_VTOP
-?voice  lda sv_act,x                 ; 0 = idle, 1 = hi nibble next, 2 = lo next
+?voice  lda sv_act,x                 ; 0 = idle, 1 = playing
         beq ?next
-        lsr                          ; 1 -> C=1 (phase 0), 2 -> C=0 (phase 1)
-        bcc ?lo
-        ; --- phase 0: high nibble ---
+        ; --- WHICH NIBBLE: bit 7 of the voice's fraction. sv_frc counts the
+        ;     position inside the sample BYTE in 1/128ths, so its top bit IS
+        ;     the old phase flag -- 0 = high nibble, 1 = low -- and the two
+        ;     no longer have to be kept in step with each other.
+        lda sv_frc,x
+        asl
         lda sv_cur,x
-        lsr
-        lsr
-        lsr
-        lsr
+        bcs ?nib                     ; C = bit 7: the LOW nibble is current
+        lsr                          ; (NOT `?out` -- that is the handler's own
+        lsr                          ;  exit label further down, and reusing it
+        lsr                          ;  silently pointed the empty-mixer sweep's
+        lsr                          ;  `beq ?out` back INTO this loop)
+?nib    and #$0F
         ora #$10
         sta AUDC1_R,x                ; output ASAP -- less jitter
-        lda #2
-        sta sv_act,x
-        bne ?next                    ; (always)
-        ; --- phase 1: low nibble, then advance to the next byte ---
-?lo     lda sv_cur,x
-        and #$0F
-        ora #$10
-        sta AUDC1_R,x
-        lda #1
-        sta sv_act,x
+        ; --- ADVANCE by this play's pitch. DOOM walks the sample with a
+        ;     fractional step (i_sound.c:599-603, channelstepremainder); this
+        ;     is the same walk one byte wide. SND_PITCH_ONE (128) is half a
+        ;     byte an interrupt = the fixed rate the port always had, and the
+        ;     carry out is "a whole sample byte has been consumed". A step
+        ;     never exceeds 152, so a carry can never happen twice in a row
+        ;     and one byte per interrupt is still the ceiling.
+        lda sv_frc,x
+        clc
+        adc sv_stp,x
+        sta sv_frc,x
+        bcc ?next                    ; still inside this byte
         inc sv_rl,x                  ; count UP toward $0000 = sample finished
         bne ?adv
         inc sv_rh,x
@@ -704,7 +720,8 @@ sndsio_resume = *
 ; 3 bytes an array, against a table lookup plus a second index register in the
 ; hottest interrupt in the port.
 ;==============================================================
-sv_act :SND_VTOP+1 dta 0             ; 0 = idle, 1 = hi nibble next, 2 = lo next
+sv_act :SND_VTOP+1 dta 0             ; 0 = idle, 1 = playing (the nibble phase
+                                     ;   moved into sv_frc's top bit)
 sv_cur :SND_VTOP+1 dta 0             ; the sample byte being played
 sv_al  :SND_VTOP+1 dta 0             ; the 24-bit read address, seeded from
 sv_ah  :SND_VTOP+1 dta 0             ;   sfx_lo/hi/bnk and walked by the IRQ
@@ -718,6 +735,84 @@ snd_pending   dta $FF                ; SFX queued this frame ($FF = none)
 snd_old_irq   dta a(0)               ; saved VIMIRQ (chain for foreign IRQs)
 snd_ldn       dta 0                  ; load_sounds: 4 KB chunks left to stream
                                      ; (snd_bank is gone with the MEMAC-B window)
+
+;==============================================================
+; DOOM'S PER-PLAY PITCH (s_sound.c:326-345). Every S_StartSound rolls the
+; playback rate before the sound is handed to the mixer:
+;     saw group        pitch += 8  - (M_Random()&15)
+;     everything else  pitch += 16 - (M_Random()&31)   except itemup and tink
+; around NORM_PITCH = 128, and i_sound.c:415 turns that into a step of
+; 2^(delta/64) -- 0.850x to 1.189x, i.e. -2.81 to +3.00 semitones, with the
+; sound coming out that much shorter or longer. It is why the same shotgun
+; never sounds twice the same in DOOM, and the port had none of it: snd_irq
+; walked every sample at exactly one nibble per interrupt, so a repeated sound
+; was a bit-for-bit photocopy.
+;
+; THE TWO BYTES A VOICE NEEDS live here and not with the other voice arrays,
+; because the SOUND block ($0400-$05FF) is full to rom_nmi. They must stay
+; BELOW $8000: snd_irq touches them three times per voice, 3958 times a second,
+; and $8000-$BFFF is off the Rapidus fast shadow (see memory_map.inc).
+;
+; sv_frc is the position inside the current sample BYTE in 1/128ths -- its top
+; bit is the nibble the IRQ is playing, the rest is the fraction -- and sv_stp
+; is how far to move per interrupt. SND_PITCH_ONE (128) is half a byte, the
+; rate the port always ran at, so a step of 128 reproduces the old behaviour
+; exactly, sample for sample.
+;==============================================================
+sndp_resume = *
+        org SNDPITCH_BASE
+sv_frc :SND_VTOP+1 dta 0             ; 1/128ths into the byte; b7 = which nibble
+sv_stp :SND_VTOP+1 dta SND_PITCH_ONE ; this play's rate, 128 = the old fixed one
+snd_sid       dta 0                  ; the SFX id, parked across the table read
+
+        icl 'snd_pitch.inc'          ; snd_pitch: 32 steps, index = rnd & 31
+
+;--------------------------------------------------------------
+; snd_pstep -- roll one play's pitch. snd_alloc tail-calls it, so the inputs
+;   are the ones it already had:
+;     IN  X = SFX id, Y = voice*2      OUT both unchanged, sv_frc/sv_stp seeded
+;   sv_frc starts at 0, which is DOOM's "play from the first sample" AND the
+;   high nibble, so nothing else needs initialising.
+;   The two exceptions are DOOM's own: sfx_itemup and sfx_tink never vary
+;   (tink has no lump in DOOM.WAD, so ITEMUP is the only one the port ships).
+;   The chainsaw's narrower roll reads the SAME table 8 rows in -- (rnd&15)+8
+;   is delta +8..-7, which is exactly `8 - (M_Random()&15)`.
+;--------------------------------------------------------------
+.proc snd_pstep
+        lda #0
+        sta sv_frc,y
+        cpx #SFX_ITEMUP
+        beq ?flat                    ; s_sound.c: this one is never varied
+        stx snd_sid                  ; X is the SFX id and the caller still
+                                     ;   wants it; the table read needs X too
+        lda RANDOM                   ; POKEY's LFSR -- the port's M_Random
+        cpx #SFX_SAWFUL
+        beq ?saw
+        cpx #SFX_SAWUP
+        bcc ?wide
+        cpx #SFX_SAWHIT+1
+        bcs ?wide
+?saw    and #$0F                     ; 8 - (M_Random()&15)
+        clc
+        adc #8
+        bne ?tab                     ; (always: 8..23)
+?wide   and #$1F                     ; 16 - (M_Random()&31)
+?tab    tax
+        lda snd_pitch,x
+        ldx snd_sid
+        sta sv_stp,y
+        rts
+?flat   lda #SND_PITCH_ONE
+        sta sv_stp,y
+        rts
+.endp
+    .if SFX_SAWHIT != SFX_SAWUP+2
+        ert 'SAWUP/SAWIDL/SAWHIT are no longer three consecutive SFX ids -- the range test in snd_pstep assumes it (wadsound.py SFX order)'
+    .endif
+    .if * > SNDPITCH_END+1
+        ert 'the pitch block outgrew SNDPITCH_BASE..END (memory_map.inc)'
+    .endif
+        org sndp_resume
 
     .if * > SOUND_END
         ert 'sound.asm overran the OS free area at SOUND_END -- see memory_map.inc'

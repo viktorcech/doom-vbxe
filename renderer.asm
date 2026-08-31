@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 0 B free, biggest contiguous block 0 B.
+; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -170,36 +170,32 @@ wki_resume = *
 ; calc_nodeptr -- zp_nodeptr = MAP_NODES + (zp_nid & $7FFF)*NODE_SIZE
 ;--------------------------------------------------------------
 .proc calc_nodeptr
+        ; 16-BIT A (2026-08-31, from a reader of the disassembly): the old
+        ; 8-bit ladder was m_a staging + jsr m_x4 + three asl/rol pairs + a
+        ; 16-bit subtract and add spelled out in halves -- ~122 cycles and
+        ; 46 bytes for what the 65816 does in one accumulator. m_a/m_ma/m_prod
+        ; are no longer touched (no caller read them afterwards -- checked all
+        ; six call sites). rom_nmi pins widths itself, so the rep window is
+        ; interrupt-safe. NB the model underprices rep/sep on real HW (the
+        ; udiv24 ?pre16 lesson, SPEEDUP_LOG) -- but this saves ~80 cyc/call,
+        ; not 3, so the direction survives any realistic rep/sep price.
+        rep #$20
+        .LONGA ON
         lda zp_nid
-        sta m_a
-        lda zp_nid+1
-        and #$7F
-        sta m_a+1
-        jsr m_x4                     ; m_prod = nid*28 via shifts (= *32 - *4).
-        lda m_prod
+        and #$7FFF                   ; NODE_LEAF bit off
+        asl @
+        asl @                        ; nid*4
         sta m_ma
-        lda m_prod+1
-        sta m_ma+1                   ; m_ma = nid*4
-        asl m_prod
-        rol m_prod+1                 ; nid*8
-        asl m_prod
-        rol m_prod+1                 ; nid*16
-        asl m_prod
-        rol m_prod+1                 ; nid*32
+        asl @
+        asl @
+        asl @                        ; nid*32
         sec
-        lda m_prod
-        sbc m_ma
-        sta m_prod
-        lda m_prod+1
-        sbc m_ma+1
-        sta m_prod+1                 ; nid*28
+        sbc m_ma                     ; nid*28 = NODE_SIZE
         clc
-        lda m_prod
-        adc #<MAP_NODES              ; MAP_NODES = offset inside the EXT bank; the
+        adc #MAP_NODES               ; MAP_NODES = offset inside the EXT bank; the
         sta zp_nodeptr               ;   readers go [zp_nodeptr],y (long indirect)
-        lda m_prod+1                 ;   with zp_nodeptr+2 = MAP_EXT_BANK, set ONCE
-        adc #>MAP_NODES              ;   by init_level -- nothing else writes +2
-        sta zp_nodeptr+1
+        .LONGA OFF                   ;   with zp_nodeptr+2 = MAP_EXT_BANK, set ONCE
+        sep #$20                     ;   by init_level -- nothing else writes +2
         rts
 .endp
 
@@ -467,19 +463,17 @@ cu_resume = *
 ;--------------------------------------------------------------
 .proc render_subsector
         jsr spr_add                  ; things first, then the segs (R_Subsector order)
-        lda zp_nid                   ; ssptr = MAP_SSECT + ssid*4
-        sta m_a
-        lda zp_nid+1
-        and #$7F
-        sta m_a+1
-        jsr m_x4                     ; m_prod = ssid*4 via shifts (tips #3)
+        rep #$20                     ; ssptr = MAP_SSECT + ssid*4, in ONE 16-bit
+        .LONGA ON                    ;   accumulator (same rewrite as
+        lda zp_nid                   ;   calc_nodeptr; m_a/m_prod no longer used
+        and #$7FFF                   ;   -- the loads below overwrite m_a anyway)
+        asl @
+        asl @
         clc
-        lda m_prod
-        adc #<MAP_SSECT
+        adc #MAP_SSECT
         sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SSECT
-        sta zp_ptr+1
+        .LONGA OFF
+        sep #$20
         ldy #0                       ; first seg index -> m_a (and rs_segi: seg_yoff
         lda [zp_ptr],y               ;   keys MAP_YBITS by seg INDEX, and the seg
         sta m_a                      ;   loop below only tracks the pointer)
@@ -556,19 +550,17 @@ lf_resume = *
         sta zp_nid+1
         jmp ?walk
 ?leaf   ; ssid = zp_nid & $7FFF ; zp_ptr = MAP_SSECT + ssid*4
+        rep #$20                     ; ONE 16-bit accumulator (same rewrite as
+        .LONGA ON                    ;   calc_nodeptr; m_a is overwritten below)
         lda zp_nid
-        sta m_a
-        lda zp_nid+1
-        and #$7F
-        sta m_a+1
-        jsr m_x4                     ; ssid*4
+        and #$7FFF
+        asl @
+        asl @
         clc
-        lda m_prod
-        adc #<MAP_SSECT
+        adc #MAP_SSECT
         sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SSECT
-        sta zp_ptr+1
+        .LONGA OFF
+        sep #$20
         ldy #0                        ; first seg index @ ssect+0
         lda [zp_ptr],y
         sta m_a

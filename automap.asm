@@ -89,18 +89,21 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;==============================================================
 
 ;--------------------------------------------------------------
-; am_gate -- draw the map instead of the world. am_on doubles as mn_open's
-;   argument (BANK_EN|AMOVL_BANK), so opening it is a jmp with A already right.
-;   mn_open copies the overlay's first page down from VRAM and jumps into it;
-;   the overlay's own rts is what returns to main.
+; am_gate -- draw the map instead of the world. Since 2026-08-31 the overlay
+;   lives in Rapidus bank $01, so the gate is one long jump into b1_amgate
+;   (bank01.asm), which tests am_on, serves the overlay's first page and jml's
+;   into it -- or into render_world. The overlay's own rts still returns to
+;   main: jml pushes nothing.
 ;--------------------------------------------------------------
         org AMGATE_BASE
 .proc am_gate
-        lda am_on
-        beq ?world
-        jmp mn_open                  ; A = the overlay's VRAM bank
-?world  jmp render_world
-.endp
+        jml B1CODE_BASE+b1_amgate    ; the WHOLE gate runs in bank $01 now
+.endp                                ;   (b1_amgate: test am_on, serve page 1 of
+                                     ;   the overlay from AMOVL_EXT, jml into
+                                     ;   MENU_RUN or render_world) -- 4 bytes
+                                     ;   here where 12 did not fit, and the
+                                     ;   every-frame world path trades win2
+                                     ;   fetches for full-speed SRAM ones
     .if * > AMGATE_END+1
         ert 'am_gate outgrew AMGATE_BASE..END (memory_map.inc)'
     .endif
@@ -166,8 +169,11 @@ am_amb = *                           ; the ambient PC: everything below orgs its
         beq ?ret
         dec mn_arm                   ; acts once per press (mn_arm was 1)
         lda am_on
-        eor #BANK_EN | AMOVL_BANK    ; toggle 0 <-> the overlay's bank byte
-        sta am_on
+        eor #1                       ; toggle 0 <-> 1: the flag stopped carrying
+        sta am_on                    ;   a VRAM bank when the overlay moved to
+                                     ;   Rapidus bank $01 (am_gate jsl's
+                                     ;   b1_amopen; every other reader only
+                                     ;   tests zero/nonzero)
         lda #3                       ; ...and re-arm the BORDER repaint, ONCE.
         sta vw_dirty                 ;   render_world only re-opens the columns
                                      ;   vw_x0..vw_xend (renderer.asm), so
@@ -286,14 +292,17 @@ strip_blit                           ; ...and the shared entry: A = strip index,
 ; THE OVERLAY -- everything below runs only while the map is UP.
 ;--------------------------------------------------------------
 ; It is assembled for MENU_RUN ($1000) but PARKED at AMOVL_STAGE with MADS's
-; two-address org, exactly like menu.asm and savegame.asm;
-; tools/split_menu_ovl.py lifts the block out of the XEX and into menu.bin, and
-; load_menu streams it to VBXE VRAM bank AMOVL_BANK. So it costs no base RAM,
-; no XEX segment and no drive access.
+; two-address org, exactly like menu.asm and savegame.asm. 2026-08-31: it is
+; NOT lifted into menu.bin any more -- the XEX carries the $D800 segment
+; (STAGED in ram_map.py) and b1_to_ext copies it into Rapidus bank $01 at
+; AMOVL_EXT at boot, because the day's HU-strip growth moved the melt over the
+; overlay's old VRAM chunk and the VRAM map's "free" chunks all turned out to
+; have tenants (the XDLs, MENUPATCH, the savegame overlay). Bank $01 has 20 KB
+; spare and the copy-down is the same ~0.7 ms as the MEMW window was.
 ;
-; IT IS RE-COPIED EVERY FRAME, not once on the TAB press. am_gate calls mn_open
-; unconditionally while am_on is set: 1280 bytes through the MEMAC window is
-; ~0.7 ms, and it buys three things worth far more than that --
+; IT IS RE-COPIED EVERY FRAME, not once on the TAB press. am_gate runs
+; b1_amopen unconditionally while am_on is set, and that buys three things
+; worth far more than the 0.7 ms --
 ;   * the game keeps RUNNING under the map (DOOM's automap does not pause), and
 ;     move_player's collision rebuilds bsp_stack at $1400 every frame -- which
 ;     is the overlay's fifth page;
@@ -351,26 +360,29 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         org MENU_RUN, AMOVL_STAGE
 
 ;--------------------------------------------------------------
-; am_head -- THE FIRST PAGE. mn_open has copied it down and jumped here with the
-;   MEMAC window still on the overlay's bank, so the other four pages are one
-;   loop away. Same bootstrap as menu.asm's mn_head; no entry index, this
-;   overlay has one way in.
+; am_head -- THE FIRST PAGE. am_gate (via b1_amgate) has copied it down from
+;   Rapidus bank $01 (AMOVL_EXT) and jumped here; the other four pages are one
+;   X-indexed long-read loop away -- X, not Y, because `lda.l abs24,y` does not
+;   exist on the 65816. Same bootstrap shape as menu.asm's mn_head; no entry
+;   index, this overlay has one way in.
 ;--------------------------------------------------------------
 .proc am_head
-        ldy #0
-?p      lda MEMW+$100,y
-        sta MENU_RUN+$100,y
-        lda MEMW+$200,y
-        sta MENU_RUN+$200,y
-        lda MEMW+$300,y
-        sta MENU_RUN+$300,y
-        lda MEMW+$400,y
-        sta MENU_RUN+$400,y
-        iny
+        ldx #0
+?p      lda.l B1CODE_BASE+AMOVL_EXT+$100,x
+        sta MENU_RUN+$100,x
+        lda.l B1CODE_BASE+AMOVL_EXT+$200,x
+        sta MENU_RUN+$200,x
+        lda.l B1CODE_BASE+AMOVL_EXT+$300,x
+        sta MENU_RUN+$300,x
+        lda.l B1CODE_BASE+AMOVL_EXT+$400,x
+        sta MENU_RUN+$400,x
+        inx
         bne ?p
-        lda #BANK_EN | BANK_OVERHEAD ; the window goes back to the BCB bank: the
-        sta VBXE_BANK_SEL            ;   blitter's control blocks live there and
-                                     ;   clear_screen is about to poke them
+        lda #BANK_EN | BANK_OVERHEAD ; the window ONTO the BCB bank: nothing
+        sta VBXE_BANK_SEL            ;   moved it this frame any more, but the
+                                     ;   blitter's control blocks live there,
+                                     ;   clear_screen is about to poke them, and
+                                     ;   this store is what GUARANTEES it
         jsr am_keys                  ; AM_Ticker: the zoom keys
         lda #AM_BG
         jsr clear_screen             ; AM_clearFB (resident: rows 0..167 only)

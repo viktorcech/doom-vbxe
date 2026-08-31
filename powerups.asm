@@ -108,9 +108,7 @@ pw_resume = *
         rts
 ;   P_GivePower(pw_strength): heal to 100 (P_GiveBody caps at MAXHEALTH, it does
 ;   NOT go to 200), then "if (readyweapon != wp_fist) pendingweapon = wp_fist".
-?zerk   lda PW_FLAGS
-        ora #PWF_BERSERK
-        sta PW_FLAGS
+?zerk   jsr fl_zon                   ; the flag AND st_stuff.c's red (ZERK_BASE)
         lda PSTATE+PS_HEALTH
         cmp #100
         bcs ?zwp
@@ -186,7 +184,8 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
     .endif
         org PWTIC_BASE
 .proc pw_tic
-        jsr fl_tic                   ; the palette-flash counters (weapon.asm)
+        jsr fl_ztic                  ; the berserk's red fade, then fl_tic --
+                                     ;   the palette-flash counters (weapon.asm)
         ldx #4                       ; three u16 counters, 2 B apart
 ?lp     lda PW_INVIS,x
         ora PW_INVIS+1,x
@@ -421,4 +420,96 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
     .if * > LFSG_END+1
         ert 'leaf_segs+sh_dist outgrew LFSG_BASE..LFSG_END (memory_map.inc)'
     .endif
+
+;==============================================================
+; THE BERSERK'S RED (2026-08-30, "ked vezmem ciernu lekarnicku, obraz by mal
+; scervenat"). st_stuff.c ST_doPaletteStuff opens with THREE terms, not two:
+;
+;     cnt = plyr->damagecount;
+;     if (plyr->powers[pw_strength])
+;     {
+;         bzc = 12 - (plyr->powers[pw_strength]>>6);   // slowly fade it out
+;         if (bzc > cnt) cnt = bzc;
+;     }
+;     if (cnt) palette = STARTREDPALS + ((cnt+7)>>3);
+;     else if (plyr->bonuscount) ...
+;
+; The port had the damage and bonus terms and not this one, so the pack healed
+; you, handed you the fist and multiplied A_Punch by ten -- and the screen never
+; went red, which is the half of it a player actually SEES.
+;
+; powers[pw_strength] counts UP one per tic from 1 (P_PlayerThink) and never
+; expires; only the palette fades, and it fades exactly one step every 64 tics.
+; So the port keeps `bzc` itself, 12 down to 0 -- one byte instead of DOOM's
+; 16-bit counter, the same twelve steps over the same 768 tics (~22 s), and
+; update_flash's existing (cnt+7)>>3 does the rest.
+;
+; UP HERE because both blocks that wanted it are full to their last byte (FLASH
+; ends at $F7FD, POWER at $5F00). All three routines are cold -- once a frame,
+; once a tic, once a pickup -- so the x11.2 chip-bus fetches above $8000 do not
+; matter (see ZERK_BASE in memory_map.inc).
+;==============================================================
+zerk_resume = *
+        org ZERK_BASE
+fl_zerk dta 0                        ; bzc: 12 at pickup, 0 = faded out
+fl_zt   dta 0                        ; tics left in the current bzc step
+
+;--------------------------------------------------------------
+; fl_zon -- P_GivePower(pw_strength)'s own half: the flag every damage site
+;   reads, and the red. pw_give's ?zerk calls this INSTEAD of setting the flag
+;   inline, which is why that block did not have to grow.
+;--------------------------------------------------------------
+.proc fl_zon
+        lda PW_FLAGS
+        ora #PWF_BERSERK
+        sta PW_FLAGS
+        lda #12                      ; bzc at powers[pw_strength] = 1
+        sta fl_zerk
+        lda #63
+        sta fl_zt
+        rts
+.endp
+
+;--------------------------------------------------------------
+; fl_ztic -- one DOOM tic of the fade, then fl_tic (the damage/bonus counters).
+;   pw_tic calls this where it called fl_tic, so that block did not grow either.
+;   The flag is the gate, so pw_level needs no line: it drops PWF_BERSERK on
+;   every level start (G_PlayerFinishLevel clears powers[]) and the red goes
+;   with it.
+;--------------------------------------------------------------
+.proc fl_ztic
+        lda PW_FLAGS
+        and #PWF_BERSERK
+        bne ?on
+        sta fl_zerk                  ; A = 0 out of the and: no berserk, no red
+        beq ?done                    ; (always)
+?on     lda fl_zerk
+        beq ?done                    ; already faded out
+        dec fl_zt
+        bpl ?done                    ; only every 64th tic moves bzc
+        lda #63
+        sta fl_zt
+        dec fl_zerk
+?done   jmp fl_tic
+.endp
+
+;--------------------------------------------------------------
+; fl_cnt -- ST_doPaletteStuff's cnt: max(damagecount, bzc). update_flash calls
+;   this where it read fl_dmg, so it is the same three bytes -- and BOTH arms
+;   end on an `lda`, because the caller's next instruction is `beq ?bon` and a
+;   cmp's Z would answer a different question.
+;--------------------------------------------------------------
+.proc fl_cnt
+        lda fl_dmg
+        cmp fl_zerk
+        bcs ?out                     ; the damage flash is the redder of the two
+        lda fl_zerk
+?out    ora #0                       ; ...and A decides Z, not the cmp above
+        rts
+.endp
+    .if * > ZERK_END+1
+        ert 'the berserk red outgrew ZERK_BASE..ZERK_END (memory_map.inc)'
+    .endif
+        org zerk_resume
+
         org pw_resume
