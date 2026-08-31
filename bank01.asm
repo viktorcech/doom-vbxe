@@ -339,13 +339,6 @@ b1_code2_start = *
 .endp
 
 ;--------------------------------------------------------------
-; b1_sq2_restore -- repaint SQ2L_HOME/SQ2H_HOME (under-ROM RAM) from the
-;   masters this bank holds at SQ2L_EXT/SQ2H_EXT. Called by init_level after
-;   EVERY level load: load_things streams the THINGS blob straight over the
-;   homes. The ROM is already banked out there, so the plain abs,x stores land
-;   in RAM (and DBR is 0, so they land in bank 0). Clobbers A/X.
-;--------------------------------------------------------------
-;--------------------------------------------------------------
 ; b1_amgate -- am_gate's whole body (its bank-0 block is 11 bytes and holds
 ;   exactly one jml here). Map up: copy page 1 of the overlay (AMOVL_EXT,
 ;   this bank) down to MENU_RUN and jml into it -- the page's own head
@@ -367,20 +360,9 @@ b1_code2_start = *
 ?world  jml render_world
 .endp
 
-.proc b1_sq2_restore
-        ldx #0
-?p      lda.l B1CODE_BASE+SQ2L_EXT,x
-        sta SQ2L_HOME,x
-        lda.l B1CODE_BASE+SQ2L_EXT+$100,x
-        sta SQ2L_HOME+$100,x
-        lda.l B1CODE_BASE+SQ2H_EXT,x
-        sta SQ2H_HOME,x
-        lda.l B1CODE_BASE+SQ2H_EXT+$100,x
-        sta SQ2H_HOME+$100,x
-        inx
-        bne ?p
-        rtl
-.endp
+; (b1_sq2_restore is GONE, 2026-08-31 pm: the SQ2 tables live at
+;  SQ2L_UROM/SQ2H_UROM, past every stream the engine has -- nothing to
+;  repaint. The $C900 scheme it served lasted one morning; see qs_mirror.inc.)
 
 b1_code2_end = *
 B1CODE2_BYTES = b1_code2_end - b1_code2_start

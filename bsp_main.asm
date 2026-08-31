@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
+; RAM BUDGET: 1116 B free, biggest contiguous block 253 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -822,14 +822,16 @@ b1copy_resume = *
         clc
         adc #5
         tax
-        cpx #25
+        cpx #15
         bcc ?next
         jmp rom_in                   ; ...and back to emulation mode with it
 ?tab    dta <B1CODE_STAGE, >B1CODE_STAGE, <B1CODE_OFF, >B1CODE_OFF, [B1CODE_BYTES+255]/256
         dta <B1CODE2_STAGE, >B1CODE2_STAGE, <B1CODE2_OFF, >B1CODE2_OFF, [B1CODE2_BYTES+255]/256
-        dta <SQ2L_STAGE, >SQ2L_STAGE, <SQ2L_EXT, >SQ2L_EXT, 2
-        dta <SQ2H_STAGE, >SQ2H_STAGE, <SQ2H_EXT, >SQ2H_EXT, 2
         dta <AMOVL_STAGE, >AMOVL_STAGE, <AMOVL_EXT, >AMOVL_EXT, 5
+                                     ; (the SQ2 master rows are gone, 2026-08-31
+                                     ;  pm: the tables live at SQ2L_UROM/
+                                     ;  SQ2H_UROM, past every stream -- no
+                                     ;  masters, no per-load restore)
 .endp
     .if * > B1COPY_END+1
         ert 'b1_to_ext outgrew B1COPY_BASE..END (memory_map.inc)'

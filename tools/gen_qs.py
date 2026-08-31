@@ -99,41 +99,36 @@ QSqrLoBase
 ;   SQ2 + (255-b) the index a reads f(a-b) with no absolute value and no
 ;   branch -- see gen_qs.py's header and pt_dy in paint.asm.
 ;   Only the painted build assembles it.
-; 2026-08-31: the tables RUN at SQ2L_HOME/SQ2H_HOME -- under-ROM RAM, fast,
-;   dead in the shipped XEX (SGOVL's lifted parking) -- and the XEX PARKS the
-;   bytes at SQ2L_STAGE/SQ2H_STAGE in win2 (two-address org, the overlay
-;   trick). b1_to_ext copies the staged bytes to the bank $01 masters at boot
-;   and init_level's `jsl b1_sq2_restore` repaints the homes after every
-;   level load (load_things streams the THINGS blob straight over them).
-;   All five addresses live in memory_map.inc; this file only spends them.
-;   The win2 read cost this killed: 12,172 reads/frame at x11.2 = 5.8 ms.
+; 2026-08-31 pm, THIRD home today and the KEEPER: plain under-ROM RAM at
+;   SQ2L_UROM/SQ2H_UROM ($E200/$FA00). The OS ROM is banked out for the whole
+;   game loop and NOTHING streams past $E17F (map HIGH ends there, the things
+;   slot at $CEFF) -- so unlike the $C900 attempt, which sat inside the
+;   THINGS slot and was eaten by every 255-thing level's blob (corpse sprites
+;   on E1M3/E1M6), these pages need no staging, no bank $01 masters and no
+;   per-load restore. The day's evictions (crush, use_ray, radfill, the
+;   door_at_point..try_use run, pl_dieq, pj_zstep) are what cleared them.
+;   The win2 read cost this kills: 12,172 reads/frame at x11.2 = 5.8 ms.
 ;==============================================================
     .if TEX_RUNS
-; SQ2H comes FIRST on purpose: MADS merges a two-address org into the open
-; segment when its RUN address equals the current one -- adr2 and all -- so
-; SQ2L-then-SQ2H (runs $C900, $CB00 = contiguous) parked BOTH tables at
-; SQ2L_STAGE and ran the segment into the MEMAC window. H-then-L makes each
-; org's run address discontiguous with the previous stream, forcing the two
-; file headers this layout needs (caught by check_xex, 2026-08-31).
 qsm_resume = *
-        org SQ2H_HOME, SQ2H_STAGE
-SQ2H
-""")
-        fh.write(rows(g, 8) + '\n')
-        fh.write("""    .if * > SQ2H_HOME+$200
-        ert 'SQ2H outgrew its page pair (memory_map.inc SQ2H_HOME)'
-    .endif
-        org SQ2L_HOME, SQ2L_STAGE
+        org SQ2L_UROM
 SQ2L
 """)
         fh.write(rows(g, 0) + '\n')
-        fh.write("""    .if * > SQ2L_HOME+$200
-        ert 'SQ2L outgrew its page pair (memory_map.inc SQ2L_HOME)'
+        fh.write("""    .if * > SQ2L_UROM+$200
+        ert 'SQ2L outgrew its page pair (memory_map.inc SQ2L_UROM)'
+    .endif
+        org SQ2H_UROM
+SQ2H
+""")
+        fh.write(rows(g, 8) + '\n')
+        fh.write("""    .if * > SQ2H_UROM+$200
+        ert 'SQ2H outgrew its page pair (memory_map.inc SQ2H_UROM)'
     .endif
         org qsm_resume
     .endif
 """)
-    print(f'wrote {OUT_MIRROR} (SQ2 mirror: runs at SQ2L_HOME/SQ2H_HOME, parks at *_STAGE)')
+    print(f'wrote {OUT_MIRROR} (SQ2 mirror at SQ2L_UROM/SQ2H_UROM -- under-ROM, no staging)')
     # the identity, checked here so the asm never has to be trusted on it
     for a in (0, 1, 7, 63, 128, 200, 255):
         for b in (0, 1, 3, 16, 100, 255):

@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
+; RAM BUDGET: 1116 B free, biggest contiguous block 253 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -424,8 +424,9 @@ bft_resume = *
 ;   is out for the whole init chain, so the restore's stores land in RAM.
 ;   Skip this and every wall is garbage from frame one (paint.asm pt_dy).
 ;--------------------------------------------------------------
-.proc sq2_lt_init
-        jsl B1CODE_BASE+b1_sq2_restore
+.proc sq2_lt_init                    ; (name kept: mv_reset's tail jmp points
+                                     ;   here; the SQ2 restore it was born for
+                                     ;   died with the $C900 home, 2026-08-31)
         jsr wp_flight                ; extralight off + lt_seg call retargeted
                                      ;   to normal: wp_init has just parked the
                                      ;   flash state at WS_NULL, so an exit or

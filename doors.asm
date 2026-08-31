@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 1118 B free, biggest contiguous block 268 B.
+; RAM BUDGET: 1116 B free, biggest contiguous block 253 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -497,6 +497,12 @@ ul_resume = *
     .endif
         org ul_resume
 
+; --- the USE-press quartet (door_at_point / use_leaf / use_sample / try_use)
+;     ran here in the ambient stream, which happened to be $FA00-$FBB7 --
+;     exactly where SQ2H_UROM wanted to live. All four fire once per USE
+;     press, so win2 prices them at nothing (DAPUSE_BASE, 2026-08-31).
+dap_resume = *
+        org DAPUSE_BASE
 .proc door_at_point
         jsr use_locate
         lda zp_nid                   ; ssptr = MAP_SSECT + (nid&7FFF)*4
@@ -784,6 +790,10 @@ ul_resume = *
 ?none   jmp snd_q_nowayx             ; wall: DOOM's "uh-uh" -- unless the wall
 ?swit   rts                          ;   was the EXIT switch (then swtchx)
 .endp
+    .if * > DAPUSE_END+1
+        ert 'door_at_point..try_use outgrew DAPUSE_BASE..END (memory_map.inc)'
+    .endif
+        org dap_resume
 
 ;--------------------------------------------------------------
 ; use_door_go -- A = door index the USE ray hit. EV_VerticalDoor's key gate

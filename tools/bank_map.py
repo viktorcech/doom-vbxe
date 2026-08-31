@@ -92,9 +92,7 @@ REGIONS = [
     # 2026-08-31: the frac-table pages, the SQ2 masters and the second code
     # block (see memory_map.inc's B1CODE2 banner for the whole story).
     ('TSIN_LO',    6 * 256, 'TSIN/TCOS frac tables (b1_build_frac writes, FMUL reads long)'),
-    ('SQ2L_EXT',   512, 'SQ2L master (b1_sq2_restore repaints $C900 from it)'),
-    ('SQ2H_EXT',   512, 'SQ2H master (... and $CB00)'),
-    ('B1CODE2_OFF', n('B1CODE2_MAX'), 'bank01.asm: b1_build_frac + b1_sq2_restore + b1_amopen'),
+    ('B1CODE2_OFF', n('B1CODE2_MAX'), 'bank01.asm: b1_build_frac + b1_amgate'),
     ('AMOVL_EXT',  5 * 256, 'the automap overlay (b1_amopen serves it per frame)'),
     # SPRCOL_EXT and FTAB_EXT left this bank on 2026-08-21 for bank $08
     # (SPRCOL_BANK): the 24 KB coltab run here was what made plan_views drop

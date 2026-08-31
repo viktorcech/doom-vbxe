@@ -257,11 +257,11 @@ STAGED = [
     # savegame.asm's ($C800-) -- b1_to_ext copies it out before the first
     # load_things, and the things slot then has it back.
     (0xC500, 0xC7FF, "B1CODE_STAGE -> bank $01 (bank01.asm), then the things slot"),
-    # 2026-08-31: the SECOND bank01 block (b1_build_frac + b1_sq2_restore),
+    # 2026-08-31: the SECOND bank01 block (b1_build_frac + b1_amgate),
     # staged in the raw-XEX hole behind SGOVL's parking. Copied up by the same
     # b1_to_ext pass; the things stream owns the pages afterwards. The SQ2
-    # runtime HOMES ($C900-$CCFE) carry no XEX segment at all -- b1_sq2_restore
-    # repaints them from bank $01 after every load (memory_map.inc).
+    # (The $C900 SQ2-home scheme this once served is gone -- the tables live
+    # at SQ2L_UROM/SQ2H_UROM now, past every stream.)
     (0xCD00, 0xCF7F, "B1CODE2_STAGE -> bank $01 (bank01.asm), then the things slot"),
     # 2026-08-31 pm: the automap overlay stopped riding menu.bin -- the XEX
     # keeps its two-address-org segment at AMOVL_STAGE and b1_to_ext copies it

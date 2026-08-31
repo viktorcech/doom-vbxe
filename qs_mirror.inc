@@ -7,61 +7,19 @@
 ;   SQ2 + (255-b) the index a reads f(a-b) with no absolute value and no
 ;   branch -- see gen_qs.py's header and pt_dy in paint.asm.
 ;   Only the painted build assembles it.
-; 2026-08-31: the tables RUN at SQ2L_HOME/SQ2H_HOME -- under-ROM RAM, fast,
-;   dead in the shipped XEX (SGOVL's lifted parking) -- and the XEX PARKS the
-;   bytes at SQ2L_STAGE/SQ2H_STAGE in win2 (two-address org, the overlay
-;   trick). b1_to_ext copies the staged bytes to the bank $01 masters at boot
-;   and init_level's `jsl b1_sq2_restore` repaints the homes after every
-;   level load (load_things streams the THINGS blob straight over them).
-;   All five addresses live in memory_map.inc; this file only spends them.
-;   The win2 read cost this killed: 12,172 reads/frame at x11.2 = 5.8 ms.
+; 2026-08-31 pm, THIRD home today and the KEEPER: plain under-ROM RAM at
+;   SQ2L_UROM/SQ2H_UROM ($E200/$FA00). The OS ROM is banked out for the whole
+;   game loop and NOTHING streams past $E17F (map HIGH ends there, the things
+;   slot at $CEFF) -- so unlike the $C900 attempt, which sat inside the
+;   THINGS slot and was eaten by every 255-thing level's blob (corpse sprites
+;   on E1M3/E1M6), these pages need no staging, no bank $01 masters and no
+;   per-load restore. The day's evictions (crush, use_ray, radfill, the
+;   door_at_point..try_use run, pl_dieq, pj_zstep) are what cleared them.
+;   The win2 read cost this kills: 12,172 reads/frame at x11.2 = 5.8 ms.
 ;==============================================================
     .if TEX_RUNS
-; SQ2H comes FIRST on purpose: MADS merges a two-address org into the open
-; segment when its RUN address equals the current one -- adr2 and all -- so
-; SQ2L-then-SQ2H (runs $C900, $CB00 = contiguous) parked BOTH tables at
-; SQ2L_STAGE and ran the segment into the MEMAC window. H-then-L makes each
-; org's run address discontiguous with the previous stream, forcing the two
-; file headers this layout needs (caught by check_xex, 2026-08-31).
 qsm_resume = *
-        org SQ2H_HOME, SQ2H_STAGE
-SQ2H
-        dta $3F,$3F,$3E,$3E,$3D,$3D,$3C,$3C,$3B,$3B,$3A,$3A,$39,$39,$38,$38
-        dta $37,$37,$36,$36,$35,$35,$35,$34,$34,$33,$33,$32,$32,$31,$31,$31
-        dta $30,$30,$2F,$2F,$2E,$2E,$2D,$2D,$2D,$2C,$2C,$2B,$2B,$2B,$2A,$2A
-        dta $29,$29,$29,$28,$28,$27,$27,$27,$26,$26,$25,$25,$25,$24,$24,$24
-        dta $23,$23,$22,$22,$22,$21,$21,$21,$20,$20,$1F,$1F,$1F,$1E,$1E,$1E
-        dta $1D,$1D,$1D,$1C,$1C,$1C,$1B,$1B,$1B,$1A,$1A,$1A,$19,$19,$19,$19
-        dta $18,$18,$18,$17,$17,$17,$16,$16,$16,$15,$15,$15,$15,$14,$14,$14
-        dta $13,$13,$13,$13,$12,$12,$12,$12,$11,$11,$11,$11,$10,$10,$10,$10
-        dta $0F,$0F,$0F,$0F,$0E,$0E,$0E,$0E,$0D,$0D,$0D,$0D,$0C,$0C,$0C,$0C
-        dta $0C,$0B,$0B,$0B,$0B,$0A,$0A,$0A,$0A,$0A,$09,$09,$09,$09,$09,$09
-        dta $08,$08,$08,$08,$08,$07,$07,$07,$07,$07,$07,$06,$06,$06,$06,$06
-        dta $06,$05,$05,$05,$05,$05,$05,$05,$04,$04,$04,$04,$04,$04,$04,$04
-        dta $03,$03,$03,$03,$03,$03,$03,$03,$02,$02,$02,$02,$02,$02,$02,$02
-        dta $02,$02,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01
-        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
-        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
-        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
-        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$01
-        dta $01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$02,$02,$02
-        dta $02,$02,$02,$02,$02,$02,$02,$03,$03,$03,$03,$03,$03,$03,$03,$04
-        dta $04,$04,$04,$04,$04,$04,$04,$05,$05,$05,$05,$05,$05,$05,$06,$06
-        dta $06,$06,$06,$06,$07,$07,$07,$07,$07,$07,$08,$08,$08,$08,$08,$09
-        dta $09,$09,$09,$09,$09,$0A,$0A,$0A,$0A,$0A,$0B,$0B,$0B,$0B,$0C,$0C
-        dta $0C,$0C,$0C,$0D,$0D,$0D,$0D,$0E,$0E,$0E,$0E,$0F,$0F,$0F,$0F,$10
-        dta $10,$10,$10,$11,$11,$11,$11,$12,$12,$12,$12,$13,$13,$13,$13,$14
-        dta $14,$14,$15,$15,$15,$15,$16,$16,$16,$17,$17,$17,$18,$18,$18,$19
-        dta $19,$19,$19,$1A,$1A,$1A,$1B,$1B,$1B,$1C,$1C,$1C,$1D,$1D,$1D,$1E
-        dta $1E,$1E,$1F,$1F,$1F,$20,$20,$21,$21,$21,$22,$22,$22,$23,$23,$24
-        dta $24,$24,$25,$25,$25,$26,$26,$27,$27,$27,$28,$28,$29,$29,$29,$2A
-        dta $2A,$2B,$2B,$2B,$2C,$2C,$2D,$2D,$2D,$2E,$2E,$2F,$2F,$30,$30,$31
-        dta $31,$31,$32,$32,$33,$33,$34,$34,$35,$35,$35,$36,$36,$37,$37,$38
-        dta $38,$39,$39,$3A,$3A,$3B,$3B,$3C,$3C,$3D,$3D,$3E,$3E,$3F,$3F,$40
-    .if * > SQ2H_HOME+$200
-        ert 'SQ2H outgrew its page pair (memory_map.inc SQ2H_HOME)'
-    .endif
-        org SQ2L_HOME, SQ2L_STAGE
+        org SQ2L_UROM
 SQ2L
         dta $80,$01,$82,$04,$86,$09,$8C,$10,$94,$19,$9E,$24,$AA,$31,$B8,$40
         dta $C8,$51,$DA,$64,$EE,$79,$04,$90,$1C,$A9,$36,$C4,$52,$E1,$70,$00
@@ -95,8 +53,45 @@ SQ2L
         dta $A8,$11,$7A,$E4,$4E,$B9,$24,$90,$FC,$69,$D6,$44,$B2,$21,$90,$00
         dta $70,$E1,$52,$C4,$36,$A9,$1C,$90,$04,$79,$EE,$64,$DA,$51,$C8,$40
         dta $B8,$31,$AA,$24,$9E,$19,$94,$10,$8C,$09,$86,$04,$82,$01,$80,$00
-    .if * > SQ2L_HOME+$200
-        ert 'SQ2L outgrew its page pair (memory_map.inc SQ2L_HOME)'
+    .if * > SQ2L_UROM+$200
+        ert 'SQ2L outgrew its page pair (memory_map.inc SQ2L_UROM)'
+    .endif
+        org SQ2H_UROM
+SQ2H
+        dta $3F,$3F,$3E,$3E,$3D,$3D,$3C,$3C,$3B,$3B,$3A,$3A,$39,$39,$38,$38
+        dta $37,$37,$36,$36,$35,$35,$35,$34,$34,$33,$33,$32,$32,$31,$31,$31
+        dta $30,$30,$2F,$2F,$2E,$2E,$2D,$2D,$2D,$2C,$2C,$2B,$2B,$2B,$2A,$2A
+        dta $29,$29,$29,$28,$28,$27,$27,$27,$26,$26,$25,$25,$25,$24,$24,$24
+        dta $23,$23,$22,$22,$22,$21,$21,$21,$20,$20,$1F,$1F,$1F,$1E,$1E,$1E
+        dta $1D,$1D,$1D,$1C,$1C,$1C,$1B,$1B,$1B,$1A,$1A,$1A,$19,$19,$19,$19
+        dta $18,$18,$18,$17,$17,$17,$16,$16,$16,$15,$15,$15,$15,$14,$14,$14
+        dta $13,$13,$13,$13,$12,$12,$12,$12,$11,$11,$11,$11,$10,$10,$10,$10
+        dta $0F,$0F,$0F,$0F,$0E,$0E,$0E,$0E,$0D,$0D,$0D,$0D,$0C,$0C,$0C,$0C
+        dta $0C,$0B,$0B,$0B,$0B,$0A,$0A,$0A,$0A,$0A,$09,$09,$09,$09,$09,$09
+        dta $08,$08,$08,$08,$08,$07,$07,$07,$07,$07,$07,$06,$06,$06,$06,$06
+        dta $06,$05,$05,$05,$05,$05,$05,$05,$04,$04,$04,$04,$04,$04,$04,$04
+        dta $03,$03,$03,$03,$03,$03,$03,$03,$02,$02,$02,$02,$02,$02,$02,$02
+        dta $02,$02,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01
+        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+        dta $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$01
+        dta $01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$01,$02,$02,$02
+        dta $02,$02,$02,$02,$02,$02,$02,$03,$03,$03,$03,$03,$03,$03,$03,$04
+        dta $04,$04,$04,$04,$04,$04,$04,$05,$05,$05,$05,$05,$05,$05,$06,$06
+        dta $06,$06,$06,$06,$07,$07,$07,$07,$07,$07,$08,$08,$08,$08,$08,$09
+        dta $09,$09,$09,$09,$09,$0A,$0A,$0A,$0A,$0A,$0B,$0B,$0B,$0B,$0C,$0C
+        dta $0C,$0C,$0C,$0D,$0D,$0D,$0D,$0E,$0E,$0E,$0E,$0F,$0F,$0F,$0F,$10
+        dta $10,$10,$10,$11,$11,$11,$11,$12,$12,$12,$12,$13,$13,$13,$13,$14
+        dta $14,$14,$15,$15,$15,$15,$16,$16,$16,$17,$17,$17,$18,$18,$18,$19
+        dta $19,$19,$19,$1A,$1A,$1A,$1B,$1B,$1B,$1C,$1C,$1C,$1D,$1D,$1D,$1E
+        dta $1E,$1E,$1F,$1F,$1F,$20,$20,$21,$21,$21,$22,$22,$22,$23,$23,$24
+        dta $24,$24,$25,$25,$25,$26,$26,$27,$27,$27,$28,$28,$29,$29,$29,$2A
+        dta $2A,$2B,$2B,$2B,$2C,$2C,$2D,$2D,$2D,$2E,$2E,$2F,$2F,$30,$30,$31
+        dta $31,$31,$32,$32,$33,$33,$34,$34,$35,$35,$35,$36,$36,$37,$37,$38
+        dta $38,$39,$39,$3A,$3A,$3B,$3B,$3C,$3C,$3D,$3D,$3E,$3E,$3F,$3F,$40
+    .if * > SQ2H_UROM+$200
+        ert 'SQ2H outgrew its page pair (memory_map.inc SQ2H_UROM)'
     .endif
         org qsm_resume
     .endif
