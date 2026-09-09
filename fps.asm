@@ -239,8 +239,12 @@ fps_resume = *
         bpl ?paint
         jsr fps_fetch
         bcc ?out                     ; NOTHING TIMED YET -- and the hold is armed
+ .if 1
+        stz fd_sum                   ; ...and open the next window
+ .else
         lda #0
         sta fd_sum                   ; ...and open the next window
+ .endif
         lda #FPS_HOLD                ;   only AFTER a fetch that worked. Arming it
         sta fd_hold                  ;   first was the "0,00" flicker: the bail
                                      ;   skipped the paint but left the hold set,

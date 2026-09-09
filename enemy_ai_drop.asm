@@ -24,7 +24,12 @@
         lda (sp_ptr),y
         ora #F_DROP
         sta (sp_ptr),y
-        ldy ai_t2
+        jmp pk_dropadd               ; ...and the pickup list must learn the
+                                     ;   corpse (sp_ptr = its record; restores
+                                     ;   Y and returns): spr_pickup walks the
+                                     ;   LIST now, not the whole thing table.
+                                     ;   A tail-jmp: this block is FULL, the
+                                     ;   3 B ldy it replaces bought exactly it
 ?out    rts
 .endp
 
@@ -350,6 +355,20 @@
         lda sp_pick
         and #F_DROP
         bne spr_drop                 ; a corpse's ammo: no sprtab id, no kill
+ .if 1
+        ldy #6                       ; sprite id -> its sprtab entry -> bonus id:
+        lda (sp_ptr),y               ;   id*8 (8 B records) + th_sprtab, all in a
+        rep #$20                     ;   16-bit A (an id is a byte: the asl's
+        .LONGA ON                    ;   carry out 0, the adc needs no clc)
+        and #$FF
+        asl @
+        asl @
+        asl @
+        adc th_sprtab
+        sta sp_tab
+        sep #$20
+        .LONGA OFF
+ .else
         lda #0                       ; sprite id -> its sprtab entry -> bonus id.
         sta m_prod+1                 ;   id*8 (8 B records) in A:m_prod+1, NOT two
         ldy #6                       ;   zp bytes shifted three times each: the low
@@ -366,6 +385,7 @@
         lda m_prod+1
         adc th_sprtab+1
         sta sp_tab+1
+ .endif
         ldy #7
         lda (sp_tab),y
         beq ?out                     ; no bonus behind this sprite

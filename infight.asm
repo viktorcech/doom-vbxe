@@ -94,6 +94,16 @@
         lda #>TH_TARG
         jsr ai_get
         bne ?mon
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_px
+        sta ai_tx
+        lda zp_py
+        sta ai_ty
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_px
         sta ai_tx
         lda zp_px+1
@@ -102,10 +112,27 @@
         sta ai_ty
         lda zp_py+1
         sta ai_ty+1
+ .endif
         rts
-?mon    sec                          ; TH_TARG is index+1, so 0 can mean "player"
+?mon
+ .if 1
+	dec
+ .else
+	sec                          ; TH_TARG is index+1, so 0 can mean "player"
         sbc #1
+ .endif
         jsr en_thing.en_th2          ; sp_ptr = that thing's record (x +0, y +2)
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda (sp_ptr)
+        sta ai_tx
+	ldy #2
+        lda (sp_ptr),y
+        sta ai_ty
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda (sp_ptr),y
         sta ai_tx
@@ -118,6 +145,7 @@
         iny
         lda (sp_ptr),y
         sta ai_ty+1
+ .endif
         rts
 .endp
 
@@ -134,8 +162,12 @@
         lda #>TH_TARG
         jsr ai_get
         beq ?plr
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         tay
         jsr aif_live                 ; is it still MF_SHOOTABLE? P_KillMobj clears
         bcc ?drop                    ;   that the moment the death chain starts
@@ -148,7 +180,11 @@
         lda #0
         ldx #>TH_THRS
         jsr ai_put
+ .if 1
+	bra ?pldead
+ .else
         jmp ?pldead
+ .endif
 ?plr    jsr aif_thdec
 ?pldead lda pl_dead
         bne ?stand
@@ -199,8 +235,12 @@
         lda #>TH_THRS
         jsr ai_get
         beq ?out
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         ldx #>TH_THRS
         jmp ai_put
 ?out    rts
@@ -214,8 +254,12 @@
         lda #>TH_TARG
         jsr ai_get
         beq ?plr
+ .if 1
+	dec
+ .else
         sec                          ; a MONSTER target: alive AND in sight, the
         sbc #1                       ;   ray having been aimed at IT since
+ .endif
         tay                          ;   2026-08-25 (enemy_ai.asm sg_tgt).
         jmp aif_mvis                 ;   2026-08-20: p_enemy.c A_SpidRefire
 ?plr    jmp aif_pvis                 ;   tests `target->health <= 0` in the SAME
@@ -244,8 +288,12 @@
 .proc aif_retal
         lda ai_src
         beq ?gate                    ; the player is always a legal target
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         cmp ai_t
         beq ?out                     ; `source != target`: nothing fights itself,
                                      ;   which is what keeps splash damage from
@@ -282,9 +330,14 @@
         lda #>TH_TARG
         jsr ai_get
         beq ?plr
+ .if 1
+	dec
+	bra ?dmg
+ .else
         sec
         sbc #1
         jmp ?dmg
+ .endif
 ?plr    lda ai_t3
         jmp en_plr_hurt
 ?body   lda ai_vic
@@ -310,14 +363,22 @@
         pha
         lda ai_k
         pha
+ .if 1
+        lda ai_t
+        inc
+        sta ai_src
+ .else
         clc
         lda ai_t
         adc #1
         sta ai_src
+ .endif
         lda ai_vt
         sta en_bi
         lda ai_t4
+
         jsr en_bhit                  ; health -= damage; en_bkill at 0
+
         ldy ai_vt                    ; did it survive?
         lda #<TH_HPL
         sta zp_ptr
@@ -330,8 +391,11 @@
         lda [zp_ptr],y
         ora ai_t3
         beq ?done
+
         lda ai_vt                    ; its voice needs the kind byte, and a
+        sta en_last                  ;   (STEREO: en_hurt_snd pans from en_last)
         jsr en_thing.en_th2          ;   sleeping thing has none cached yet
+
         ldy #6
         lda (sp_ptr),y
         jsr en_kind_of
@@ -339,8 +403,13 @@
         ldy ai_vt
         jsr ai_hurt                  ; reactiontime = 0, MF_JUSTHIT -- and
                                      ;   aif_retal, which is what turns it round
-?done   lda #0
+?done
+ .if 1
+        stz ai_src
+ .else
+	lda #0
         sta ai_src
+ .endif
         pla
         sta ai_k
         pla
@@ -371,6 +440,33 @@
         sta ai_bbest
         lda ai_t                     ; where the shooter stands
         jsr en_thing.en_th2
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda (sp_ptr)
+        sta ai_bx0
+        ldy #2
+        lda (sp_ptr),y
+        sta ai_by0
+
+        sec                          ; d = target - shooter
+        lda ai_tx
+        sbc ai_bx0
+        sta ai_bdx
+
+        sec
+        lda ai_ty
+        sbc ai_by0
+        sta ai_bdy
+
+        lda ai_bdx
+        sta ai_alx
+        lda ai_bdy
+        sta ai_aly
+
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda (sp_ptr),y
         sta ai_bx0
@@ -383,6 +479,7 @@
         iny
         lda (sp_ptr),y
         sta ai_by0+1
+
         sec                          ; d = target - shooter
         lda ai_tx
         sbc ai_bx0
@@ -390,6 +487,7 @@
         lda ai_tx+1
         sbc ai_bx0+1
         sta ai_bdx+1
+
         sec
         lda ai_ty
         sbc ai_by0
@@ -397,6 +495,7 @@
         lda ai_ty+1
         sbc ai_by0+1
         sta ai_bdy+1
+
         lda ai_bdx
         sta ai_alx
         lda ai_bdx+1
@@ -405,9 +504,21 @@
         sta ai_aly
         lda ai_bdy+1
         sta ai_aly+1
+ .endif
         jsr aif_alen                 ; |d|, and which axis the shot runs along
+
         lda ai_axmaj
         sta ai_bmaj
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda ai_alen                  ; the cutoff starts at the target's own
+        sta ai_bbd                   ;   distance and shrinks to the nearest
+        sta ai_blen
+	sep #$20
+	.LONGA OFF
+	stz ai_bi
+ .else
         lda ai_alen                  ; the cutoff starts at the target's own
         sta ai_bbd                   ;   distance and shrinks to the nearest
         lda ai_alen+1                ;   blocker found so far
@@ -418,6 +529,7 @@
         sta ai_blen+1
         lda #0
         sta ai_bi
+ .endif
 ?lp     lda ai_bi                    ; the sweep is split across three procs
         cmp THINGS_BASE              ;   only because a 6502 branch reaches 127
         bcs ?done                    ;   bytes and one straight-line body does not
@@ -494,6 +606,23 @@
 .proc aif_cand
         lda ai_bi                    ; c = candidate - shooter
         jsr en_thing.en_th2
+
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+	lda (sp_ptr)
+	sbc ai_bx0
+	sta ai_bcx
+
+	ldy #2
+	sec
+        lda (sp_ptr),y
+        sbc ai_by0
+        sta ai_bcy
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         sec
         lda (sp_ptr),y
@@ -504,6 +633,7 @@
         sbc ai_bx0+1
         sta ai_bcx+1
         iny
+
         sec
         lda (sp_ptr),y
         sbc ai_by0
@@ -512,16 +642,32 @@
         lda (sp_ptr),y
         sbc ai_by0+1
         sta ai_bcy+1
+ .endif
         lda ai_bmaj                  ; in FRONT of the shooter? the dominant axis
         beq ?ymaj                    ;   decides -- anything sideways enough for
         lda ai_bcx+1                 ;   this to be wrong is thrown out by the
         eor ai_bdx+1                 ;   perpendicular test anyway
         bmi ?no
+ .if 1
+	bra ?dist
+ .else
         jmp ?dist
+ .endif
 ?ymaj   lda ai_bcy+1
         eor ai_bdy+1
         bmi ?no
-?dist   lda ai_bcx                   ; nearer than the target, and than the best
+?dist
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda ai_bcx                   ; nearer than the target, and than the best
+        sta ai_alx                   ;   blocker so far?
+        lda ai_bcy
+        sta ai_aly
+	sep #$20
+	.LONGA OFF
+ .else
+	lda ai_bcx                   ; nearer than the target, and than the best
         sta ai_alx                   ;   blocker so far?
         lda ai_bcx+1
         sta ai_alx+1
@@ -529,10 +675,16 @@
         sta ai_aly
         lda ai_bcy+1
         sta ai_aly+1
+ .endif
         jsr aif_alen
+ .if 1
+        lda ai_alen
+        cmp ai_bbd
+ .else
         sec
         lda ai_alen
         sbc ai_bbd
+ .endif
         lda ai_alen+1
         sbc ai_bbd+1
         bcs ?no
@@ -547,25 +699,75 @@
 ;   cross_pos (math.asm) leaves the full signed 32-bit cross product in cx_p1.
 ;--------------------------------------------------------------
 .proc aif_perp
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda ai_bdx
+        sta cx_a
+
+        lda ai_bcy
+        sta cx_b
+
+        lda ai_bdy
+        sta cx_c
+
+        lda ai_bcx
+        sta cx_d
+	sep #$20
+	.LONGA OFF
+ .else
         lda ai_bdx
         sta cx_a
         lda ai_bdx+1
         sta cx_a+1
+
         lda ai_bcy
         sta cx_b
         lda ai_bcy+1
         sta cx_b+1
+
         lda ai_bdy
         sta cx_c
         lda ai_bdy+1
         sta cx_c+1
+
         lda ai_bcx
         sta cx_d
         lda ai_bcx+1
         sta cx_d+1
+ .endif
         jsr cross_pos
+
         lda cx_p1+3
+ .if 1
+	rep #$20
+	.LONGA ON
+	bpl ?abs
+
+        sec                          ; |cross|
+        lda #0
+        sbc cx_p1
+        sta cx_p1
+        lda #0
+        sbc cx_p1+2
+        sta cx_p1+2
+
+?abs	lda cx_p1
+	sta ai_bcr
+	lda cx_p1+2
+	sta ai_bcr+2
+
+        lda ai_brad                  ; radius * |d|
+	and #$00ff
+        sta m_a
+        lda ai_blen
+        sta m_b
+
+	sep #$20
+	.LONGA OFF
+ .else
         bpl ?abs
+
         sec                          ; |cross|
         lda #0
         sbc cx_p1
@@ -579,11 +781,13 @@
         lda #0
         sbc cx_p1+3
         sta cx_p1+3
+
 ?abs    ldx #3                       ; park it: umul16 below reuses m_prod
 ?sv     lda cx_p1,x
         sta ai_bcr,x
         dex
         bpl ?sv
+
         lda ai_brad                  ; radius * |d|
         sta m_a
         lda #0
@@ -592,7 +796,18 @@
         sta m_b
         lda ai_blen+1
         sta m_b+1
+ .endif
         jsr umul16
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda ai_bcr
+        cmp m_prod
+        lda ai_bcr+2
+        sbc m_prod+2
+	sep #$20
+	.LONGA OFF
+ .else
         sec
         lda ai_bcr
         sbc m_prod
@@ -602,6 +817,7 @@
         sbc m_prod+2
         lda ai_bcr+3
         sbc m_prod+3
+ .endif
         bcc ?yes
         clc
         rts

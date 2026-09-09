@@ -180,6 +180,15 @@ ptc_fire
                                      ;   phx/plx: paint.asm's callers need X.
         lda #BLT_COPY|BLT_NEXT       ; it is done: re-arm ITS terminated slot
         jsr ptc_put
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_pt
+	dec
+	sta ptc_put+1
+	sep #$20
+	.LONGA OFF
+ .else
         sec                          ; this chain's last link: CTRL is the byte
         lda zp_pt                    ;   right below the next free slot
         sbc #1
@@ -187,6 +196,7 @@ ptc_fire
         lda zp_pt+1
         sbc #0
         sta ptc_put+2
+ .endif
         lda #BLT_COPY                ; ... loses the chain bit = end of list
         jsr ptc_put
         lda #BCB_SIZE                ; launch from slot 1 (slot 0 is the 8x
@@ -293,8 +303,12 @@ spre_resume = *
 twem_resume = *
         org TWEMIT_BASE
 .proc tw_expand
+ .if 1
+	stz tw_base
+ .else
         lda #0                       ; tw_base = the scratch that holds (or will
         sta tw_base                  ;   hold) this column: VRAM_TEX8 + scr*$400
+ .endif
         lda tw_scr
         asl
         asl
@@ -327,8 +341,12 @@ twem_resume = *
         ora #>VRAM_TEX8              ; (the same $00F800-base OR as above)
         sta tw_base+1                ; ... and retarget tw_base at it
     .if TEX_RUNS
+ .if 1
+	stz zp_nodeptr
+ .else
         lda #0                       ; slot 0 of the buffer being built: the
         sta zp_nodeptr               ;   painter owns slots 1.. and never
+ .endif
         lda tw_chn                   ;   touches this one (zp_nodeptr is the
         sta zp_nodeptr+1             ;   BSP walk's, dead during sprites)
     .else
@@ -355,13 +373,21 @@ twem_resume = *
         sta (zp_nodeptr),y
         ldy #BCB_HEIGHT              ; HEIGHT = need SOURCE rows - 1
         lda tw_need
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         sta (zp_nodeptr),y
         ldy #BCB_ZOOM                ; ZOOMY = S (the oversampling factor)
         lda tw_s
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         asl
         asl
         asl
@@ -371,8 +397,12 @@ twem_resume = *
     .if TEX_RUNS
         lda #BLT_COPY                ; a chain of ONE: nothing ever follows the
         sta (zp_nodeptr),y           ;   expansion (the painter fires its own)
+ .if 1
+	stz tw_x1st
+ .else
         lda #0
         sta tw_x1st                  ; a real expansion is queued -> fire it
+ .endif
         rts
     .else
         lda #BLT_COPY|8              ; the runs follow in slots 1..
@@ -381,8 +411,12 @@ twem_resume = *
         lda zp_nodeptr
         adc #21
         sta zp_nodeptr
+ .if 1
+        stz tw_x1st                  ; the chain starts at slot 0 now
+ .else
         lda #0
         sta tw_x1st                  ; the chain starts at slot 0 now
+ .endif
         rts
     .endif
                                      ; (the cache-HIT exit `?done rts` stood
@@ -486,8 +520,12 @@ twem_resume = *
         clc                          ; tw_b = a + h - 1
         lda tw_row
         adc tw_h
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         sta tw_b
         ; ---- tw_wt = (a - peg) * tpr, reduced mod texH*256 --------------------
         ;      (runs AFTER the expander was fired, so this CPU math overlaps the
@@ -500,9 +538,15 @@ twem_resume = *
         sbc rs_pegrow+1
         sta m_a+1
         bpl ?apos
+ .if 1
+                                     ; a above the peg (clip slack) -> texel 0
+        stz m_a
+        stz m_a+1
+ .else
         lda #0                       ; a above the peg (clip slack) -> texel 0
         sta m_a
         sta m_a+1
+ .endif
 ?apos   lda rs_tpr
         sta m_b
         lda rs_tpr+1
@@ -522,15 +566,30 @@ twem_resume = *
         lda m_prod+1
         and rs_texmask+1
         sta tw_wt+1
+ .if 1
+	bra ?srcsel
+ .else
         jmp ?srcsel                  ; NOT ?srcok -- the source select is below
+ .endif
 ?slowmod lda m_prod+3                ; cannot happen for real geometry, but a
         beq ?red0                    ; 32-bit product would break udiv24
+ .if 1
+        stz m_prod
+        stz m_prod+1
+        stz m_prod+2
+ .else
         lda #0
         sta m_prod
         sta m_prod+1
         sta m_prod+2
-?red0   lda #0                       ; m_den = texH*256 (one texture tile, Q8)
+ .endif
+?red0
+ .if 1
+        stz m_den
+ .else
+	lda #0                       ; m_den = texH*256 (one texture tile, Q8)
         sta m_den
+ .endif
         lda rs_texh_cur
         sta m_den+1
         jsr udiv24                   ; m_rem = wt inside the tile (destroys m_prod)
@@ -545,9 +604,15 @@ twem_resume = *
         ;      never needs the whole column, so expand exactly the texel range it
         ;      touches: [wt>>8 .. (wt + h*tpr)>>8]. Only a span that wraps past
         ;      texH falls back to the full column.
-?srcsel lda #0
+?srcsel
+ .if 1
+        stz tw_soff
+        stz tw_soff+1
+ .else
+	lda #0
         sta tw_soff
         sta tw_soff+1
+ .endif
         lda tw_use8
         bne ?exp8
         lda rs_tsrc                  ; raw texture column, tile = texH texels
@@ -558,8 +623,12 @@ twem_resume = *
         sta tw_base+2
         lda rs_texh_cur
         sta tw_tile
+ .if 1
+        stz tw_tile+1
+ .else
         lda #0
         sta tw_tile+1
+ .endif
         jmp tw_runs                  ; raw texture column: straight to the run loop
 ?exp8
     .if TW_SAFE
@@ -572,9 +641,27 @@ twem_resume = *
         sta m_prod
         lda qs_p+1
         sta m_prod+1
+ .if 1
+	stz m_prod+2
+ .else
         lda #0
         sta m_prod+2
+ .endif
         qsmul tw_h, rs_tpr+1, qs_p
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda m_prod+1
+        adc qs_p
+        sta m_prod+1
+
+        clc
+        lda m_prod
+        adc tw_wt
+        sta m_prod
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda m_prod+1
         adc qs_p
@@ -582,6 +669,7 @@ twem_resume = *
         lda m_prod+2
         adc qs_p+1
         sta m_prod+2
+
         clc
         lda m_prod
         adc tw_wt
@@ -589,15 +677,21 @@ twem_resume = *
         lda m_prod+1
         adc tw_wt+1
         sta m_prod+1
+ .endif
         lda m_prod+2
         adc #0
         sta m_prod+2
         bne ?full                    ; last texel >= 256 -> past any texH
+
         sec                          ; need = t1 - t0 + 1
         lda m_prod+1
         sbc tw_t0
+ .if 1
+	inc
+ .else
         clc
         adc #1
+ .endif
         sta tw_need
         clc                          ; t0 + need > texH -> the span wraps: full column
         adc tw_t0
@@ -620,9 +714,18 @@ twem_resume = *
         sec                          ; need = end - t0
         sbc tw_t0
         sta tw_need
+ .if 1
+	bra ?tile8
+ .else
         jmp ?tile8
-?full   lda #0                       ; whole column: t0 = 0, need = texH
+ .endif
+?full
+ .if 1
+        stz tw_t0
+ .else
+	lda #0                       ; whole column: t0 = 0, need = texH
         sta tw_t0
+ .endif
         lda rs_texh_cur
         sta tw_need
 ?tile8
@@ -633,19 +736,39 @@ twem_resume = *
         ; it -- tw_lastt0/tw_lastneed -- not from tw_t0/tw_need.
         lda tw_lastt0                ; tw_soff = lastt0 * S (samples)
         sta tw_soff
+ .if 1
+        stz tw_soff+1
+ .else
         lda #0
         sta tw_soff+1
+ .endif
         jsr ?x8soff
         lda tw_lastneed              ; tile = lastneed * S samples
         sta tw_tile
+ .if 1
+        stz tw_tile+1
+ .else
         lda #0
         sta tw_tile+1
+ .endif
         ldy tw_ssh
         beq ?tdone
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda tw_tile
+?tlp	asl
+	dey
+	bne ?tlp
+	sta tw_tile
+	sep #$20
+	.LONGA OFF
+ .else
 ?tlp    asl tw_tile
         rol tw_tile+1
         dey
         bne ?tlp
+ .endif
 ?tdone
         ; NO tw_base store here: tw_expand owns it now -- the expander alternates
         ; between TWO scratches, and re-pointing at the fixed VRAM_TEX8 made the
@@ -653,10 +776,22 @@ twem_resume = *
         jmp tw_runs                  ; the run loop lives in FAST RAM (see below)
 ?x8soff ldy tw_ssh                   ; tw_soff *= S
         beq ?x8done
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda tw_soff
+?x8lp	asl
+	dey
+	bne ?x8lp
+	sta tw_soff
+	sep #$20
+	.LONGA OFF
+ .else
 ?x8lp   asl tw_soff
         rol tw_soff+1
         dey
         bne ?x8lp
+ .endif
 ?x8done rts
 .endp
 
@@ -710,8 +845,12 @@ twruns_resume = *
 ?srcok  lda #TW_MAXRUN               ; runaway guard (see ?fill for the fallback)
         sta tw_guard
         lda tw_rpt                   ; ZOOM = (rpt-1)<<4: hold each sample rpt
+ .if 1
+	dec
+ .else
         sec                          ;   rows. tw_spy/tw_zoomv go into every link
         sbc #1                       ;   tw_blit emits (chained BCBs)
+ .endif
         asl
         asl
         asl
@@ -720,15 +859,32 @@ twruns_resume = *
         ; ======================= one run per source tile =======================
 ?run    lda tw_use8                  ; tw_off = wt >> 5 (samples) or wt >> 8 (texels)
         beq ?offraw
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda tw_wt
+	ldy tw_rsh
+?sh5	lsr
+	dey
+	bne ?sh5
+	sec
+	sbc tw_soff
+	sta tw_off
+	sep #$20
+	.LONGA OFF
+	bra ?havoff
+ .else
         lda tw_wt
         sta tw_off
         lda tw_wt+1
         sta tw_off+1
+
         ldy tw_rsh
 ?sh5    lsr tw_off+1
         ror tw_off
         dey
         bne ?sh5
+
         sec                          ; relative to the first expanded texel
         lda tw_off
         sbc tw_soff
@@ -736,16 +892,32 @@ twruns_resume = *
         lda tw_off+1
         sbc tw_soff+1
         sta tw_off+1
+
         jmp ?havoff
+ .endif
+
 ?offraw lda tw_wt+1
         sta tw_off
+ .if 1
+        stz tw_off+1
+ .else
         lda #0
         sta tw_off+1
+ .endif
         ; n = SOURCE rows this run may use = min(TW_RUNROWS, rows left in tile).
         ; The run is capped anyway, so first just check whether a FULL run would
         ; still land inside the tile -- it usually does, and then the divide is
         ; skipped entirely (it used to cost more than the blit it set up).
 ?havoff qsmul tw_cnm1, tw_spy, qs_p        ; (TW_RUNROWS-1) * spy
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda qs_p
+        adc tw_off
+;       sta m_a			;is this necessary?
+	cmp tw_tile
+        bcc ?nfullw
+ .else
         clc
         lda qs_p
         adc tw_off
@@ -759,13 +931,27 @@ twruns_resume = *
         lda m_a
         cmp tw_tile
         bcc ?nfull
-?nslow  sec                          ; near the tile end: n = (tile-1-off)/spy + 1
+?nslow
+ .endif
+ .if 1
+	lda tw_tile
+	dec
+	sec
+	sbc tw_off
+	sta m_prod
+        lda tw_spy
+        sta m_den
+	sep #$20
+	.LONGA OFF
+ .else
+	sec                          ; near the tile end: n = (tile-1-off)/spy + 1
         lda tw_tile
         sbc #1
         sta m_prod
         lda tw_tile+1
         sbc #0
         sta m_prod+1
+
         sec
         lda m_prod
         sbc tw_off
@@ -777,21 +963,37 @@ twruns_resume = *
         sta m_den
         lda tw_spy+1
         sta m_den+1
+ .endif
         jsr udiv16
+
         lda m_quot+1
         bne ?ncap
         lda m_quot
         cmp #TW_RUNROWS
         bcc ?nok
 ?ncap   lda #TW_RUNROWS-1
-?nok    clc
+?nok
+ .if 1
+	inc
+	sta tw_n
+	bra ?haven
+ .else
+	clc
         adc #1
         sta tw_n
         jmp ?haven
+ .endif
+ .if 1
+?nfullw	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
 ?nfull  lda #TW_RUNROWS
         sta tw_n
 ?haven
         qsmul tw_n, tw_rpt, qs_p           ; avail = n*rpt dest rows (multiple of rpt)
+
         lda qs_p
         sta tw_dr
         lda qs_p+1
@@ -799,43 +1001,79 @@ twruns_resume = *
         sec                          ; rem = tw_b - tw_row + 1  (>= 1)
         lda tw_b
         sbc tw_row
+ .if 1
+	inc
+ .else
         clc
         adc #1
+ .endif
         sta tw_rem
         lda tw_dr+1                  ; dr = min(avail, rem)
         bne ?spanlim
+
         lda tw_dr
         cmp tw_rem
         bcs ?spanlim
+
         lda #1                       ; run-limited: dr = avail, n1 = n, no remainder
         sta tw_lim
         lda tw_n
         sta tw_n1
+ .if 1
+        stz tw_r
+	bra ?emit
+ .else
         lda #0
         sta tw_r
         jmp ?emit
+ .endif
+
 ?spanlim lda tw_rem                  ; span-limited: dr = rem, n1 = dr/rpt + rest
         sta tw_dr
+ .if 1
+        stz tw_dr+1
+        stz tw_lim
+ .else
         lda #0
         sta tw_dr+1
         sta tw_lim
+ .endif
         lda tw_rpt
+ .if 1
+	dec
+ .else
         cmp #1
+ .endif
         bne ?sdiv
         lda tw_dr                    ; rpt == 1 -> one source row per dest row
         sta tw_n1
+ .if 1
+	stz tw_r
+        bra ?emit
+ .else
         lda #0
         sta tw_r
         jmp ?emit
+ .endif
+
 ?sdiv   lda tw_dr
         sta m_prod
+ .if 1
+        stz m_prod+1
+ .else
         lda #0
         sta m_prod+1
+ .endif
         lda tw_rpt
         sta m_den
+ .if 1
+        stz m_den+1
+ .else
         lda #0
         sta m_den+1
+ .endif
         jsr udiv16
+
         lda m_quot
         sta tw_n1
         qsmul tw_n1, tw_rpt, qs_p
@@ -843,30 +1081,46 @@ twruns_resume = *
         lda tw_dr
         sbc qs_p
         sta tw_r
+
 ?emit   lda tw_n1
         beq ?rest                    ; shorter than one zoom group -> rest only
+
         lda tw_row
         sta tw_brow
         lda tw_n1
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         sta tw_bh                    ; HEIGHT = SOURCE rows - 1
         lda tw_off
         sta tw_boff
         lda tw_off+1
         sta tw_boff+1
         jsr tw_blit
+
 ?rest   lda tw_r
+ .if 1
+	jeq ?adv
+ .else
         bne ?dorest
         jmp ?adv
-?dorest qsmul tw_n1, tw_rpt, qs_p          ; the leftover rows continue the last sample
+?dorest
+ .endif
+	qsmul tw_n1, tw_rpt, qs_p          ; the leftover rows continue the last sample
         clc
         lda tw_row
         adc qs_p
         sta tw_brow
         lda tw_r
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         sta tw_bh
         qsmul tw_n1, tw_spy, qs_p          ; source sample off + n1*spy
         clc
@@ -883,20 +1137,46 @@ twruns_resume = *
         adc tw_dr
         sta tw_row
         lda tw_lim
+ .if 1
+	jeq ?out
+ .else
         bne ?more
         jmp ?out                     ; span-limited -> the span is done
-?more   dec tw_guard
+?more
+ .endif
+	dec tw_guard
+ .if 1
+	jeq ?fill
+ .else
         bne ?keeprun
         jmp ?fill
 ?keeprun
+ .endif
         qsmul tw_dr, rs_tpr, qs_p          ; wt += dr*tpr (dr is a byte -> 2 qsmuls),
         lda qs_p                     ; then reduce mod texH*256
         sta m_prod
         lda qs_p+1
         sta m_prod+1
+ .if 1
+        stz m_prod+2
+ .else
         lda #0
         sta m_prod+2
+ .endif
         qsmul tw_dr, rs_tpr+1, qs_p
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda m_prod+1
+        adc qs_p
+        sta m_prod+1
+        clc
+        lda m_prod
+        adc tw_wt
+        sta m_prod
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda m_prod+1
         adc qs_p
@@ -911,17 +1191,22 @@ twruns_resume = *
         lda m_prod+1
         adc tw_wt+1
         sta m_prod+1
+ .endif
         lda m_prod+2
         adc #0
         sta m_prod+2
+
         lda rs_texpow2               ; power-of-two texH -> the modulo is an AND
         bne ?red
+
         lda m_prod
         sta tw_wt
         lda m_prod+1
         and rs_texmask+1
         sta tw_wt+1
+
         jmp ?run
+
 ?red    lda m_prod+2                 ; while wt >= texH*256: wt -= texH*256
         bne ?sub                     ; (a run covers at most one tile -> 1-2 laps)
         lda m_prod+1
@@ -935,6 +1220,7 @@ twruns_resume = *
         sbc #0
         sta m_prod+2
         jmp ?red
+
 ?reddone lda m_prod
         sta tw_wt
         lda m_prod+1
@@ -968,4 +1254,3 @@ twruns_resume = *
     .if * > TEXBLIT_END+1
         ert 'the blit segment outgrew TEXBLIT_BASE..END -- see memory_map.inc'
     .endif
-

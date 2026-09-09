@@ -60,10 +60,17 @@
         cmp #1<<AIM_RTSH
         bcc ?nort
         sec
+ .if 1
+        sbc #1<<AIM_RTSH
+        sta ai_amode
+?nort   and #AIM_JATK                ; --- "do not attack twice in a row" (A IS
+                                     ;   ai_amode on both paths: no reload)
+ .else
         sbc #1<<AIM_RTSH
         sta ai_amode
 ?nort   lda ai_amode                 ; --- "do not attack twice in a row"
         and #AIM_JATK
+ .endif
         beq ?nojatk
         lda ai_amode
         and #255-AIM_JATK            ; clear it and spend this state turning
@@ -176,6 +183,45 @@
 ;   the player until something else shoots this monster (infight.asm).
 ;--------------------------------------------------------------
 .proc ai_pdist
+ .if 1
+        jsr aif_tpos                 ; -> ai_tx/ai_ty
+        lda ai_t
+        jsr en_thing.en_th2
+        rep #$20                     ; ---- 16-bit A: |target - thing| per axis in
+        .LONGA ON                    ;   the accumulator, then dx+dy/2 with the
+        sec                          ;   larger term whole (m_fixed.c)
+        lda ai_tx
+        sbc (sp_ptr)                 ; thing.x at +0
+        bpl ?xp
+        eor #$FFFF
+        inc @
+?xp     sta ai_ax
+        ldy #2
+        sec
+        lda ai_ty
+        sbc (sp_ptr),y               ; thing.y at +2
+        bpl ?yp
+        eor #$FFFF
+        inc @
+?yp     sta ai_ay
+        cmp ai_ax                    ; dy >= dx? (a tie goes either way: the two
+        bcs ?ybig                    ;   sums are the same number)
+        lsr @                        ; dx is larger: ad = dx + dy/2
+        clc
+        adc ai_ax
+        sta ai_ad
+        sep #$20
+        .LONGA OFF
+        rts
+?ybig   lda ai_ax                    ; dy is larger: ad = dy + dx/2
+        lsr @
+        clc
+        adc ai_ay
+        sta ai_ad
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         jsr aif_tpos                 ; -> ai_tx/ai_ty
         lda ai_t
         jsr en_thing.en_th2
@@ -251,6 +297,7 @@
         sbc ai_ay+1
         sta ai_ay+1
 ?yok    rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -339,10 +386,16 @@
         jsr ai_put
         jsr ai_setrow
         jmp ai_chase                 ; the RUN state's action is A_Chase
+ .if 1
+?step   lda ai_awst
+        inc @
+        ldx #>TH_WST
+ .else
 ?step   lda ai_awst
         clc
         adc #1
         ldx #>TH_WST
+ .endif
         jsr ai_put
         jmp ai_atk_row
 .endp
@@ -360,10 +413,16 @@
         and #AT_TICS                 ; bits 0-5 are info.c's own tics
         ldx #>TH_WTIC
         jsr ai_put
+ .if 1
+        lda ai_arow                  ; TH_WROW is row+1 (0 = not chasing)
+        inc @
+        ldx #>TH_WROW
+ .else
         lda ai_arow                  ; TH_WROW is row+1 (0 = not chasing)
         clc
         adc #1
         ldx #>TH_WROW
+ .endif
         jsr ai_put
         lda ai_atics
         and #AT_FIRE
@@ -378,6 +437,41 @@
 ;   tics at +7 -- see the DTAB note in memory_map.inc).
 ;--------------------------------------------------------------
 .proc ai_atk_tics
+ .if 1
+        lda #>TH_WST
+        jsr ai_get
+        sta ai_awst
+        sta ai_asc                   ; the state, scaled by the stored-view
+        lda wrot_nst                 ;   count: attack rows are state-major
+        cmp #4                       ;   x NSTOR since the rotation slice (the
+        bne ?flat                    ;   .else side has the 2026-08-08 story)
+        lda ai_awst
+        asl                          ; *4
+        asl
+        sta ai_asc
+?flat   ldy ai_k
+        lda #<ATAB_EXT
+        sta zp_ptr
+        lda #>ATAB_EXT
+        sta zp_ptr+1
+        lda [zp_ptr],y               ; the kind's first attack row
+        clc
+        adc ai_asc
+        sta ai_arow
+        rep #$20                     ; ---- 16-bit A: row*8 + DTAB_ROWS in A (the
+        .LONGA ON                    ;   row is a byte, so the asl's carry 0 and
+        and #$FF                     ;   the adc needs no clc)
+        asl @
+        asl @
+        asl @
+        adc #DTAB_ROWS
+        sta zp_ptr
+        sep #$20
+        .LONGA OFF
+        ldy #7
+        lda [zp_ptr],y
+        rts
+ .else
         lda #>TH_WST
         jsr ai_get
         sta ai_awst
@@ -424,6 +518,7 @@
         ldy #7
         lda [zp_ptr],y
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -511,7 +606,7 @@
         asl
         jsr aif_hurt                 ; a CALL, like the claw below: the bite
         lda #SFX_SGTATK              ;   (info.c attacksound) is queued AFTER the
-        sta snd_pending              ;   damage so en_plr_hurt's grunt does not
+        jsr snd_qp_ai                ;   damage so en_plr_hurt's grunt does not
         rts                          ;   overwrite it -- one sound slot
 ?claw   lda ai_ad+1                  ; the imp's claw, same range test
         bne ?throw
@@ -521,7 +616,7 @@
         jsr ?r8                      ; (P_Random()%8+1) * the kind's damage byte
         jsr ?x3                      ; ...*3 imp / *10 baron. A CALL, not a jump:
         lda #SFX_CLAW                ;   A_TroopAttack plays sfx_claw inside its
-        sta snd_pending              ;   P_CheckMeleeRange branch, i.e. exactly
+        jsr snd_qp_ai                ;   P_CheckMeleeRange branch, i.e. exactly
         rts                          ;   when the scratch connects -- but
                                      ;   en_plr_hurt queues the player's own
                                      ;   grunt (sfx_plpain) on the way through,
@@ -551,7 +646,8 @@
         jsr ?shot                    ;   point blank the shot ALWAYS lands, so the
         jsr ?shot                    ;   gun was never once heard and the spider
         lda #SFX_SHOTGN              ;   mastermind's chaingun was the player's
-?voice  sta en_snd_q                 ;   own grunt. en_snd_q is the voice DOOM
+?voice  jsr snd_qm_ai                ;   own grunt. en_snd_q is the voice DOOM
+                                     ;   (STEREO: ai_t is the one firing)
 ?out    rts                          ;   plays attacksound on -- S_StartSound
                                      ;   (actor, ...) -- and snd_dispatch starts
                                      ;   it on a channel of its own, so now BOTH
@@ -596,6 +692,26 @@
 ?nohit  clc
         rts
 ;   P_Random()%N + 1, for the three N the four actions use
+ .if 1
+?r5     lda RANDOM
+?m5     cmp #5
+        bcc ?d5
+        sbc #5
+        bra ?m5
+?d5     inc @                        ; (+1: C is dead in every caller)
+        rts
+?r8     lda RANDOM
+        and #7
+        inc @
+        rts
+?r10    lda RANDOM
+?m10    cmp #10
+        bcc ?d10
+        sbc #10
+        bra ?m10
+?d10    inc @
+        rts
+ .else
 ?r5     lda RANDOM
 ?m5     cmp #5
         bcc ?d5
@@ -617,6 +733,7 @@
 ?d10    clc
         adc #1
         rts
+ .endif
 .endp
 
     .if * > AIATK_END+1
@@ -710,8 +827,13 @@ airf_resume = *
         bcc ?yes
         jsr aif_isvis                ; the port's P_CheckSight -- the same oracle
         bcc ?no                      ;   ai_try_atk decided to open fire on
+ .if 1
+?yes    stz ai_awst                  ; ai_atk_next's ?step reads ai_awst and adds
+                                     ;   one, so 0 here IS P_SetMobjState(ATK2)
+ .else
 ?yes    lda #0                       ; ai_atk_next's ?step reads ai_awst and adds
         sta ai_awst                  ;   one, so 0 here IS P_SetMobjState(ATK2)
+ .endif
         sec
         rts
 ?no     clc

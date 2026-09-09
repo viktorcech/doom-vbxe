@@ -250,8 +250,12 @@ mtx_back_resume = *
         sbc zp_xa                    ;   (?put below), and the three between take
         lsr @                        ;   their neighbour's window.
         lsr @
+ .if 1
+	inc
+ .else
         clc                          ; A 160-column seg is 80 bytes at 2 B each
         adc #1                       ;   and the pool is ONE page shared with the
+ .endif
         asl @                        ;   sprites -- two wide struts and the third
                                      ;   fell off the end and was dropped, which
         adc sp_clip                  ;   is a strut that blinks as you turn
@@ -279,7 +283,11 @@ mtx_back_resume = *
 ?open   sta mtx_t
         lda ybotc_arr,x
         sta mtx_b
+ .if 1
+	bra ?put
+ .else
         jmp ?put
+ .endif
 ?closed lda #255                     ; 255/255 = fully covered, the same "no
         sta mtx_t                    ;   window" spr_add writes
         sta mtx_b
@@ -306,9 +314,15 @@ mtx_back_resume = *
         lda mtx_b
         cmp mtx_b0
         beq ?nx
-?unot   lda #0
+?unot
+ .if 1
+	stz ms_uni
+	bra ?nx
+ .else
+	lda #0
         sta ms_uni
         beq ?nx                      ; (always: A = 0)
+ .endif
 ?first  lda mtx_t
         sta mtx_t0
         lda mtx_b
@@ -316,13 +330,15 @@ mtx_back_resume = *
 ?nx     cpx zp_xb
         beq ?done
         inx
-        jmp ?snap
+        jmp ?snap		;bra?
+
 ?done   lda ms_uni
         beq ?keep
         lda mtx_t0
         cmp #255
         bne ?uni                     ; uniform AND closed -> invisible, and a
         rts                          ;   dropped seg must not eat a list slot
+
 ?uni    ldy #2                       ; uniform -> hand the pool back all but the
 ?keep   tya                          ;   one pair
         clc
@@ -430,7 +446,11 @@ mtx_back_resume = *
 ?nadv   cpx zp_xb
         beq ?done
         inx
+ .if 1
+	bra ?p
+ .else
         jmp ?p
+ .endif
 ?done   rts
 .endp
     .if * > MSEGPRE_END+1

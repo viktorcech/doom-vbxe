@@ -98,6 +98,44 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ?a      jsr bl_roll                  ; ...and how hard it will hit (ai_k again)
         lda ai_t
         jsr en_thing.en_th2          ; sp_ptr = the shooter's thing record
+ .if 1
+	rep #$21
+	.LONGA ON
+	lda (sp_ptr)
+	sta bl_x
+	ldy #2
+	lda (sp_ptr),y
+	sta bl_y
+	ldy #4
+	lda (sp_ptr),y
+	adc #32
+	sta bl_z
+
+        ldy #0
+        sty bl_xf
+        sty bl_yf
+        sty bl_zf
+
+        sec                          ; the aim vector, target - shooter
+        lda ai_tx
+        sbc bl_x
+        sta bl_dx
+
+        sec
+        lda ai_ty
+        sbc bl_y
+        sta bl_dy
+
+        sec                          ; dz = dest->z - source->z (p_mobj.c:923),
+        lda zp_pz                    ;   feet to feet: player feet = eye - 41,
+        sbc #9                       ;   imp feet = bl_z - 32, so
+	sec
+	sbc bl_z
+        sta bl_dz                    ;   dz = (zp_pz-41) - (bl_z-32)
+        	                     ;      =  zp_pz - 9 - bl_z
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda (sp_ptr),y               ; ball starts at the imp...
         sta bl_x
@@ -119,10 +157,12 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         lda (sp_ptr),y
         adc #0
         sta bl_z+1
+
         lda #0
         sta bl_xf
         sta bl_yf
         sta bl_zf
+
         sec                          ; the aim vector, target - shooter
         lda ai_tx
         sbc bl_x
@@ -130,6 +170,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         lda ai_tx+1
         sbc bl_x+1
         sta bl_dx+1
+
         sec
         lda ai_ty
         sbc bl_y
@@ -137,6 +178,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         lda ai_ty+1
         sbc bl_y+1
         sta bl_dy+1
+
         sec                          ; dz = dest->z - source->z (p_mobj.c:923),
         lda zp_pz                    ;   feet to feet: player feet = eye - 41,
         sbc #9                       ;   imp feet = bl_z - 32, so
@@ -144,6 +186,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         lda zp_pz+1                  ;      =  zp_pz - 9 - bl_z
         sbc #0
         sta bl_dz+1
+
         sec
         lda bl_dz
         sbc bl_z
@@ -151,6 +194,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         lda bl_dz+1
         sbc bl_z+1
         sta bl_dz+1
+ .endif
 ?red    lda bl_dx                    ; shrink until BOTH deltas fit [-127,127]:
         clc                          ;   v+127 lands in [0,254] exactly then.
         adc #127                     ;   hi+carry != 0 is "outside"; lo = $FF
@@ -160,6 +204,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         bne ?shr                     ;   the k7 row always exists.
         cpx #$FF
         beq ?shr
+
         lda bl_dy
         clc
         adc #127
@@ -169,13 +214,40 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         bne ?shr
         cpx #$FF
         beq ?shr
+
         lda bl_dz                    ; dz only has to fit bl_abs -- it NEVER
         asl                          ;   indexes k7, so the cheap test does:
         lda bl_dz+1                  ;   hi + (lo>>7) is 0 exactly when dz is
         adc #0                       ;   its own sign extension, i.e. -128..127.
+ .if 1
+	jeq ?aim
+ .else
         bne ?shr                     ;   Seven bytes cheaper than the dx/dy
         jmp ?aim                     ;   form, and they pay for ?zs below.
-?shr    lda bl_dx+1                  ; asr all three -- direction AND the
+ .endif
+?shr
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda bl_dx
+	cmp #$8000
+	ror
+	sta bl_dx
+	lda bl_dy
+	cmp #$8000
+	ror
+	sta bl_dy
+
+	lda bl_dz
+	bpl ?zs
+	inc
+?zs	cmp #$8000
+	ror
+	sta bl_dz
+	sep #$20
+	.LONGA OFF
+ .else
+	lda bl_dx+1                  ; asr all three -- direction AND the
         cmp #$80                     ;   descent slope survive together (they
         ror bl_dx+1                  ;   share the flight time)
         ror bl_dx
@@ -183,6 +255,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         cmp #$80
         ror bl_dy+1
         ror bl_dy
+
         lda bl_dz+1                  ; ...but dz rounds TOWARD ZERO, not down.
         bpl ?zs                      ;   An arithmetic shift is FLOOR: -1 halves
         inc bl_dz                    ;   to -1 for ever while +1 halves to 0, so
@@ -192,7 +265,9 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ?zs     cmp #$80                     ;   makes the two directions symmetric and
         ror bl_dz+1                  ;   the mean error 0.0. (dx/dy keep the plain
         ror bl_dz                    ;   asr: they are large, so their floor is
+ .endif
         jmp ?red                     ;   under 1 % and it costs nothing.)
+
 ?aim    lda bl_dx
         jsr bl_abs
         sta bl_ax
@@ -249,20 +324,32 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         sta bl_ttl
         lda bl_id
         sta bl_rec+6
+ .if 1
+        stz bl_rec+7
+ .else
         lda #0
         sta bl_rec+7
+ .endif
         inc bl_on
         ldx bl_a                     ; P_SpawnMissile plays the MISSILE's own
         lda at_lsnd-ATM_LO,x         ;   seesound at the LAUNCH: sfx_firsht for
-        sta snd_pending              ;   the two fireballs, sfx_rlaunc for the
+        jsr snd_qp_ai                ;   the two fireballs, sfx_rlaunc for the
+                                     ;   (STEREO: from the imp, ai_t)
         rts                          ;   cyberdemon's rocket (at_tables.inc)
+
 ?mul    sta m_a                      ; m_prod = A * bl_f (umul16, high half 0)
+ .if 1
+        stz m_a+1
+        stz m_b+1
+ .else
         lda #0
         sta m_a+1
         sta m_b+1
+ .endif
         lda bl_f
         sta m_b
         jmp umul16
+
 ?neg    sec                          ; m_prod = -m_prod (16-bit)
         lda #0
         sbc m_prod
@@ -307,7 +394,11 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         sta sp_ptr
         lda #>bl_rec
         sta sp_ptr+1
+ .if 1
+        jmp spr_proj
+ .else
         jsr spr_proj
+ .endif
 ?out    rts
 .endp
 
@@ -359,8 +450,12 @@ blabs_resume = *
 .proc bl_abs
         bpl ?pos
         eor #$FF
+ .if 1
+	inc
+ .else
         clc
         adc #1
+ .endif
 ?pos    rts
 .endp
     .if * > BLABS_END+1
@@ -433,8 +528,12 @@ blp_resume = *
         bpl ?set
         lda THINGS_BASE+18           ; not packed -> BAL1, and $FF there means
 ?set    sta bl_id                    ;   ball_spawn drops the shot entirely
+ .if 1
+	inc
+ .else
         clc
         adc #1                       ; the burst follows the flight frame
+ .endif
         sta bl_xid
         lda bl_id
         rts
@@ -462,8 +561,12 @@ blr_resume = *
         ldy at_mdmg-ATM_LO,x         ; info.c's damage byte for THIS missile
         lda RANDOM
         and #7
+ .if 1
+	inc
+ .else
         clc
         adc #1                       ; 1..8
+ .endif
         sta m_a
         jsr ai_mul                   ; ...* the damage byte (max 160, a rocket)
         sta bl_dmg
@@ -515,8 +618,12 @@ blr_resume = *
         lda bl_on
         cmp #5
         bcc ?nxf
+ .if 1
+        stz bl_on
+ .else
         lda #0                       ; E ran out: the ball is gone
         sta bl_on
+ .endif
         rts
 ?nxf    inc bl_rec+6                 ; D, then E -- consecutive sprtab ids
         lda #9
@@ -559,6 +666,7 @@ blr_resume = *
         dec bl_ttl
         bne ?fly
         jmp ?gone                    ; flew its 5 s: vanish (DOOM balls only
+
 ?fly    sec                          ;   die on impact; this is a runaway guard)
         lda bl_x                     ; the player? |dx| < 22 (radius 6 + 16)
         sbc zp_px
@@ -570,6 +678,7 @@ blr_resume = *
         lda m_a
         cmp #22
         bcs ?miss
+
         sec                          ; |dy| < 22
         lda bl_y
         sbc zp_py
@@ -581,6 +690,19 @@ blr_resume = *
         lda m_a
         cmp #22
         bcs ?miss
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+	lda bl_z
+	sbc zp_pz
+	clc
+	adc #41
+	sta m_a
+	sep #$20
+	.LONGA OFF
+	xba
+ .else
         sec                          ; z: feet <= ball <= feet+56, feet =
         lda bl_z                     ;   zp_pz - EYE(41) -> 0 <= z-pz+41 <= 56
         sbc zp_pz
@@ -594,6 +716,7 @@ blr_resume = *
         sta m_a
         lda m_a+1
         adc #0
+ .endif
         bne ?miss
         lda m_a
         cmp #57
@@ -611,20 +734,40 @@ blr_resume = *
                                      ;   from a baron. The pain grunt queues
                                      ;   inside en_plr_hurt.
         jmp ?burst
+
+ .if 1
+?miss   phx                          ; sub-step counter, on the stack (plx keeps
+        jsr ?chk                     ;   C). Leaf + floor/lintel on EVERY
+        plx                          ;   sub-step: the old once-per-frame test
+        bcs ?burst                   ;   tunneled a thin shut door whole
+ .else
 ?miss   stx bl_ax                    ; sub-step counter (bl_ax is spawn scratch,
         jsr ?chk                     ;   dead in flight). Leaf + floor/lintel on
         bcs ?burst                   ;   EVERY sub-step: the old once-per-frame
         ldx bl_ax                    ;   test tunneled a thin shut door whole
+ .endif
         dex                          ;   (dt_vbl x 7 u between samples vs the 8 u
+ .if 1
+	jeq ?rec
+ .else
         bne ?more                    ;   the door sector is thick) -- the imp's
         jmp ?rec                     ;   ball flew through closed doors
-?more   jmp ?step
-?gone   lda #0                       ; expired mid-air: vanish in silence
+?more
+ .endif
+	jmp ?step
+
+?gone
+ .if 1
+        stz bl_on
+ .else
+	lda #0                       ; expired mid-air: vanish in silence
         sta bl_on
+ .endif
         rts
 ?burst  ldx bl_a                     ; P_ExplodeMissile: the deathsound of the
         lda at_xsnd-ATM_LO,x         ;   missile that is actually flying --
-        sta snd_pending              ;   sfx_firxpl for a fireball, sfx_barexp
+        jsr snd_qp_ball              ;   sfx_firxpl for a fireball, sfx_barexp
+                                     ;   (STEREO: from bl_x/bl_y; X survives)
         jsr bl_boom                  ;   for the cyberdemon's rocket... and, if
                                      ;   info.c hung an A_Explode off that
                                      ;   chain, the BLAST (X is still bl_a)
@@ -637,7 +780,22 @@ blr_resume = *
         lda #9
         sta bl_ttl
         rts
-?chk    lda zp_px                    ; which leaf is the ball in? locate_floor
+
+?chk
+ .if 1
+	pei (zp_px)
+	pei (zp_py)
+
+	rep #$20
+	.LONGA ON
+        lda bl_x
+        sta zp_px
+        lda bl_y
+        sta zp_py
+	sep #$20
+	.LONGA OFF
+ .else
+	lda zp_px                    ; which leaf is the ball in? locate_floor
         pha                          ;   reads zp_px/py, so borrow them,
         lda zp_px+1                  ;   use_ray-style. C=1: it hit something.
         pha
@@ -645,6 +803,7 @@ blr_resume = *
         pha
         lda zp_py+1
         pha
+
         lda bl_x
         sta zp_px
         lda bl_x+1
@@ -653,12 +812,36 @@ blr_resume = *
         sta zp_py
         lda bl_y+1
         sta zp_py+1
+ .endif
         jsr locate_floor             ; zp_nid = leaf, loc_floor, zp_ptr = sector
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_nid
+	and #$7fff
+        sta bl_ss
+	
+	pla
+	sta zp_py
+	pla
+	sta zp_px
+
+	lda loc_floor
+	cmp bl_z
+	bpl ?hitw
+
+        ldy #2                       ; ceiling below it -> lintel / shut door
+        lda (zp_ptr),y               ;   (zp_ptr still points at the sector)
+        cmp bl_z
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_nid
         sta bl_ss
         lda zp_nid+1
         and #$7F
         sta bl_ss+1
+
         pla
         sta zp_py+1
         pla
@@ -667,12 +850,14 @@ blr_resume = *
         sta zp_px+1
         pla
         sta zp_px
+
         sec                          ; floor at/above the ball -> it hit a step,
         lda loc_floor                ;   a riser, a raised platform
         sbc bl_z
         lda loc_floor+1
         sbc bl_z+1
         bpl ?hit
+
         ldy #2                       ; ceiling below it -> lintel / shut door
         sec                          ;   (zp_ptr still points at the sector)
         lda (zp_ptr),y
@@ -680,12 +865,39 @@ blr_resume = *
         iny
         lda (zp_ptr),y
         sbc bl_z+1
+ .endif
+ .if 1
+	jpl bl_wall
+ .else
         bmi ?hit
         jmp bl_wall                  ; ...and only now the WALL. Tail call: its
-                                     ;   C IS this routine's answer.
-?hit    sec
+ .endif                              ;   C IS this routine's answer.
+?hit	sec
         rts
-?rec    lda bl_x
+ .if 1
+?hitw	sep #$21
+	.LONGA OFF
+	rts
+ .else
+	;nothing
+ .endif
+
+?rec
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda bl_x
+        sta bl_rec
+        lda bl_y
+        sta bl_rec+2
+        sec                          ; anchor = flight z - 8: the 15 px ball
+        lda bl_z                     ;   hangs centred on its path
+        sbc #8
+        sta bl_rec+4
+	sep #$20
+	.LONGA OFF	
+ .else
+	lda bl_x
         sta bl_rec
         lda bl_x+1
         sta bl_rec+1
@@ -700,7 +912,9 @@ blr_resume = *
         lda bl_z+1
         sbc #0
         sta bl_rec+5
+ .endif
         rts
+
 ?a16    bpl ?ap                      ; m_a(16, A=hi) = |m_a|; Z flags hi = 0
         eor #$FF
         tay
@@ -760,8 +974,12 @@ bw_resume = *
         sta coll_cx,x                ;   instead of eight loads and eight stores
         dex                          ;   -- which is what makes this fit the hole
         bpl ?cp
+ .if 1
+        stz coll_seg.cs_hmin	
+ .else
         lda #0                       ; a fireball's clearance, not the player's
         sta coll_seg.cs_hmin
+ .endif
         jsr coll_plr       
         ldx #PLAYER_H                ; ...back before anything else can read it
         stx coll_seg.cs_hmin

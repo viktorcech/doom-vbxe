@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;

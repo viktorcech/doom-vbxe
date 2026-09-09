@@ -187,6 +187,19 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         jsr fl_ztic                  ; the berserk's red fade, then fl_tic --
                                      ;   the palette-flash counters (weapon.asm)
         ldx #4                       ; three u16 counters, 2 B apart
+ .if 1
+	rep #$20
+	.LONGA ON
+?lp	lda PW_INVIS,x
+	beq ?nx
+	dec
+	sta PW_INVIS,x
+?nx	dex
+	dex
+	bpl ?lp
+	sep #$20
+	.LONGA OFF
+ .else
 ?lp     lda PW_INVIS,x
         ora PW_INVIS+1,x
         beq ?nx                      ; already expired: it parks at zero
@@ -197,6 +210,7 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
 ?nx     dex
         dex
         bpl ?lp
+ .endif
         rts
 .endp
 
@@ -239,12 +253,25 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         jsr ?tri
         sta m_a
         stx m_a+1
+
         lda PW_INVIS
         ora PW_INVIS+1
         beq ?abs                     ; visible: the plain <<20 spread
+
         jsr ?tri
         sta m_b
         stx m_b+1
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_b
+	asl
+	clc
+	adc m_a
+	sta m_a
+	sep #$20
+	.LONGA OFF
+ .else
         asl m_b                      ; <<21 = twice <<20
         rol m_b+1
         clc
@@ -254,9 +281,14 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         lda m_a+1
         adc m_b+1
         sta m_a+1
+ .endif
 ?abs    lda m_a+1
         bpl ?out
+ .if 1
+	jmp m_neg
+ .else
         jsr m_neg                    ; |s|, 16-bit (it can reach 765 now)
+ .endif
 ?out    rts
 ;   one P_Random() - P_Random(), sign-extended: A = lo, X = hi (0 or $FF)
 ?tri    lda RANDOM
@@ -264,7 +296,11 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         sbc RANDOM
         ldx #0
         bcs ?p
+ .if 1
+	dex
+ .else
         ldx #$FF
+ .endif
 ?p      rts
 .endp
 
@@ -281,9 +317,14 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
 ;   one, and boot would blit whatever strip index random RAM held.
 ;--------------------------------------------------------------
 .proc pw_level
+ .if 1
+        ldx #6
+?z      stz PW_INVIS-1,x
+ .else
         lda #0
         ldx #6
 ?z      sta PW_INVIS-1,x
+ .endif
         dex
         bpl ?z
         lda PW_FLAGS
@@ -306,6 +347,30 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
     .endif
         org LFSG_BASE
 .proc leaf_segs
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_nid
+	asl
+	asl
+;	clc
+	adc #MAP_SSECT
+	sta zp_ptr
+
+	ldy #2
+	lda [zp_ptr],y
+	sta zp_segcnt
+
+	lda [zp_ptr]
+	asl
+	asl
+	asl
+;	clc
+	adc #MAP_SEGS
+	sta zp_sptr
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_nid                   ; zp_ptr = MAP_SSECT + (nid & $7FFF)*4
         sta m_a
         lda zp_nid+1
@@ -319,18 +384,21 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         lda m_prod+1
         adc #>MAP_SSECT
         sta zp_ptr+1
+
         ldy #2                       ; count -> zp_segcnt
         lda [zp_ptr],y
         sta zp_segcnt
         iny
         lda [zp_ptr],y
         sta zp_segcnt+1
+
         ldy #0                       ; first seg -> zp_sptr = MAP_SEGS + first*SEG_SIZE
         lda [zp_ptr],y
         sta m_a
         iny
         lda [zp_ptr],y
         sta m_a+1
+
         jsr m_x8                     ; *8
         clc
         lda m_prod
@@ -339,6 +407,7 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         lda m_prod+1
         adc #>MAP_SEGS
         sta zp_sptr+1
+ .endif
         rts
 .endp
 
@@ -362,7 +431,26 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
 ;   against the two-copy version: tools/tests/_verify_shdist.py.
 .proc sh_dist
         ldx #0                       ; pass 0 = x/cos, pass 2 = y/sin
-?lp     lda sh_d
+ .if 1
+ 	rep #$20
+	.LONGA ON
+ .else
+	;nothing
+ .endif
+?lp
+ .if 1
+	lda sh_d
+	sta m_a
+	phx
+        txa                          ; trig index runs the OTHER way: 0 -> cos
+        eor #2                       ;   ($A5 = zp_sin+2), 2 -> sin ($A3)
+	tax
+	lda zp_sin,x
+	sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
+	lda sh_d
         sta m_a
         lda sh_d+1
         sta m_a+1
@@ -375,7 +463,16 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         sta m_b+1
         txa
         pha
+ .endif
         jsr smul_14                  ; m_res = d*cos, then d*sin
+ .if 1
+	plx
+	rep #$21
+	.LONGA ON
+        lda USE_PT_A,x
+        adc m_res
+        sta zp_px,x
+ .else
         pla
         tax
         clc
@@ -385,10 +482,17 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
         lda USE_PT_A+1,x
         adc m_res+1
         sta zp_px+1,x
+ .endif
         inx
         inx
         cpx #4
         bne ?lp
+ .if 1
+	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
         rts
 .endp
 

@@ -1276,10 +1276,10 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
         sbc mk_seen,x
 ?pick   clc
         adc mk_see,x
-        sta snd_pending
+        jsr snd_qp_ai                ; (STEREO: ai_t saw -- sound.asm)
         rts
 ?one    lda mk_see,x
-        sta snd_pending
+        jsr snd_qp_ai
 ?no     rts
 .endp
 
@@ -1359,7 +1359,64 @@ aisr_resume = *
 ; ai_tick -- ONE DOOM tic, from wp_think next to en_tick. Sweeps the same 256
 ;   things en_tick does; only the ones with a TH_WROW cost more than a branch.
 ;--------------------------------------------------------------
+aitick_resume = *
+        org AITICK_BASE              ; FAST: 256 iterations a tic (memory_map.inc)
 .proc ai_tick
+ .if 1
+        ; 2026-09-09 (drac030 style): the sweep reads TH_WROW as WORDS -- two
+        ; things per [zp_ptr],y -- so the idle path is 16 cycles a PAIR where
+        ; it was 15 a thing. Y stays even inside the 16-bit loop and the page
+        ; is 256-aligned (ert below), so the word never straddles it. A pair
+        ; with a chaser in it drops to 8-bit, handles each half in order (the
+        ; same order as before), and goes back up.
+    .if [TH_WROW & $FF] != 0
+        ert 'ai_tick: TH_WROW must be page-aligned for the word sweep'
+    .endif
+        stz zp_ptr                   ; every AI page shares low byte 0, so the
+        lda #>TH_WROW                ;   sweep only ever moves zp_ptr+1
+        sta zp_ptr+1
+        ldy #0
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+?lp     lda [zp_ptr],y
+        bne ?hit
+?next   iny
+        iny
+        bne ?lp
+        sep #$20
+        .LONGA OFF
+        rts
+?hit    sep #$20                     ; one of the pair chases: which?
+        .LONGA OFF
+        lda [zp_ptr],y               ; the even one
+        beq ?odd
+        jsr ?one
+?odd    iny
+        lda [zp_ptr],y               ; the odd one (?one puts TH_WROW back)
+        beq ?cont
+        jsr ?one
+?cont   iny                          ; Z = Y wrapped: the sweep is over (rep
+        rep #$20                     ;   leaves Z alone)
+        .LONGA ON
+        bne ?lp
+        sep #$20
+        .LONGA OFF
+        rts
+?one    sty ai_i                     ; ---- thing Y chases: its state tic
+        lda #>TH_WTIC
+        sta zp_ptr+1
+        lda [zp_ptr],y
+        dec @                        ; 65816: dec A. Only Z is read here
+        sta [zp_ptr],y
+        bne ?back                    ; still inside the state
+        sty ai_t
+        jsr ai_state                 ; the state ran out -> next one + A_Chase
+        stz zp_ptr                   ; ai_state walked pages of its own
+?back   lda #>TH_WROW
+        sta zp_ptr+1
+        ldy ai_i
+        rts
+ .else
         stz zp_ptr                   ; every AI page shares low byte 0, so the
                                      ;   sweep only ever moves zp_ptr+1 -- worth
         lda #>TH_WROW                ;   inlining, this runs 256 times a tic.
@@ -1384,7 +1441,12 @@ aisr_resume = *
         sta zp_ptr+1
         ldy ai_i
         jmp ?next
+ .endif
 .endp
+    .if * > AITICK_END+1
+        ert 'ai_tick outgrew AITICK_BASE..END (memory_map.inc)'
+    .endif
+        org aitick_resume
 
 ;--------------------------------------------------------------
 ; ai_state -- ai_t = thing: P_SetMobjState onto the next RUN state. The chain
@@ -1457,7 +1519,8 @@ aisr_resume = *
 ?spid   and #3                       ; SPID A/C/E (S_SPID_RUN1/5/9) -> A_Metal,
         bne ?nows                    ;   i.e. every fourth of its twelve states
 ?met    lda #SFX_METAL
-?wsnd   sta snd_pending              ; ONE slot: the footstep beats the 3/256
+?wsnd   jsr snd_qp_ai                ; ONE slot: the footstep beats the 3/256
+                                     ;   (STEREO: from ai_t; X and Y survive)
                                      ;   A_Chase grunt ai_chase rolls after it,
                                      ;   which is the one DOOM would have put on
                                      ;   a second channel
@@ -1498,7 +1561,7 @@ aisr_resume = *
         tax                          ;   call; the rate is what you hear, and it
         lda mk_act,x                 ;   is the same either way.
         bmi ?nosnd
-        sta snd_pending
+        jsr snd_qp_ai                ; (STEREO: the grunt from ai_t)
 ?nosnd  jsr ai_bank
         ldy ai_t
         lda #>TH_MCNT

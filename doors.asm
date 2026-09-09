@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -58,6 +58,16 @@
 ;   ones that needed the bytes back.
 ;--------------------------------------------------------------
 .proc m_x4
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_a
+	asl
+	asl
+	sta m_prod
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_a
         asl
         sta m_prod
@@ -66,13 +76,26 @@
         sta m_prod+1
         asl m_prod
         rol m_prod+1
+ .endif
         rts
 .endp
 
 .proc m_x8
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_a
+	asl
+	asl
+	asl
+	sta m_prod
+	sep #$20
+	.LONGA OFF
+ .else
         jsr m_x4
         asl m_prod
         rol m_prod+1
+ .endif
         rts
 .endp
 
@@ -138,11 +161,18 @@ di_resume = *
 ;   tables the frame loop reads: sector pointer, open_ceil, sector id.
 ;--------------------------------------------------------------
 .proc init_doors
+ .if 1
+        stz DOOR_TRIGPREV
+        stz DOOR_NACT                ; nothing animating yet
+        stz btn_timer                ; no SR button mid-flip from the old level
+        stz face_t                   ; face picks on the first frame
+ .else
         lda #0                       ; USE not pressed (so first press is a rising edge)
         sta DOOR_TRIGPREV
         sta DOOR_NACT                ; nothing animating yet
         sta btn_timer                ; no SR button mid-flip from the old level
         sta face_t                   ; face picks on the first frame
+ .endif
         lda #1                       ; paint the shared bar once
         sta hud_dirty                ;   (w3d hud_dirty model -- see hud.asm)
         lda #HUD_FACE
@@ -159,8 +189,12 @@ di_resume = *
         lda MAP_DOORS,y              ; sector id -> DOOR_SIDL (+ m_a for the maths)
         sta.l DOOR_SIDL,x
         sta m_a
+ .if 1
+        stz m_a+1
+ .else
         lda #0
         sta m_a+1
+ .endif
         lda MAP_DOORS+1,y            ; the byte the sector id's high half left:
         sta.l DOOR_DENY,x            ;   the face USE is refused from (use_leaf)
         lda MAP_DOORS+2,y            ; open_ceil -> DOOR_OPNL/H
@@ -228,8 +262,12 @@ di_resume = *
         sta fps_last
         lda dt_vbl                    ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
         sta m_a                      ;   frame: update_movers doubles it (PLATSPEED*4)
+ .if 1
+	stz m_a+1
+ .else
         lda #0                       ;   and update_doors uses it as it is
         sta m_a+1
+ .endif
         lda #<DOOR_SPEED_Q8
         sta m_b
         lda #>DOOR_SPEED_Q8
@@ -290,7 +328,11 @@ plrs_resume = *
         lda #TURN
         adc #0                       ; the fraction's carry -> a 4-BAM frame
         sta TRN_STEP
+ .if 1
+	bra ?run
+ .else
         jmp ?run
+ .endif
 ?arm    stx trn_held                 ; nothing held -> turnheld = 0 (X is 0) and
         lda #TURN_SLOW               ;   the next press starts with ONE BAM
         sta TRN_STEP                 ; (trn_acc is left alone: a whole-BAM step
@@ -357,9 +399,13 @@ plrs_resume = *
         cmp #1
         beq ?opening
         cmp #2
+ .if 1
+	jeq ?dwell
+ .else
         bne ?closing
         jmp ?dwell                   ; (out of branch range past the crush test)
 ?closing
+ .endif
         ; --- closing: new = cur - delta; floor clamp, then the crush test ---
         sec
         lda.l DOOR_CURLO,x
@@ -368,6 +414,17 @@ plrs_resume = *
         lda.l DOOR_CURHI,x
         sbc #0
         sta m_ma+1
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+	lda m_ma
+	sbc (zp_ptr)
+	sta m_a
+	sep #$20
+	.LONGA OFF
+	bmi ?shut
+ .else
         ldy #0                       ; floor @ sector+0
         sec
         lda m_ma
@@ -379,7 +436,9 @@ plrs_resume = *
         sta m_a+1
         bmi ?shut
         ora m_a
+ .endif
         beq ?shut
+
         lda m_a+1                    ; opening >= 256 -> everything under this
         bne ?move                    ;   ceiling still fits (P_ThingHeightClip)
         lda m_a
@@ -391,22 +450,34 @@ plrs_resume = *
         bcs ?crmon                   ;   a CRUSHER hurts him instead, and the
         jsr crush_things             ;   fast one keeps coming down
         jmp ?next                    ; (cur untouched -> nothing to write)
+
 ?crmon  jsr crush_things             ; P_ChangeSector: the MONSTERS under it too
 ?move   lda m_ma
         sta.l DOOR_CURLO,x
         lda m_ma+1
         sta.l DOOR_CURHI,x
         jmp ?writ
-?shut   ldy #0
+
+?shut
+ .if 1
+	lda (zp_ptr)
+        sta.l DOOR_CURLO,x
+	ldy #1	
+        lda (zp_ptr),y
+        sta.l DOOR_CURHI,x
+ .else
+	ldy #0
         lda (zp_ptr),y
         sta.l DOOR_CURLO,x
         iny
         lda (zp_ptr),y
         sta.l DOOR_CURHI,x
-        ldy #1                       ; a CRUSHER turns straight round and rises
+ .endif
+;       ldy #1                       ; a CRUSHER turns straight round and rises
         lda #0                       ; a door PARKS shut: one less to scan next
         jsr door_end                 ;   frame (door_end gives DOOR_NACT back)
         jmp ?writ                    ; (other doors may still be live -- no branch trick)
+
 ?opening ; cur += delta, clamp to open, then state=open + dwell timer
         clc
         lda.l DOOR_CURLO,x
@@ -415,9 +486,14 @@ plrs_resume = *
         lda.l DOOR_CURHI,x
         adc #0
         sta.l DOOR_CURHI,x
+ .if 1
+        lda.l DOOR_CURLO,x
+        cmp.l DOOR_OPNL,x
+ .else
         sec
         lda.l DOOR_CURLO,x
         sbc.l DOOR_OPNL,x
+ .endif
         lda.l DOOR_CURHI,x
         sbc.l DOOR_OPNH,x
         bmi ?writ                    ; cur < open -> keep rising
@@ -429,6 +505,7 @@ plrs_resume = *
         lda #2                       ;   no dwell, and DOOR_WAIT keeps its speed
         jsr door_end                 ;   class (p_ceilng.c T_MoveCeiling case 1)
         jmp ?writ
+
 ?dwell  lda.l DOORSTAY,x             ; a switch parked this door OPEN (103/2 --
         bne ?writ                    ;   p_doors.c case open: thinker removed)
         lda.l DOOR_WAIT,x            ; the dwell counts VBLANKs, not frames
@@ -476,20 +553,39 @@ ul_resume = *
         lda MAP_HROOT+1
         sta zp_nid+1
 ?w      lda zp_nid+1
+ .if 1
+	bmi ?leaf
+ .else
         and #$80
         bne ?leaf
+ .endif
         jsr calc_nodeptr
         jsr point_on_side
         bne ?lft
         ldy #8
+ .if 1
+	bra ?ds
+ .else
         bne ?ds
+ .endif
 ?lft    ldy #10
-?ds     lda [zp_nodeptr],y
+?ds
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda [zp_nodeptr],y
+        sta zp_nid
+	sep #$20
+	.LONGA OFF
+	bra ?w	
+ .else
+	lda [zp_nodeptr],y
         sta zp_nid
         iny
         lda [zp_nodeptr],y
         sta zp_nid+1
         jmp ?w
+ .endif
 ?leaf   rts
 .endp
     .if * > USELOC_END+1
@@ -505,6 +601,39 @@ dap_resume = *
         org DAPUSE_BASE
 .proc door_at_point
         jsr use_locate
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_nid
+	asl
+	asl
+;	clc
+	adc #MAP_SSECT
+	sta zp_ptr
+
+	ldy #2
+	lda [zp_ptr],y
+	beq ?none
+
+	lda [zp_ptr]
+	asl
+	asl
+	asl
+;	clc
+	adc #MAP_SEGS
+	sta zp_sptr
+        ldy #SEG_FRONT               ; front_sec: the sector this subsector IS
+        lda [zp_sptr],y
+	and #$00ff
+        sta m_a
+	sep #$20
+	.LONGA OFF
+        jmp door_index_of            ; tail call -> A = door index, or $FF
+?none	sep #$20
+	.LONGA OFF
+	lda #$ff
+	rts
+ .else
         lda zp_nid                   ; ssptr = MAP_SSECT + (nid&7FFF)*4
         sta m_a
         lda zp_nid+1
@@ -518,11 +647,13 @@ dap_resume = *
         lda m_prod+1
         adc #>MAP_SSECT
         sta zp_ptr+1
+
         ldy #2                       ; n_segs == 0 -> nothing to read, no door
         lda [zp_ptr],y
         iny
         ora [zp_ptr],y
         beq ?none
+
         ldy #0                       ; first seg index
         lda [zp_ptr],y
         sta m_a
@@ -545,6 +676,7 @@ dap_resume = *
         jmp door_index_of            ; tail call -> A = door index, or $FF
 ?none   lda #$FF
         rts
+ .endif
 .endp
 
 
@@ -639,7 +771,18 @@ dap_resume = *
         beq ?next
 ?block  lda #1
         sta USE_BLK
-?next   clc
+?next
+ .if 1
+	rep #$21
+	.LONGA ON
+	lda zp_sptr
+	adc #SEG_SIZE
+	sta zp_sptr
+	dec zp_segcnt
+	sep #$20
+	.LONGA OFF
+ .else
+	clc
         lda zp_sptr
         adc #SEG_SIZE
         sta zp_sptr
@@ -650,6 +793,7 @@ dap_resume = *
         bne ?dec
         dec zp_segcnt+1
 ?dec    dec zp_segcnt
+ .endif
         jmp ?loop
 ?none   lda #$FF
         rts
@@ -668,6 +812,16 @@ dap_resume = *
 ;--------------------------------------------------------------
 .proc use_sample
         sta m_ma                     ; keep n (smul_14 eats m_a)
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	sta m_a
+        lda zp_cos
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         sta m_a
         lda #0
         sta m_a+1
@@ -675,7 +829,22 @@ dap_resume = *
         sta m_b
         lda zp_cos+1
         sta m_b+1
+ .endif
         jsr smul_14                  ; m_res = n*cos
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda USE_PT_A
+        adc m_res
+        sta zp_px
+	lda m_ma
+	and #$00ff
+	sta m_a
+        lda zp_sin
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda USE_PT_A
         adc m_res
@@ -691,7 +860,17 @@ dap_resume = *
         sta m_b
         lda zp_sin+1
         sta m_b+1
+ .endif
         jsr smul_14                  ; m_res = n*sin
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda USE_PT_A+2
+        adc m_res
+        sta zp_py
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda USE_PT_A+2
         adc m_res
@@ -699,6 +878,7 @@ dap_resume = *
         lda USE_PT_A+3
         adc m_res+1
         sta zp_py+1
+ .endif
         rts
 .endp
 
@@ -717,6 +897,16 @@ dap_resume = *
 ;   loop constants.
 ;--------------------------------------------------------------
 .proc try_use
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_px                    ; USE_PT_A = the real player position (the walk
+        sta USE_PT_A                 ;   moves zp_px/zp_py, the BSP descent reads it)
+        lda zp_py
+        sta USE_PT_A+2
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_px                    ; USE_PT_A = the real player position (the walk
         sta USE_PT_A                 ;   moves zp_px/zp_py, the BSP descent reads it)
         lda zp_px+1
@@ -725,8 +915,25 @@ dap_resume = *
         sta USE_PT_A+2
         lda zp_py+1
         sta USE_PT_A+3
+ .endif
         lda #USE_STEP*USE_NSTEPS     ; USE_PT_B = the ray END, USERANGE ahead
         jsr use_sample
+
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_px
+        sta USE_PT_B
+        lda zp_py
+        sta USE_PT_B+2
+	lda #$ffff
+	sta USE_SS
+	sep #$20
+	.LONGA OFF
+	sta USE_DOOR
+	stz USE_BLK
+	stz USE_N
+ .else
         lda zp_px
         sta USE_PT_B
         lda zp_px+1
@@ -742,25 +949,45 @@ dap_resume = *
         lda #0
         sta USE_BLK
         sta USE_N                    ; sample the player's own subsector first (n = 0)
+ .endif
 ?loop   lda USE_N                    ; zp_px/zp_py = A + n * facing
         jsr use_sample
         jsr use_locate               ; zp_nid = leaf at (zp_px, zp_py)
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_nid
+	cmp USE_SS
+	beq ?step
+	sta USE_SS
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_nid                   ; same leaf as last step -> nothing new to test
         cmp USE_SS
         bne ?test
         lda zp_nid+1
         cmp USE_SS+1
         beq ?step
-?test   lda zp_nid
+?test
+	lda zp_nid
         sta USE_SS
         lda zp_nid+1
         sta USE_SS+1
+ .endif
         jsr use_leaf                 ; A = door index, USE_BLK = hit a wall
         cmp #$FF
         bne ?hit
         lda USE_BLK
         bne ?restore                 ; "can't use through a wall"
-?step   clc                          ; next sample, USE_STEP further along the ray
+?step
+ .if 1
+	sep #$20
+	.LONGA OFF
+ .else
+ 	;nothing
+ .endif
+	clc                          ; next sample, USE_STEP further along the ray
         lda USE_N
         adc #USE_STEP
         sta USE_N
@@ -773,6 +1000,16 @@ dap_resume = *
 ?nogun  sta USE_DOOR                 ;   :1099 sounds noway ONLY for a line with no
 ?restore                             ;   special, and 572 has one. $FE is try_use's
                                      ;   silent stop (the switch-fired path)
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda USE_PT_A                 ; restore the real player position
+        sta zp_px
+        lda USE_PT_A+2
+        sta zp_py
+	sep #$20
+	.LONGA OFF
+ .else
         lda USE_PT_A                 ; restore the real player position
         sta zp_px
         lda USE_PT_A+1
@@ -781,14 +1018,24 @@ dap_resume = *
         sta zp_py
         lda USE_PT_A+3
         sta zp_py+1
+ .endif
         lda USE_DOOR
         cmp #$FF
         beq ?none
         cmp #$FE                     ; a switch line fired -- its action queued
         beq ?swit                    ;   its own sound, and there is no DR door
         jmp use_door_go              ; A = door index -> key check, then DR/D1 open
-?none   jmp snd_q_nowayx             ; wall: DOOM's "uh-uh" -- unless the wall
-?swit   rts                          ;   was the EXIT switch (then swtchx)
+?none   lda USE_BLK                  ; p_map.c PTR_UseTraverse: the "uh-uh"
+        beq ?swit                    ;   belongs to a WALL (openrange <= 0); a
+        jmp snd_q_nowayx             ;   ray that just RAN OUT found nothing
+                                     ;   and says nothing -- spacebar into open
+                                     ;   space was wrongly grunting until
+                                     ;   2026-08-31 ("stlacam medzernik len tak,
+                                     ;   v priestore"). USE_BLK is 0 then: the
+                                     ;   last use_leaf saw no wall, and the
+                                     ;   wall path exits the loop immediately.
+?swit   rts                          ; (also the EXIT switch's silent stop --
+                                     ;   snd_q_nowayx plays ITS click)
 .endp
     .if * > DAPUSE_END+1
         ert 'door_at_point..try_use outgrew DAPUSE_BASE..END (memory_map.inc)'
@@ -838,11 +1085,34 @@ udg_resume = *
                                      ;   (see door_force_open's header)
 ?dr     txa
         jmp snd_door_toggle          ; DR: the normal toggle + open/close SFX
-?locked jmp snd_q_noway              ; no key -> "uh-uh", nothing moves
-.endp
+?locked jmp door_keymsg              ; no key -> the PD_*K line + "uh-uh",
+.endp                                ;   nothing moves (tail-parked: this
+                                     ;   block has 4 B of slack)
     .if * > USEDOORGO_END+1
         ert 'use_door_go outgrew USEDOORGO_BASE..END (memory_map.inc)'
     .endif
+;--------------------------------------------------------------
+; door_keymsg -- use_door_go's locked tail (X = the door): DOOM shows
+;   PD_BLUEK/YELLOWK/REDK with the oof; this port's message line shows the
+;   ONE colour-blind PD strip (the array is a row from full -- pack_menu.py's
+;   note). A bit5-only refusal is a REMOTE-ONLY door, and DOOM's
+;   PTR_UseTraverse plays noway with no text there -- the `and #7` keeps
+;   that shape. Runs in USE context (ROM out), so the under-ROM home is fine.
+;--------------------------------------------------------------
+dkm_resume = *
+        org DKEYMSG_BASE
+.proc door_keymsg
+        lda MAP_DOORLOCK,x           ; a key bit refused the door?
+        and #7
+        beq ?nw
+        lda #36+MSG_IDX0             ; the PD strip (pack_menu.py)
+        jsr msg_set.msg_arm
+?nw     jmp snd_q_noway              ; ...and the "uh-uh" either way
+.endp
+    .if * > DKEYMSG_END+1
+        ert 'door_keymsg outgrew DKEYMSG_BASE..END (memory_map.inc)'
+    .endif
+        org dkm_resume
         org udg_resume
 
 ;==============================================================
@@ -866,9 +1136,14 @@ udg_resume = *
 swf_resume = *
         org SWFIRE_BASE
 .proc switch_match
+ .if 1
+        stz sw_hit
+        stz mv_i
+ .else
         lda #0
         sta sw_hit
         sta mv_i
+ .endif
 ?loop   lda mv_i
         cmp THINGS_BASE+13           ; trigger count
         bcs ?done
@@ -879,7 +1154,21 @@ swf_resume = *
         lda (zp_ptr),y
         and #$40                     ; b14 = USE-activated
         beq ?nx
+
         ldy #4                       ; 4 seg-record address slots @ bytes 4..11
+ .if 1
+	rep #$20
+	.LONGA ON
+?slot	lda (zp_ptr),y
+	cmp zp_sptr
+	beq ?hitw
+	iny
+	iny
+	cpy #12
+	bcc ?slot
+	sep #$20
+	.LONGA OFF
+ .else
 ?slot   lda (zp_ptr),y
         cmp zp_sptr
         bne ?ns
@@ -892,14 +1181,25 @@ swf_resume = *
         iny
         cpy #12
         bcc ?slot
+ .endif
+ .if 1
+	bra ?nx
+?hitw	sep #$20
+	.LONGA OFF
+ .else
         bcs ?nx                      ; always
+ .endif
 ?hit    ldy #13
         lda (zp_ptr),y
         sta sw_fl                    ; flags: b12 once = S1, clear = SR button
         jsr trig_fire                ; keeps mv_i/zp_ptr
         inc sw_hit                   ; only ever tested for "not zero"
 ?nx     inc mv_i
+ .if 1
+	bra ?loop
+ .else
         jmp ?loop
+ .endif
 ?done   lda sw_hit
         beq ?no
         jsr sw_swap                  ; P_ChangeSwitchTexture (SW1 -> SW2)
@@ -992,21 +1292,30 @@ sw_hit  dta 0
                                      ;   NOT spend the once-bit (try again later)
 ?go     jsr mv_start                 ; stays-down floors mark the bitmap there
         jmp ?once
+
 ?door   lda (zp_ptr),y               ; (Y is still 13) b15 WITH b13 is not a door
+ .if 1
+	jmi trig_light
+ .else
         and #$80                     ;   at all -- a floor's "stays down" bit can
         beq ?nolt                    ;   never ride a door record, so the pair is
         jmp trig_light               ;   free to mean EV_LightTurnOn (p_spec.c
                                      ;   case 35). It spends the once-bit itself.
 ?nolt
+ .endif
         ldy #12                      ; door index from the tagged sector id
         lda (zp_ptr),y
         sta m_a
+ .if 1
+	stz m_a+1
+ .else
         lda #0                       ; byte 13 is ALL flags now (pack_things asserts
         sta m_a+1                    ;   <= 256 sectors). It used to be `and #$07`,
                                      ;   which handed a b9 record (16/76, door close
                                      ;   30 s) a high byte of 2 -> sector id + 512 ->
                                      ;   door_index_of missed and E1M6's three never
                                      ;   fired at all
+ .endif
         jsr door_index_of
         cmp #$FF
         bne ?have
@@ -1018,9 +1327,14 @@ sw_hit  dta 0
         tax
         ldy #14                      ; DST. A door record has never used it ("the
         lda (zp_ptr),y               ;   height is in MAP_DOORS"), so it is where
+ .if 1
+	jne trig_crush
+ .else
         beq ?nc                      ;   p_ceilng.c's action rides: 1 = 73
         jmp trig_crush               ;   crushAndRaise, 2 = 77 fast, 3 = 74 stop
-?nc     dey                          ; ...and back to 13, the flags
+?nc
+ .endif
+	dey                          ; ...and back to 13, the flags
         lda (zp_ptr),y
         and #$08                     ; b11 = the door parks OPEN (103 / type 2)
         beq ?fo
@@ -1053,6 +1367,22 @@ tl_once ldy #13                      ; (trig_light comes back in here)
 tl_resume = *
         org TRIGLT_BASE
 .proc trig_light
+ .if 1
+	ldy #12
+	rep #$20
+	.LONGA ON
+	lda (zp_ptr),y
+	bpl ?w
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc #MAP_SECTORS
+	sta zp_mvsec
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #13                      ; b15 WITH b13 is no door at all -- a floor's
         lda (zp_ptr),y               ;   "stays down" bit can never ride a door
         and #$80                     ;   record, so the pair is free to mean
@@ -1074,11 +1404,14 @@ tl_resume = *
         lda zp_mvsec+1
         adc #>MAP_SECTORS
         sta zp_mvsec+1
+ .endif
         ldy #14                      ; the LEVEL rides where a floor keeps its
         lda (zp_ptr),y               ;   height
         ldy #4                       ; sector->lightlevel
         sta (zp_mvsec),y
 tl_back jmp trig_fire.tl_once        ; and spend the W1 bit
+?w	sep #$20
+	bra tl_back
 .endp
     .if * > TRIGLT_END+1
         ert 'trig_light outgrew TRIGLT_BASE..END (memory_map.inc)'
@@ -1115,21 +1448,44 @@ gm_resume = *
 .proc gun_seg_p                      ; C=1 if zp_sptr is EITHER face of the 46
         pha                          ;   line. A survives (try_use still needs it)
         ldy #26                      ; the header's two seg record addresses. Both
+ .if 1
+	rep #$20
+	.LONGA ON
+?l	lda zp_sptr
+	cmp THINGS_BASE,y
+	beq ?yes
+ .else
 ?l      lda zp_sptr                  ;   sides: the shot comes from the room, but
         cmp THINGS_BASE,y            ;   USE from INSIDE the opened secret crosses
         bne ?nx                      ;   the other face of the same line -- and
         lda zp_sptr+1                ;   that is what let SPACE shut it again
         cmp THINGS_BASE+1,y
         beq ?yes
-?nx     iny                          ; 0 on a level with no gun line, and no seg
+?nx
+ .endif
+	iny                          ; 0 on a level with no gun line, and no seg
         iny                          ;   record ever lives at $0000
         cpy #30
         bcc ?l
+ .if 1
+	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
         pla
         clc
         rts
-?yes    pla
+
+?yes
+ .if 1
+	sep #$21
+	.LONGA OFF
+	pla
+ .else
+	pla
         sec
+ .endif
         rts
 .endp
     .if * > GUNMATCH_END+1
@@ -1198,7 +1554,11 @@ dfo_go                               ; no-record entry: open, never close
 ?rev    lda #1
         sta.l DOOR_STATE,x
         lda #SFX_DOROPN              ; positional: a REMOTE door opens quietly
+ .if 1
+        jmp snd_q_door_at            ;   or silently (s_sound.c attenuation)
+ .else
         jsr snd_q_door_at            ;   or silently (s_sound.c attenuation)
+ .endif
 ?out    rts
 ?shut   lda.l DOOR_STATE,x           ; already on its way down? leave it alone
         cmp #3
@@ -1318,6 +1678,37 @@ sda_resume = *
         tay                          ;   FOUR and not eight, so this index still
                                      ;   fits a byte at DOORS_NMAX 48 (47*4=188);
                                      ;   at the old 8 B stride it wrapped past 31
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+        lda zp_px
+        sbc MAP_DSND+0,y
+	sta sda_sx                   ; the SIGN survives for snd_setpan (16-bit
+	bpl ?ax                      ;   store: the high byte lands in sda_sx+1)
+	eor #$ffff
+	inc
+?ax	sta m_a
+	sec
+        lda zp_py
+        sbc MAP_DSND+2,y
+	sta sda_sy                   ; ... and dy's
+	bpl ?ay
+	eor #$ffff
+	inc
+?ay	sta m_b
+
+	lda m_a
+	cmp m_b
+	bcs ?far
+
+	lda m_b
+	sta m_a
+
+?far	cmp #1200
+	sep #$20
+	.LONGA OFF
+ .else
         sec                          ; m_a = |px - soundorg.x|
         lda zp_px
         sbc MAP_DSND+0,y
@@ -1325,6 +1716,7 @@ sda_resume = *
         lda zp_px+1
         sbc MAP_DSND+1,y
         sta m_a+1
+        sta sda_sx+1
         bpl ?ax
         jsr m_neg
 ?ax     sec                          ; m_b = |py - soundorg.y|
@@ -1334,9 +1726,11 @@ sda_resume = *
         lda zp_py+1
         sbc MAP_DSND+3,y
         sta m_b+1
+        sta sda_sy+1
         bpl ?ay
         jsr m_negb
-?ay     lda m_a+1                    ; max(|dx|,|dy|) -> m_a (16-bit)
+?ay
+	lda m_a+1                    ; max(|dx|,|dy|) -> m_a (16-bit)
         cmp m_b+1
         bcc ?useb
         bne ?far
@@ -1352,7 +1746,9 @@ sda_resume = *
         sbc #<1200
         lda m_a+1
         sbc #>1200
+ .endif
         bcs ?silent
+        jsr snd_setpan               ; STEREO: which ear gets this door
         ldx sda_id                   ; PLAY it, do not queue it: snd_pending is
         jsr snd_play                 ;   one byte and spr_pickup runs later in
                                      ;   the same frame -- the key's ITEMUP
@@ -1374,6 +1770,67 @@ sda_x   dta 0
         ert 'snd_q_door_at outgrew SNDDIST (memory_map.inc)'
     .endif
         org sda_resume
+
+;--------------------------------------------------------------
+; snd_setpan -- QUADRANT pan for the door snd_q_door_at is about to start:
+;   snd_side = pan_tab[world quadrant of the door * 4 + facing quadrant].
+;   sda_sx/sy carry the SIGNS of (player - soundorg) before the abs; zp_ang's
+;   top two bits are the facing. Coarse on purpose -- 90 degree resolution,
+;   no multiplies, and the centre never appears (a diagonal model always
+;   picks an ear). ASSUMES BAM 0 = east, +y = north, POKEY1 = left ear: if
+;   the ears come out MIRRORED on the bench, swap every $40/$80 in pan_tab
+;   -- the logic never changes. Cold (a door event); under-ROM is fine, every
+;   caller runs in the frame loop with the ROM out.
+;--------------------------------------------------------------
+spn_resume = *
+        org SNDPAN_BASE
+ .if 1
+; snd_setpan LEFT for sound.asm (SNDPAN2, 2026-09-09): the monsters wanted DOOM's
+;   angle model (s_sound.c S_AdjustSoundParams: sep = 128 - 96*sin(angle to the
+;   source, relative to the facing), silence past S_CLIPPING_DIST) and the
+;   quadrant table below could not say "centre" at all. Same contract for
+;   the door: sda_sx/sda_sy = player - soundorg, words. The variables stay
+;   here; the code and its tables live in the bigger hole.
+ .else
+.proc snd_setpan
+        ldx #0
+        lda sda_sx+1                 ; bit7: the door is EAST of the player
+        bpl ?px                      ;   (m_a was player - door)
+        ldx #8
+?px     lda sda_sy+1
+        bpl ?py
+        inx
+        inx
+        inx
+        inx
+?py     lda zp_ang                   ; facing quadrant = the BAM's top 2 bits
+        lsr
+        lsr
+        lsr
+        lsr
+        lsr
+        lsr
+        sta sda_f
+        txa
+        ora sda_f                    ; the two indices are disjoint bits
+        tax
+        lda pan_tab,x
+        sta snd_side                 ; snd_play hands it to the voice + resets
+        rts
+.endp
+pan_tab dta $80,$40,$40,$80          ; door SW of the player, facing E/N/W/S
+        dta $40,$40,$80,$80          ;   ... NW
+        dta $80,$80,$40,$40          ;   ... SE
+        dta $40,$80,$80,$40          ;   ... NE
+ .endif
+sda_sx  dta 0,0                     ; 16-bit cells: snd_q_door_at stores
+sda_sy  dta 0,0                     ;   the whole difference, the sign is +1
+sda_f   dta 0
+snd_side dta 0                       ; the NEXT snd_play's pan; 0 = centre
+    .if * > SNDPAN_END+1
+        ert 'snd_setpan outgrew SNDPAN_BASE..END (memory_map.inc)'
+    .endif
+        org spn_resume
 
 ;==============================================================
 ; CRUSHERS -- p_ceilng.c EV_DoCeiling / T_MoveCeiling, on the door mover.
@@ -1534,7 +1991,11 @@ crush_resume = *
         dec DOOR_NACT
         lda #0
         sta.l DOOR_STATE,x
+ .if 1
+	bra ?out
+ .else
         beq ?out                     ; (always)
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1568,6 +2029,19 @@ crush_resume = *
                                      ;   "no fit", and what this port does with
                                      ;   that is send the door back up
 ?go     stx ct_d
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda m_ma                     ; ?move still wants the new ceiling, and
+        sta ct_m                     ;   door_at_point/en_bhit own the maths
+        lda zp_px                    ; ...and the player's probe point, which
+        sta ct_p                     ;   door_at_point reads
+        lda zp_py
+        sta ct_p+2
+	sep #$20
+	.LONGA OFF
+	stz en_bi
+ .else
         lda m_ma                     ; ?move still wants the new ceiling, and
         sta ct_m                     ;   door_at_point/en_bhit own the maths
         lda m_ma+1                   ;   registers between here and there
@@ -1582,9 +2056,11 @@ crush_resume = *
         sta ct_p+3
         lda #0
         sta en_bi
+ .endif
 ?lp     lda en_bi
         cmp THINGS_BASE              ; the thing count (blob header +0)
         bcs ?done
+
         ldy en_bi
         lda #<TH_HPL                 ; (every bank $01 page has low byte 0)
         sta zp_ptr
@@ -1604,6 +2080,17 @@ crush_resume = *
                                      ;   corpse; there is no gib state here
         lda en_bi                    ; its x/y -> the point to place
         jsr en_thing.en_th2
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda (sp_ptr)
+        sta zp_px
+        ldy #2
+        lda (sp_ptr),y
+        sta zp_py
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda (sp_ptr),y
         sta zp_px
@@ -1616,6 +2103,7 @@ crush_resume = *
         iny
         lda (sp_ptr),y
         sta zp_py+1
+ .endif
         jsr door_at_point            ; standing in THIS crusher's sector?
         cmp ct_d
         bne ?next
@@ -1624,7 +2112,20 @@ crush_resume = *
         jsr en_bhit                  ; P_DamageMobj: health, death, the scream
 ?next   inc en_bi
         bne ?lp                      ; (always: the count is a byte)
-?done   lda ct_p
+?done
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda ct_p
+        sta zp_px
+        lda ct_p+2
+        sta zp_py
+        lda ct_m
+        sta m_ma
+	sep #$20
+	.LONGA OFF
+ .else
+	lda ct_p
         sta zp_px
         lda ct_p+1
         sta zp_px+1
@@ -1636,6 +2137,7 @@ crush_resume = *
         sta m_ma
         lda ct_m+1
         sta m_ma+1
+ .endif
         ldx ct_d                     ; update_doors' door index and its sector
         lda.l DOOR_SECL,x            ;   pointer, both of which the descent and
         sta zp_ptr                   ;   the damage above went through

@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -43,6 +43,173 @@
 
 
 .proc check_bbox
+ .if 1
+        ; NOTE the LONG indirect [zp_nodeptr],y: NODES live in the Rapidus EXT
+        ; bank (bank $01), not in bank 0 (2026-07-29, rozblite.png: the plain
+        ; form read garbage bboxes and culled whole visible subtrees).
+        ; 2026-09-09 (drac030 style): the four bbox words are read WHOLE and
+        ; made player-relative right here -- cb_corners used to redo the same
+        ; sec/sbc twice per coordinate because FMUL eats m_a. Same subtraction,
+        ; same bits; cb_top..cb_right now hold (edge - player).
+        ldy cb_off
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+        sec
+        lda [zp_nodeptr],y           ; top
+        sbc zp_py
+        sta cb_top
+        iny
+        iny
+        sec
+        lda [zp_nodeptr],y           ; bottom
+        sbc zp_py
+        sta cb_bottom
+        iny
+        iny
+        sec
+        lda [zp_nodeptr],y           ; left
+        sbc zp_px
+        sta cb_left
+        iny
+        iny
+        sec
+        lda [zp_nodeptr],y           ; right
+        sbc zp_px
+        sta cb_right
+        sep #$20
+        .LONGA OFF
+        jsr cb_corners               ; -> cb_X/cb_Z for the four corners, and
+                                     ;    cb_cnt = how many are behind the near
+                                     ;    plane (eight frac-table multiplies for
+                                     ;    the four corners: see cb_corners)
+        ; --- THE TWO SIDE PLANES, before anything else. FOCAL = SCREEN_HALF, so
+        ;     the view volume is exactly { Z >= ZNEAR, -Z <= X <= Z } and its
+        ;     left/right walls are planes THROUGH THE EYE. X+Z and X-Z are
+        ;     linear, and a linear function over a convex hull peaks at a
+        ;     corner -- so if all four corners have X+Z < 0 the whole box is
+        ;     outside the left wall, and nothing in that subtree can be seen.
+        ;     Provably conservative, hence pixel-identical.
+        ;     WHY IT IS WORTH ITS BYTES: the near-plane branch below gives up
+        ;     ("some corners behind -> keep") without ever asking WHERE the box
+        ;     is, so a subtree straight out to the side survived just because it
+        ;     reached past the eye. And when the box IS wholly in front, this
+        ;     culls before the four screenx_signed (~2200 cycles) rather than
+        ;     after them.
+        ;     TWO PASSES, no flags: "all four X+Z < 0" is one loop that quits on
+        ;     the first corner that is not, then "all four X-Z > 0" likewise.
+        ;     The old single loop carried cb_xa/cb_xb as flags and quit when
+        ;     both died -- the same verdict, and the same number of corner
+        ;     tests in the worst case, but every test is now one 16-bit add.
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+        ldx #0
+?sdl    clc                          ; X + Z, signed (V fixes the sign)
+        lda cb_X,x
+        adc cb_Z,x
+        bvc ?sdl1
+        eor #$8000
+?sdl1   bpl ?sdr                     ; >= 0: this corner is not outside left,
+        inx                          ;   so the left plane cannot cull
+        inx
+        cpx #8
+        bne ?sdl
+        bra ?cull16                  ; all four corners outside the left wall
+?sdr    ldx #0
+?sdr1   sec                          ; X - Z
+        lda cb_X,x
+        sbc cb_Z,x
+        beq ?count16                 ; == 0 is the edge: not outside. (Tested on
+                                     ;   the RAW result, before the sign fix: a
+                                     ;   zero difference cannot have overflowed,
+                                     ;   and the fixed-up value of a $8000
+                                     ;   overflow WOULD read as zero.)
+        bvc ?sdr2
+        eor #$8000
+?sdr2   bmi ?count16                 ; < 0: not outside right
+        inx
+        inx
+        cpx #8
+        bne ?sdr1
+?cull16 sep #$20                     ; all four outside the right wall
+        .LONGA OFF
+        lda #1
+        rts
+?count16 sep #$20
+        .LONGA OFF
+        lda cb_cnt                   ; 0 behind -> all in front: the screen span;
+        beq ?allfront                ;   4 behind -> wholly behind the near
+        cmp #4                       ;   plane -> cull; some -> straddles -> keep
+        jeq ?cull                    ; (MADS Jcc: a branch when in range)
+        jmp ?keep
+?allfront
+        ; --- all corners in front: screen-X span ---
+        rep #$20                     ; ---- 16-bit A, in and out around each
+        .LONGA ON                    ;   screenx_signed (8-bit code)
+        lda #$7FFF                   ; cb_lo = +32767, cb_hi = -32768
+        sta cb_lo
+        lda #$8000
+        sta cb_hi
+        ldy #0                       ; Y = corner*2, the index into cb_X/cb_Z
+?sl     lda cb_X,y
+        sta zp_X
+        lda cb_Z,y
+        sta zp_Z
+        sep #$20
+        .LONGA OFF
+        phy
+        jsr screenx_signed           ; m_xs = unclamped signed column (clobbers X)
+        ply
+        rep #$20
+        .LONGA ON
+        sec                          ; cb_lo = min(cb_lo, m_xs)  (signed16)
+        lda m_xs
+        sbc cb_lo
+        bvc ?mn
+        eor #$8000
+?mn     bpl ?nomin
+        lda m_xs
+        sta cb_lo
+?nomin  sec                          ; cb_hi = max(cb_hi, m_xs)
+        lda m_xs
+        sbc cb_hi
+        bvc ?mx
+        eor #$8000
+?mx     bmi ?nomax
+        lda m_xs
+        sta cb_hi
+?nomax  iny
+        iny
+        cpy #8
+        bne ?sl
+        sep #$20
+        .LONGA OFF
+        lda cb_hi+1                  ; hi < 0 -> wholly left of screen -> cull
+        bmi ?cull
+        ldx #0                       ; xa = max(0, lo), kept in X: nothing but
+        lda cb_lo+1                  ;   the occlusion walk below reads it
+        bmi ?xbset                   ; lo negative -> not off-right, xa = 0
+        bne ?cull                    ; lo >= 256 -> off-right
+        ldx cb_lo
+        cpx #SCREEN_WIDTH            ; lo >= 160 (> 159) -> off-right
+        bcs ?cull
+?xbset  lda cb_hi+1                  ; xb = min(W-1, hi)   (hi >= 0 here)
+        bne ?xbmax
+        lda cb_hi
+        cmp #SCREEN_WIDTH
+        bcc ?xbok
+?xbmax  lda #SCREEN_WIDTH-1
+?xbok   sta cb_xb
+?sc     lda solid_arr,x              ; occlusion: every column in [xa,xb] already solid?
+        beq ?keep                    ; an open column -> visible -> keep
+        cpx cb_xb
+        beq ?cull                    ; spanned [xa,xb] all solid -> occluded -> cull
+        inx
+        bra ?sc
+?cull   lda #1
+        rts
+?keep   lda #0
+        rts
+ .else
         ; NOTE the LONG indirect [zp_nodeptr],y: NODES live in the Rapidus EXT
         ; bank (bank $01), not in bank 0. This routine was written before that
         ; move and still used plain (zp_nodeptr),y, so when the cull was
@@ -225,6 +392,7 @@
         rts
 ?keep   lda #0
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -260,6 +428,124 @@ cbc_resume = *
 ; mode goes back for each call and comes straight out again into the next
 ; argument. M only; X/Y stay 8-bit (sound.asm:316).
 .proc cb_corners
+ .if 1
+        ; 2026-09-09 (drac030 style): the four coordinates arrive PLAYER-
+        ; RELATIVE from check_bbox, so every "rebuild m_a" is a plain 16-bit
+        ; copy -- done as two bytes, because a copy wrapped in its own rep/sep
+        ; costs more than the two 8-bit moves (12 vs 14 cycles). The 16-bit
+        ; work is the corner emit: two adds and the near test on the adc's own
+        ; flags.
+        lda cb_top                   ; --- top: cos, then sin ---
+        sta m_a
+        lda cb_top+1
+        sta m_a+1
+        jsr fmul_cos
+        lda m_res
+        sta m_prod
+        lda m_res+1
+        sta m_prod+1
+        lda cb_top
+        sta m_a
+        lda cb_top+1
+        sta m_a+1
+        jsr fmul_sin
+        lda m_res
+        sta m_prod+2
+        lda m_res+1
+        sta m_prod+3
+        lda cb_bottom                ; --- bottom: cos, then sin ---
+        sta m_a
+        lda cb_bottom+1
+        sta m_a+1
+        jsr fmul_cos
+        lda m_res
+        sta m_ma
+        lda m_res+1
+        sta m_ma+1
+        lda cb_bottom
+        sta m_a
+        lda cb_bottom+1
+        sta m_a+1
+        jsr fmul_sin
+        lda m_res
+        sta m_ma+2
+        lda m_res+1
+        sta m_ma+3
+        stz cb_cnt
+        lda cb_left                  ; --- left: sin, then cos -> corners 0, 2 ---
+        sta m_a
+        lda cb_left+1
+        sta m_a+1
+        jsr fmul_sin
+        lda m_res
+        sta cb_lo
+        lda m_res+1
+        sta cb_lo+1
+        lda cb_left
+        sta m_a
+        lda cb_left+1
+        sta m_a+1
+        jsr fmul_cos
+        lda m_res
+        sta cb_hi
+        lda m_res+1
+        sta cb_hi+1
+        ldx #0                       ; corner 0 = (left, top)
+        jsr ?emitT
+        ldx #4                       ; corner 2 = (left, bottom)
+        jsr ?emitB
+        lda cb_right                 ; --- right: sin, then cos -> corners 1, 3 ---
+        sta m_a
+        lda cb_right+1
+        sta m_a+1
+        jsr fmul_sin
+        lda m_res
+        sta cb_lo
+        lda m_res+1
+        sta cb_lo+1
+        lda cb_right
+        sta m_a
+        lda cb_right+1
+        sta m_a+1
+        jsr fmul_cos
+        lda m_res
+        sta cb_hi
+        lda m_res+1
+        sta cb_hi+1
+        ldx #2                       ; corner 1 = (right, top)
+        jsr ?emitT
+        ldx #6                       ; corner 3 = (right, bottom)
+        ; falls into ?emitB
+?emitB  rep #$20                     ; ---- 16-bit A: X = sx - cos(y), Z = cx + sin(y),
+        .LONGA ON                    ;   y = bottom
+        sec
+        lda cb_lo
+        sbc m_ma
+        sta cb_X,x
+        clc
+        lda cb_hi
+        adc m_ma+2
+        sta cb_Z,x
+        bra ?zt                      ; (a branch keeps the adc's N)
+?emitT  rep #$20                     ; ... same with the TOP row's pair
+        sec
+        lda cb_lo
+        sbc m_prod
+        sta cb_X,x
+        clc
+        lda cb_hi
+        adc m_prod+2
+        sta cb_Z,x
+?zt     bmi ?behind                  ; Z < 0, or
+        cmp #ZNEAR                   ;   0 <= Z < ZNEAR (unsigned is right here)
+        bcc ?behind                  ;   -> behind the near plane
+        sep #$20
+        .LONGA OFF
+        rts
+?behind sep #$20
+        inc cb_cnt
+        rts
+ .else
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
         sec                          ; --- top: cos, then sin ---
@@ -401,6 +687,7 @@ cbc_resume = *
         bcs ?done
 ?behind inc cb_cnt
 ?done   rts
+ .endif
 .endp
     .if * > CBCORN_END+1
         ert 'cb_corners outgrew CBCORN_BASE..END (memory_map.inc)'

@@ -274,6 +274,14 @@ fin_loop jsr fin_tic
         sta fn_wait
         lda fin_wthi,x
         sta fn_wait+1
+ .if 1
+        stz fn_stage                 ; finalestage
+        stz fn_cnt                   ; finalecount
+        stz fn_cnt+1
+        stz fn_tdone
+        stz fn_tacc
+        stz fn_karm                  ; the key that threw the EXIT switch is
+ .else
         lda #0
         sta fn_stage                 ; finalestage
         sta fn_cnt                   ; finalecount
@@ -281,6 +289,7 @@ fin_loop jsr fin_tic
         sta fn_tdone
         sta fn_tacc
         sta fn_karm                  ; the key that threw the EXIT switch is
+ .endif
                                      ;   still DOWN: it has to come up first
         lda #FIN_CX0
         sta fn_cx
@@ -315,11 +324,18 @@ fin_loop jsr fin_tic
 ;   The same five stores as wi_show; the finale never flips, it paints in place.
 ;--------------------------------------------------------------
 .proc fin_show
+ .if 1
+        stz zback_hi
+        stz ZFRONT
+        stz XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
+        lda #>VRAM_XDL_A
+ .else
         lda #0
         sta zback_hi
         sta ZFRONT
         sta XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
         lda #>VRAM_XDL_A
+ .endif
         sta VBXE_XDLA1
         rts
 .endp
@@ -377,9 +393,15 @@ fin_loop jsr fin_tic
         lda #$40
         sta NMIEN
         cli
+ .if 1
+        jsr snd_stop                 ; the DAC silent and Timer-1 disarmed
+        stz SOUNDR_R                 ;   BEFORE SIO takes the chip, or the tone
+                                     ;   it was mid-way through squeals for the
+ .else
         jsr snd_stop                 ; the DAC silent and Timer-1 disarmed
         lda #0                       ;   BEFORE SIO takes the chip, or the tone
         sta SOUNDR_R                 ;   it was mid-way through squeals for the
+ .endif
                                      ;   whole read (the 2026-08-04 bug)
         jsr load_vram
         sei
@@ -407,6 +429,14 @@ fin_loop jsr fin_tic
         lda #FIN_TILE_W-1
         sta fb_w
         lda #BLT_COPY
+ .if 1
+        sta fb_ctrl
+        stz fn_ti
+?row    ldx fn_ti
+        lda fin_tht,x
+        sta fb_h
+        stz fn_tx
+ .else
         sta fb_ctrl
         lda #0
         sta fn_ti
@@ -415,6 +445,7 @@ fin_loop jsr fin_tic
         sta fb_h
         lda #0
         sta fn_tx
+ .endif
 ?col    ldx fn_ti
         ldy fin_tyt,x                ; the tile row's TOP screen row
         lda row_lo,y
@@ -423,9 +454,14 @@ fin_loop jsr fin_tic
         sta fb_dst
         lda row_hi,y
         adc #0
+ .if 1
+        sta fb_dst+1
+        stz fb_dst+2                 ; always FRAME_A: the finale owns bank 0,
+ .else
         sta fb_dst+1
         lda #0
         sta fb_dst+2                 ; always FRAME_A: the finale owns bank 0,
+ .endif
         jsr fin_blit                 ;   status-bar rows and all
         lda fn_tx
         clc
@@ -502,6 +538,25 @@ fin_loop jsr fin_tic
 ;   BLT_BSTENCIL: index 0 is the transparent surround, so the flat shows through.
 ;--------------------------------------------------------------
 .proc fin_putc
+ .if 1
+        txa                          ; index * FIN_GLYPH = index * 64: the high
+        lsr                          ;   byte is index >> 2 ...
+        lsr
+        sta fb_src+1
+        txa                          ;   ... and the low byte (index & 3) << 6 is
+        asl                          ;   six shifts of the byte in A (the top
+        asl                          ;   bits fall out) -- no memory shifts
+        asl
+        asl
+        asl
+        asl
+        clc
+        adc #<[FIN_VRAM+FIN_FONT_OFF]
+        sta fb_src
+        lda fb_src+1
+        adc #>[FIN_VRAM+FIN_FONT_OFF]
+        sta fb_src+1
+ .else
         txa                          ; index * FIN_GLYPH = index * 64, done as
         sta fb_src+1                 ;   (index << 8) >> 2
         lda #0
@@ -517,15 +572,22 @@ fin_loop jsr fin_tic
         lda fb_src+1
         adc #>[FIN_VRAM+FIN_FONT_OFF]
         sta fb_src+1
+ .endif
         lda #[[FIN_VRAM+FIN_FONT_OFF]>>16]
         adc #0
         sta fb_src+2
         lda #FIN_CELL
         sta fb_stride
+ .if 1
+        lda fn_gw
+        dec @
+        sta fb_w
+ .else
         lda fn_gw
         sec
         sbc #1
         sta fb_w
+ .endif
         lda #FIN_FONT_H-1
         sta fb_h
         ldx fn_cy
@@ -535,6 +597,16 @@ fin_loop jsr fin_tic
         sta fb_dst
         lda row_hi,x
         adc #0
+ .if 1
+        sta fb_dst+1
+        stz fb_dst+2
+        lda #BLT_BSTENCIL
+        sta fb_ctrl
+        jmp fin_blit
+.endp
+
+
+ .else
         sta fb_dst+1
         lda #0
         sta fb_dst+2
@@ -543,7 +615,8 @@ fin_loop jsr fin_tic
         jmp fin_blit
 .endp
 
-;--------------------------------------------------------------
+
+ .endif;--------------------------------------------------------------
 ; fin_getc -- the next character of finaletext. The texts stay in VRAM: 1.6 KB
 ;   of 6502 RAM is 1.6 KB this port does not have, and one byte a tic is the
 ;   whole cost. The read address is the instruction's own operand, so there is
@@ -572,12 +645,20 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
 ;    standing on top of. The page just appears.)
 ;--------------------------------------------------------------
 .proc fin_stage1
+ .if 1
+        lda #1
+        sta fn_stage
+        stz fn_cnt
+        stz fn_cnt+1
+        lda fn_ep
+ .else
         lda #1
         sta fn_stage
         lda #0
         sta fn_cnt
         sta fn_cnt+1
         lda fn_ep
+ .endif
         cmp #3
         beq ?bun
         lda #<FIN_ARENA
@@ -598,12 +679,20 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
 ;   cannot be running, because the finale never loads a level.
 ;--------------------------------------------------------------
 .proc fin_save
+ .if 1
+        stz fb_src
+        stz fb_src+1
+        stz fb_src+2
+        lda #<WIPE_START
+        sta fb_dst
+ .else
         lda #0
         sta fb_src
         sta fb_src+1
         sta fb_src+2
         lda #<WIPE_START
         sta fb_dst
+ .endif
         lda #>WIPE_START
         sta fb_dst+1
         lda #[WIPE_START>>16]
@@ -731,6 +820,14 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         sec
         lda #SCREEN_WIDTH
         sbc fn_scrv
+ .if 1
+        sta fb_dst
+        stz fb_dst+1
+        stz fb_dst+2
+        lda fn_scrv
+        dec @
+        sta fb_w
+ .else
         sta fb_dst
         lda #0
         sta fb_dst+1
@@ -739,6 +836,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         sec
         sbc #1
         sta fb_w
+ .endif
         jmp fin_blit
 ?out    rts
 .endp
@@ -759,8 +857,12 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         lda fn_cnt
         cmp #<FIN_BUN_END0
         bcc ?out
+ .if 1
+?go     stz fn_endst
+ .else
 ?go     lda #0
         sta fn_endst
+ .endif
         lda #FIN_BUN_ST0-FIN_BUN_END0+FIN_BUN_STEP
         sta fn_estep                 ; END0 holds until 1180, then +1 per step
         jmp fin_endblit
@@ -797,6 +899,15 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         lda #[FIN_ENDA>>16]
         adc #0
         sta fb_src+2
+ .if 1
+        lda fin_end_w,x
+        sta fb_stride
+        dec @
+        sta fb_w
+        lda fin_end_h,x
+        dec @
+        sta fb_h
+ .else
         lda fin_end_w,x
         sta fb_stride
         sec
@@ -806,6 +917,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         sec
         sbc #1
         sta fb_h
+ .endif
         ldx #FIN_END_Y
         lda row_lo,x
         clc
@@ -813,6 +925,16 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         sta fb_dst
         lda row_hi,x
         adc #0
+ .if 1
+        sta fb_dst+1
+        stz fb_dst+2
+        lda #BLT_BSTENCIL
+        sta fb_ctrl
+        jmp fin_blit
+.endp
+
+
+ .else
         sta fb_dst+1
         lda #0
         sta fb_dst+2
@@ -821,7 +943,8 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         jmp fin_blit
 .endp
 
-;--------------------------------------------------------------
+
+ .endif;--------------------------------------------------------------
 ; fin_blit -- one rectangle: fb_src -> fb_dst, fb_w+1 bytes by fb_h+1 rows,
 ;   source pitch fb_stride, mode fb_ctrl. wi_rect with the pitch unwelded from
 ;   SCREEN_WIDTH, which the font cell and the END patches both need.
@@ -838,11 +961,18 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         dex
         bpl ?a
         lda fb_stride
+ .if 1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        lda #1                       ; draw_weapon SCALES with this pair; every
+ .else
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
         lda #0
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
         sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
         lda #1                       ; draw_weapon SCALES with this pair; every
+ .endif
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX   ;   blit here is 1:1
         lda fb_w
         sta MEMW+MEMW_HD_OFF+BCB_WIDTH

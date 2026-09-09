@@ -20,9 +20,14 @@
 ;==============================================================
 .proc setup_memac
         lda #MEMW_HI | MC_CPU | MC_4K
+ .if 1
+        sta VBXE_MEMAC_CTL
+        stz VBXE_MEMAC_B
+ .else
         sta VBXE_MEMAC_CTL
         lda #0
         sta VBXE_MEMAC_B
+ .endif
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
         rts
@@ -32,9 +37,14 @@
 ; setup_xdl -- copy XDL into VRAM (via window), point VBXE at it
 ;==============================================================
 .proc setup_xdl
+ .if 1
+        stz VBXE_VCTL
+        jmp xdl_build
+ .else
         lda #0
         sta VBXE_VCTL
-        jmp xdl_build                ; xdl.asm: the two stretched lists, into
+        jmp xdl_build
+ .endif                ; xdl.asm: the two stretched lists, into
                                      ;   VBXE banks $08/$09. This used to copy
                                      ;   28 bytes of xdl_data into the overhead
                                      ;   bank and describe 200 of the screen's
@@ -64,9 +74,14 @@ xdlstg_resume = *
 ;   memory_map.inc).
 ;==============================================================
 .proc setup_palette
+ .if 1
+        sta VBXE_PSEL
+        stz VBXE_CSEL
+ .else
         sta VBXE_PSEL
         lda #0
         sta VBXE_CSEL
+ .endif
         lda #<MAP_PLAYPAL
         sta zp_ptr
         lda #>MAP_PLAYPAL
@@ -150,6 +165,20 @@ xdlstg_resume = *
 setchn_resume = *
         org SETCHN_BASE
 .proc setup_chains
+ .if 1
+        stz ZFRONT                   ; triple-buffer flip state (2026-08-11):
+        stz FRM_PAR                  ;   the XDL boots showing A, no publish
+        stz XDLA_PEND                ;   pending, fuzz frame parity "even" --
+                                     ;   zeroed HERE (boot-only, runs long
+                                     ;   before urom_init arms rom_nmi)
+        stz ptm_last                 ; pt_mul memo = 0 = pt_dy's ASSEMBLED bake
+        stz ptm_last+1               ;   (paint.asm; PAINT_VARS is random at boot)
+        stz zp_ptr
+        lda #>[MEMW+MEMW_CHA_OFF]
+        sta zp_ptr+1
+        jsr ?one
+        stz zp_ptr
+ .else
         lda #0
         sta ZFRONT                   ; triple-buffer flip state (2026-08-11):
         sta FRM_PAR                  ;   the XDL boots showing A, no publish
@@ -164,6 +193,7 @@ setchn_resume = *
         jsr ?one
         lda #0
         sta zp_ptr
+ .endif
         lda #>[MEMW+MEMW_CHB_OFF]
         sta zp_ptr+1
         jsr ?one

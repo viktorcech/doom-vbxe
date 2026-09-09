@@ -84,6 +84,31 @@
 ; pj_rspawn / pj_pspawn -- arm the shared missile for this shot's look.
 ;--------------------------------------------------------------
 .proc pj_rspawn
+ .if 1
+        lda #SFX_BAREXP              ; MT_ROCKET deathsound (info.c:1981) -- and
+        sta pj_bsnd                  ;   the flag that says there IS an A_Explode
+        lda pj_rid
+        bmi ?now                     ; $FF: the level packed no MISL -> land it
+        sta pj_fid                   ;   at once rather than lose the shot
+        lda pj_rxid
+        sta pj_xid
+        lda #11                      ; S_EXPLODE1..3: 8/6/4 tics -> 11/9/6 VB
+        sta pj_bt0
+        lda #9
+        sta pj_bt1
+        lda #6
+        sta pj_bt2
+        jmp pj_go
+?now    rep #$20                     ; pj_go never ran, so hand pj_hit the impact
+        .LONGA ON                    ;   point itself (pj_tx/pj_ty is where it
+        lda en_bx                    ;   looks for the blast)
+        sta pj_tx
+        lda en_by
+        sta pj_ty
+        sep #$20
+        .LONGA OFF
+        jmp pj_hit
+ .else
         lda #SFX_BAREXP              ; MT_ROCKET deathsound (info.c:1981) -- and
         sta pj_bsnd                  ;   it is what tells pj_hit there IS an
                                      ;   A_Explode, so it goes in BEFORE the ?now
@@ -112,6 +137,7 @@
         lda en_by+1
         sta pj_ty+1
         jmp pj_hit
+ .endif
 .endp
 
 .proc pj_pspawn
@@ -150,6 +176,56 @@
 ;--------------------------------------------------------------
         org PJGO_BASE
 .proc pj_go
+ .if 1
+        rep #$20                     ; ---- 16-bit A: launch point, target and the
+        .LONGA ON                    ;   aim vector are word moves; the target is
+        lda zp_px                    ;   still in A when its delta is taken
+        sta pj_x                     ; the missile leaves the player...
+        lda zp_py
+        sta pj_y
+        sec                          ; ...at z + 32 over the feet: the eye is
+        lda zp_pz                    ;   feet + 41, so eye - 9 (p_mobj.c:971)
+        sbc #9
+        sta pj_z
+        lda en_bx                    ; the flight target: what the shot hit...
+        sta pj_tx
+        sec                          ; ...and the aim vector, target - player,
+        sbc pj_x                     ;   with the target still in A
+        sta pj_dx
+        lda en_by
+        sta pj_ty
+        sec
+        sbc pj_y
+        sta pj_dy
+        ldx #0                       ; the shrink count, in X: an `inc pj_sh` in
+                                     ;   16-bit mode would write its neighbour too
+?red    clc                          ; shrink until BOTH fit [-127,127]: d + 127
+        lda pj_dx                    ;   must land in [0,254] -- ONE unsigned
+        adc #127                     ;   16-bit compare each (the byte version
+        cmp #255                     ;   tested "high byte 0 and low byte < $FF",
+        bcs ?shr                     ;   which is the same set)
+        lda pj_dy                    ; (C=0 here: the bcs was not taken)
+        adc #127
+        cmp #255
+        bcs ?shr
+        sep #$20
+        .LONGA OFF
+        stx pj_sh                    ; the count IS the distance's magnitude:
+        stz pj_xf                    ;   pj_go2 paces the flight off it (pj_ctab)
+        stz pj_yf
+        jmp pj_go2                   ; part B: k7 aim + arm (its own island)
+?shr    inx
+        .LONGA ON                    ; (the mode never changed on this path)
+        lda pj_dx                    ; arithmetic >> 1: cmp #$8000 puts the sign
+        cmp #$8000                   ;   bit in C, ror brings it back in on top
+        ror @
+        sta pj_dx
+        lda pj_dy
+        cmp #$8000
+        ror @
+        sta pj_dy
+        bra ?red
+ .else
         lda zp_px                    ; the missile leaves the player...
         sta pj_x
         lda zp_px+1
@@ -222,10 +298,19 @@
         ror pj_dy+1
         ror pj_dy
         jmp ?red
+ .endif
 .endp
 
 ; m_prod = A * pj_f (umul16, high half 0)
 .proc pj_mul
+ .if 1
+        sta m_a
+        stz m_a+1
+        stz m_b+1
+        lda pj_f
+        sta m_b
+        jmp umul16
+ .else
         sta m_a
         lda #0
         sta m_a+1
@@ -233,9 +318,12 @@
         lda pj_f
         sta m_b
         jmp umul16
+ .endif
 .endp
 
 ; m_prod = -m_prod (16-bit)
+ .if 1
+ .else
 .proc pj_neg
         sec
         lda #0
@@ -246,6 +334,7 @@
         sta m_prod+1
         rts
 .endp
+ .endif
 
 ; IN: A = |d| (byte), Y = the delta's high byte (its sign).
 ; OUT: m_prod = that axis' step, x2 k7 (Q8), re-signed.
@@ -260,6 +349,22 @@
 ;   (only negative legs are affected) and on the operands -- exactly the "some
 ;   times you see the rocket, sometimes not, and I cannot tell you when".
 .proc pj_leg
+ .if 1
+        sty pj_sgn
+        jsr pj_mul
+        rep #$20                     ; ---- 16-bit A: the x2 and the re-sign in the
+        .LONGA ON                    ;   accumulator, one store at the end (the
+        lda m_prod                   ;   asl/rol pair in memory and pj_neg's
+        asl @                        ;   two-byte subtract are gone)
+        ldy pj_sgn                   ; the sign, back from its stash (umul16 ate Y)
+        bpl ?p
+        eor #$FFFF                   ; -m_prod
+        inc @
+?p      sta m_prod
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         sty pj_sgn
         jsr pj_mul
         asl m_prod
@@ -268,15 +373,23 @@
         bpl ?p
         jmp pj_neg
 ?p      rts
+ .endif
 .endp
 
 ; A = |A| (the deltas fit a byte once pj_go's shrink loop is done)
 .proc pj_abs
+ .if 1
+        bpl ?pos
+        eor #$FF
+        inc @                        ; (C is dead in every caller: sta / cmp / ldy)
+?pos    rts
+ .else
         bpl ?pos
         eor #$FF
         clc
         adc #1
 ?pos    rts
+ .endif
 .endp
 
 ; |m_a(16)| with A = the high byte on entry; Z=1 iff the result is < 256.
@@ -320,6 +433,61 @@ pjth_resume = *
 ;   through -- the sweep runs once per SUB-STEP, up to five a frame per
 ;   bolt, and the old form was most of a flying frame's budget.
 .proc pj_thit
+ .if 1
+        stx pj_ti                    ; the caller's counter; X = the cursor
+        ldx #$FF
+?nx     inx
+?lp     cpx THINGS_BASE              ; the level's thing count
+        bcc ?try
+        ldx pj_ti                    ; swept them all: nothing in the way
+        clc
+        rts
+?try    lda.l $010000+TH_HPL,x       ; shootable at all? (a decoration has no
+        bne ?alv                     ;   health, and PIT_CheckThing lets a
+        lda.l $010000+TH_HPH,x       ;   non-shootable thing through)
+        beq ?nx
+?alv    lda.l $010000+TH_STATE,x     ; already dying -> its chain owns it
+        bne ?nx
+        lda.l $010000+TH_RAD,x       ; blockdist = its radius + the rocket's
+        clc
+        adc #PJ_ROCKR
+        sta pj_bd                    ; (pj_bd+1 is a permanent 0: the 16-bit
+        bcs ?nx                      ;  compares below read the word)
+        txa
+        jsr en_thing.en_th2          ; sp_ptr = its record: x at +0, y at +2
+        rep #$20                     ; ---- 16-bit A: |dx| < blockdist AND
+        .LONGA ON                    ;   |dy| < blockdist, each one subtract, one
+        sec                          ;   negate in A and one compare (the byte
+        lda pj_x                     ;   version went through pj_a16 / m_neg and
+        sbc (sp_ptr)                 ;   a high-byte test: same set, |d| >= 256
+        bpl ?ax                      ;   fails the compare here just as it
+        eor #$FFFF                   ;   failed the high-byte test there)
+        inc @
+?ax     cmp pj_bd
+        bcs ?nx16
+        ldy #2
+        sec
+        lda pj_y
+        sbc (sp_ptr),y
+        bpl ?ay
+        eor #$FFFF
+        inc @
+?ay     cmp pj_bd
+        bcs ?nx16
+        lda pj_x                     ; HIT: the burst happens HERE, not at the
+        sta pj_tx                    ;   point the crosshair picked
+        lda pj_y
+        sta pj_ty
+        sep #$20
+        .LONGA OFF
+        stx pj_vic                   ; ...and this is who the blast damages first
+        ldx pj_ti                    ; the sub-step counter back
+        sec
+        rts
+?nx16   sep #$20
+        .LONGA OFF
+        bra ?nx
+ .else
         stx pj_ti                    ; the caller's counter; X = the cursor
         ldx #$FF
 ?nx     inx
@@ -384,6 +552,7 @@ pjth_resume = *
         ldx pj_ti                    ; the sub-step counter back
         sec
         rts
+ .endif
 .endp
 ; pj_orup -- pj_any = OR of the eight pj_ons: pj_mirr's tail, so it is fresh
 ;   the moment any slot's mirror changes, and spr_chasec's one-load "is
@@ -569,6 +738,74 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
                                      ;   the missile flies at its true 14
                                      ;   units/VBLANK. See pj_ctab.
 .proc pj_frame                       ; ONE bolt, the one pj_load just swapped in
+ .if 1
+        lda pj_on                    ;   (the level check moved to pj_frameN --
+        bne ?run                     ;   pj_relvl has to run with no bolt up too)
+?out    rts
+?run    cmp #2
+        bcc ?fly0                    ; 2..4 = the burst frames (their own clock)
+        jmp pj_btick
+?fly0   ldx dt_vbl                    ; one sub-step per VBLANK, like the ball...
+        cpx pj_cap                   ; ...but never more than pj_cap of them in
+        bcc ?step                    ;   one DRAWN frame (see the .else side's
+        ldx pj_cap                   ;   note on pj_cap and PJ_MAXSUB)
+?step   clc                          ; x += sx (24-bit: xf, x, x+1 are not in
+        lda pj_xf                    ;   little-endian order, so this stays
+        adc pj_sx                    ;   three byte adds -- a 16-bit form would
+        sta pj_xf                    ;   need sep/rep around the third byte and
+        lda pj_x                     ;   costs the same)
+        adc pj_sx+1
+        sta pj_x
+        lda pj_x+1
+        adc pj_sxe
+        sta pj_x+1
+        clc
+        lda pj_yf
+        adc pj_sy
+        sta pj_yf
+        lda pj_y
+        adc pj_sy+1
+        sta pj_y
+        lda pj_y+1
+        adc pj_sye
+        sta pj_y+1
+        jsr pj_zstep                 ; ...and the z leg (p_mobj.c gives the
+                                     ;   missile a momz, so it CLIMBS to a
+                                     ;   monster on a ledge)
+        dec pj_ttl
+        beq ?gone
+        rep #$20                     ; ---- 16-bit A. arrived? |x - tx| < 16 AND
+        .LONGA ON                    ;   |y - ty| < 16 (the step is 14, the
+        sec                          ;   window 32 wide -- no sample can jump
+        lda pj_x                     ;   across it). Each: subtract, negate in
+        sbc pj_tx                    ;   A, compare -- pj_a16 + m_neg + the
+        bpl ?a1                      ;   high-byte test collapsed to that
+        eor #$FFFF
+        inc @
+?a1     cmp #16
+        bcs ?m16                     ; C=1: not there yet (falls through below
+        sec                          ;   with C=1 as well)
+        lda pj_y
+        sbc pj_ty
+        bpl ?a2
+        eor #$FFFF
+        inc @
+?a2     cmp #16
+?m16    sep #$20                     ; (sep keeps C: it is the verdict)
+        .LONGA OFF
+        bcc ?burst
+?miss   jsr pj_thit                  ; p_map.c PIT_CheckThing: did this sub-step
+        bcs ?burst                   ;   put the rocket INSIDE something? then it
+                                     ;   bursts HERE (pj_thit moved pj_tx/pj_ty)
+        dex
+        beq ?done
+        bra ?step
+?done   jmp pj_leaf                  ; track the leaf + refresh the record
+?gone                                ; guard ran out mid-air: burst where it is,
+                                     ;   so the shot still LANDS
+?burst  jsr pj_hit                   ; P_ExplodeMissile: NOW it hurts
+        jmp pj_burst
+ .else
         lda pj_on                    ;   (the level check moved to pj_frameN --
         bne ?run                     ;   pj_relvl has to run with no bolt up too)
 ?out    rts
@@ -654,6 +891,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
                                      ;   the damage went off at the trigger)
 ?burst  jsr pj_hit                   ; P_ExplodeMissile: NOW it hurts
         jmp pj_burst
+ .endif
 .endp
     .if * > PJFR_END+1
         ert 'pj_frame outgrew PJFR_BASE..END (memory_map.inc)'
@@ -672,7 +910,8 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         org PJF2_BASE
 .proc pj_burst
         lda pj_bsnd
-        sta snd_pending              ; barexp / firxpl AT the impact
+        jsr snd_qp_pj                ; barexp / firxpl AT the impact (STEREO:
+                                     ;   from pj_x/pj_y, where it burst)
         lda pj_xid
         bmi pj_gone                  ; no burst frames packed: just vanish
         sta pj_frm                   ; S_EXPLODE1 (info.c: MISL B, A_Explode)
@@ -683,9 +922,14 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         jmp pj_leaf                  ; the record parks WHERE it burst
 .endp
 .proc pj_gone                        ; the missile is done (both tails)
+ .if 1
+        stz pj_on
+        rts
+ .else
         lda #0
         sta pj_on
         rts
+ .endif
 .endp
 .proc pj_btick
         sec                          ; this frame ate dt_vbl VBLANKs of the frame
@@ -718,6 +962,32 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;--------------------------------------------------------------
         org PJF3_BASE
 .proc pj_leaf
+ .if 1
+        pei (zp_px)                  ; locate_floor reads the player's zp_px/py:
+        pei (zp_py)                  ;   both words onto the stack (pei is M-blind)
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+        lda pj_x
+        sta zp_px
+        lda pj_y
+        sta zp_py
+        sep #$20
+        .LONGA OFF
+        jsr locate_floor             ; zp_nid = the leaf
+        rep #$20
+        .LONGA ON
+        lda zp_nid
+        and #$7FFF
+        sta pj_ss
+        pla                          ; zp_py was pushed last
+        sta zp_py
+        pla
+        sta zp_px
+        .LONGA OFF                   ; (still 16-bit: pj_rec_up's rep below is a
+                                     ;  no-op on this path and the mode switch
+                                     ;  for pj_draw1's direct call)
+        ; fall through into the record refresh
+ .else
         lda zp_px
         pha
         lda zp_px+1
@@ -749,8 +1019,24 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         pla
         sta zp_px
         ; fall through into the record refresh
+ .endif
 .endp
 .proc pj_rec_up
+ .if 1
+        rep #$20                     ; ---- 16-bit A (idempotent from pj_leaf)
+        .LONGA ON
+        lda pj_x
+        sta pj_rec
+        lda pj_y
+        sta pj_rec+2
+        sec                          ; anchor = flight z - 8, like the ball
+        lda pj_z
+        sbc #8
+        sta pj_rec+4
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         lda pj_x
         sta pj_rec
         lda pj_x+1
@@ -767,6 +1053,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         sbc #0
         sta pj_rec+5
         rts
+ .endif
 .endp
     .if * > PJF3_END+1
         ert 'pj_leaf outgrew PJF3_BASE..END (memory_map.inc)'
@@ -802,6 +1089,37 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;--------------------------------------------------------------
         org PJZ_BASE
 .proc pj_zaim
+ .if 1
+        stz pj_zf
+        stz pj_dz                    ; a WALL shot keeps DOOM's slope 0: dz 0
+        stz pj_dz+1                  ;   falls through the same maths and comes
+        lda pj_vic                   ;   out as a level flight
+        cmp #$FF                     ; $FF = a wall (the shared jmp is the only
+        beq ?done                    ;   way out of this island anyway). cmp, not
+                                     ;   bmi: thing indices reach 253 (pj_hit)
+        jsr en_thing.en_th2
+                                     ; sp_ptr -> the victim's record
+        rep #$20                     ; ---- 16-bit A: dz = its z - (muzzle - 28),
+        .LONGA ON                    ;   i.e. (its z - muzzle) + 28 -- the same
+        ldy #4                       ;   number mod 2^16, without the m_a stash.
+        lda (sp_ptr),y               ; +4/+5 = its z (pack_things: x,y,z,sid,fl)
+        sec
+        sbc pj_z
+        clc
+        adc #28                      ; the muzzle less half a monster: the middle
+                                     ;   of a 56-unit sprite is the aim point
+        ldy pj_sh                    ; ...brought down the same number of
+        beq ?st                      ;   halvings pj_go's loop cost dx/dy, so all
+?sh     cmp #$8000                   ;   three legs share one scale. Arithmetic:
+        ror @                        ;   the sign has to survive -- and the value
+        dey                          ;   stays in A the whole way, one store
+        bne ?sh
+?st     sta pj_dz
+        sep #$20
+        .LONGA OFF
+?done   jmp pj_zaim2                 ; the other island, 2 KB off: a jmp, not a
+                                     ;   branch
+ .else
         lda #0
         sta pj_zf
         sta pj_dz                    ; a WALL shot keeps DOOM's slope 0: dz 0
@@ -839,6 +1157,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         dey
         bne ?sh
 ?done   jmp pj_zaim2                 ; the other island, 2 KB off: a jmp, not a
+ .endif
 .endp                                ;   branch
     .if * > PJZ_END+1
         ert 'pj_zaim outgrew PJZ_BASE..END (memory_map.inc)'
@@ -909,6 +1228,20 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
 
         org PJLD_BASE
 .proc pj_load                        ; X = slot -> the context. Preserves X.
+ .if 1
+        jsr pj_slot
+        ldy #PJ_CTXN-2               ; WORDS: 18 moves for the 36 bytes
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+?c      lda [zp_ptr],y
+        sta pj_ctx,y
+        dey
+        dey
+        bpl ?c
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         jsr pj_slot
         ldy #PJ_CTXN-1
 ?c      lda [zp_ptr],y
@@ -916,6 +1249,7 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         dey
         bpl ?c
         rts
+ .endif
 .endp
     .if * > PJLD_END+1
         ert 'pj_load outgrew PJLD_BASE..END (memory_map.inc)'
@@ -923,6 +1257,20 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
 
         org PJSV_BASE
 .proc pj_save                        ; X = slot <- the context. Preserves X.
+ .if 1
+        jsr pj_slot
+        ldy #PJ_CTXN-2               ; WORDS, as pj_load
+        rep #$20
+        .LONGA ON
+?c      lda pj_ctx,y
+        sta [zp_ptr],y
+        dey
+        dey
+        bpl ?c
+        sep #$20
+        .LONGA OFF
+        jmp pj_mirr
+ .else
         jsr pj_slot
         ldy #PJ_CTXN-1
 ?c      lda pj_ctx,y
@@ -930,6 +1278,7 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         dey
         bpl ?c
         jmp pj_mirr
+ .endif
 .endp
     .if * > PJSV_END+1
         ert 'pj_save outgrew PJSV_BASE..END (memory_map.inc)'
@@ -1153,6 +1502,9 @@ pj_frm  dta 0                        ; the frame it is SHOWING right now: pj_fid
                                      ;   shared scratch that every pj_draw1
                                      ;   rebuilds from scratch
 PJ_CTXN equ *-pj_ctx                 ; 36: was 31, +4 for the z leg and +1 for
+    .if PJ_CTXN & 1
+        ert 'PJ_CTXN must be even: pj_load/pj_save move it as words'
+    .endif
                                      ;   pj_frm -- which is why PJ_SLSTR had to
                                      ;   go 32 -> 64 (_verify_pjz checks both)
 ;--------------------------------------------------------------
@@ -1163,7 +1515,9 @@ pj_cur  dta 0                        ; the slot the context above belongs to
                                      ;   spr_chasec, its per-frame reader)
 pj_ti   dta 0                        ; pj_thit: the caller's X, parked (the
                                      ;   sweep cursor is X itself now)
-pj_bd   dta 0                        ; ...and this candidate's blockdist
+pj_bd   dta a(0)                     ; ...and this candidate's blockdist. A
+                                     ;   WORD: pj_thit's 16-bit compares read
+                                     ;   it whole, and +1 is a permanent 0
 pj_hold dta 0                        ; 1 = en_shoot picks the victim and stops
                                      ;   there, hurting nobody (enemy.asm)
 pj_lvl  dta $FF                      ; the level the ids below belong to
@@ -1215,6 +1569,32 @@ pjhk_resume = *
 ;--------------------------------------------------------------
         org PJAIM_BASE
 .proc pj_aim
+ .if 1
+        inc pj_hold
+        jsr en_shoot
+        dec pj_hold
+        lda en_dmg                   ; the roll travels with the rocket
+        sta pj_dmg
+        ldx en_best
+        bmi ?wall
+        lda vs_th,x
+        sta pj_vic
+        jsr en_thing.en_th2          ; sp_ptr = its record -> the flight target
+        rep #$20                     ; ---- 16-bit A: x, y as two words
+        .LONGA ON
+        lda (sp_ptr)
+        sta en_bx
+        ldy #2
+        lda (sp_ptr),y
+        sta en_by
+        sep #$20
+        .LONGA OFF
+        rts
+?wall   lda #$FF
+        sta pj_vic                   ; nobody to hurt -- just the blast, and
+        lda #SH_NROCK                ;   pj_hit centres it where the rocket
+        jmp sh_trace                 ;   stopped
+ .else
         inc pj_hold
         jsr en_shoot
         dec pj_hold
@@ -1242,6 +1622,7 @@ pjhk_resume = *
         sta pj_vic                   ; nobody to hurt -- just the blast, and
         lda #SH_NROCK                ;   pj_hit centres it where the rocket
         jmp sh_trace                 ;   stopped
+ .endif
 .endp
     .if * > PJAIM_END+1
         ert 'pj_aim outgrew PJAIM_BASE..END (memory_map.inc)'
@@ -1264,6 +1645,44 @@ pjhk_resume = *
 ;--------------------------------------------------------------
         org PJHIT_BASE
 .proc pj_hit
+ .if 1
+        lda pj_vic
+        cmp #$FF                     ; $FF = it was flying at a wall. NOT `bmi`
+        beq ?blast                   ;   (2026-09-09, "strielam plazmou a nic"):
+                                     ;   a THING INDEX runs 0..253, and bit 7 set
+                                     ;   is every thing from 128 up -- half of
+                                     ;   E1M4's 240. Those read as "no victim"
+                                     ;   here, so the bolt burst on them for
+                                     ;   nothing, by the crosshair AND by
+                                     ;   pj_thit's in-flight hit alike. E1M1 has
+                                     ;   too few things for it to show.
+        sta en_bi
+        tax
+        lda.l $010000+TH_HPL,x       ; still alive? Two lda.l, as pj_thit reads
+        bne ?alv                     ;   them: the health word is two page arrays
+        lda.l $010000+TH_HPH,x       ;   in bank $01 (no [zp_ptr] re-aiming --
+        beq ?blast                   ;   en_bhit and en_bthings aim their own)
+?alv    lda pj_dmg                   ; already dead -> no second death chain
+        jsr en_bhit                  ; P_DamageMobj + the voice + the chain
+?blast  lda pj_bsnd                  ; THE DEATHSOUND SAYS WHAT LANDED: bit 0 --
+        lsr                          ;   see the .else side for why one lsr sorts
+        bcs ?spray                   ;   BAREXP / RXPLOD / FIRXPL, and the ert
+        cmp #SFX_BAREXP/2
+        bne ?out
+        rep #$20                     ; ---- 16-bit A: the impact point -> en_bx/by
+        .LONGA ON
+        lda pj_tx
+        sta en_bx
+        lda pj_ty
+        sta en_by
+        sep #$20
+        .LONGA OFF
+        lda #$FF
+        sta pj_vic                   ; spent: a re-arm must not land it twice
+        jmp en_boomat                ; A_Explode(..., 128) where it went off
+?spray  jmp wp_bfgspray              ; forty rays across the whole 90 degree view
+?out    rts
+ .else
         lda pj_vic
         bmi ?blast                   ; it was flying at a wall
         sta en_bi
@@ -1320,6 +1739,7 @@ pjhk_resume = *
                                      ;   (it marks pj_vic spent itself -- there is
                                      ;   no room for the store on this side)
 ?out    rts
+ .endif
 .endp
     .if [SFX_RXPLOD&1]=0 .or [SFX_BAREXP&1]<>0 .or [SFX_FIRXPL&1]<>0
         ert 'pj_hit dispatches on bit0: SFX_RXPLOD must be the ONLY odd id of the three'
@@ -1408,6 +1828,51 @@ pf_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 pf_resume = *
         org SHREF_BASE
 .proc sh_refine
+ .if 1
+        stz sh_lo                    ; the wall is somewhere in [0, sh_hi], and
+        stz sh_lo+1                  ;   sh_hi is still the full ray
+        stz USE_K
+        ldx #8                       ; side(v1 -> v2, the ray START). Constant --
+        ldy #12                      ;   A never moves, so it comes out here
+        jsr use_side
+        sta sh_sa
+        lda #SH_REF                  ; the count lives in MEMORY: smul_14 (under
+        sta sh_n                     ;   sh_setb) eats X
+?ref    rep #$21                     ; ---- 16-bit A, C=0: mid = (lo + hi) / 2 in
+        .LONGA ON                    ;   the accumulator (was a byte add and a
+        lda sh_lo                    ;   lsr/ror pair in memory)
+        adc sh_hi
+        lsr @
+        sta sh_d
+        sep #$20
+        .LONGA OFF
+        jsr sh_setb                  ; shorten the ray to mid...
+        lda #4
+        sta USE_K
+        ldx #8
+        ldy #12
+        jsr use_side                 ; ...and ask which side of the seg it ends
+        cmp sh_sa
+        beq ?rlo                     ; same side as A -> it has not reached it
+        lda sh_d                     ; crossed -> the wall is at or before mid
+        sta sh_hi
+        lda sh_d+1
+        sta sh_hi+1
+        bra ?rnx
+?rlo    lda sh_d                     ; clear -> it is beyond mid
+        sta sh_lo
+        lda sh_d+1
+        sta sh_lo+1
+?rnx    dec sh_n
+        bne ?ref
+        lda sh_lo                    ; the last CLEAR length: just in FRONT of
+        sta sh_d                     ;   the wall, where a sprite is still drawn
+        lda sh_lo+1
+        sta sh_d+1
+        jsr sh_dist
+        sec
+        jmp sh_end                   ; C=1: a wall was found
+ .else
         lda #0
         sta sh_lo                    ; the wall is somewhere in [0, sh_hi], and
         sta sh_lo+1                  ;   sh_hi is still the full ray
@@ -1454,6 +1919,7 @@ pf_resume = *
         jsr sh_dist
         sec
         jmp sh_end                   ; C=1: a wall was found
+ .endif
 .endp
 ; the seven pellets' impact points, parked with sh_refine: the puff block itself
 ; went full the moment one puff became seven.
@@ -1482,6 +1948,119 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ;   traced and the puff put there.
 ;--------------------------------------------------------------
 .proc pf_shot
+ .if 1
+        lda pf_on
+        bne ?out                     ; one already showing: let it finish (ONE
+                                     ;   instance -- see the .else side)
+        lda en_hit
+        beq ?wall
+        jmp pf_gore                  ; it hit a THING: blood, or a puff if that
+                                     ;   thing does not bleed (p_map.c:1005)
+?wall   lda pf_id
+        bmi ?out                     ; the level packed no PUFF frames
+        lda #SH_NBULL
+        ldx pf_mel
+        beq ?rng                     ; a punch or a saw only reaches MELEERANGE
+        lda #SH_NMELEE
+?rng    jsr sh_trace                 ; en_bx/en_by = where the bullet stopped
+        bcs ?hitwall                 ; C=0: nothing in reach
+?out    rts
+?hitwall
+        jsr gun_match                ; P_ShootSpecialLine: the wall this bullet
+                                     ;   stopped on may be a 46 (E1M2's secret door)
+        ; ONE trace, SEVEN puffs: each is the impact point slid sideways by
+        ; dist * tan(its own spread) -- the .else side says why that is exact
+        ; enough. 16-bit A for every operand move and the two vector sums.
+?go     ldx #1
+        lda wp_cur
+        cmp #WP_SHOTGUN
+        bne ?n1
+        ldx #PF_MAX
+?n1     stx pf_n
+        stx pf_i
+?pel    jsr en_aimcol                ; the same roll the pellet itself took
+        lda en_col
+        sec
+        sbc #SCREEN_HALF-8           ; 0..16
+        asl
+        tay
+        rep #$20
+        .LONGA ON
+        lda pf_tan,y                 ; m_b = tan(this pellet's angle), Q14
+        sta m_b
+        lda sh_d                     ; m_a = the wall distance sh_trace settled on
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jsr smul_14                  ; m_res = how far off the impact it lands
+        rep #$20
+        .LONGA ON
+        lda m_res
+        sta pf_lat
+        sta m_a                      ; slide along the PERPENDICULAR (-sin, cos)
+        lda zp_sin
+        sta m_b
+        sep #$20
+        .LONGA OFF
+        jsr smul_14
+        ldx pf_i
+        dex
+        txa
+        asl
+        tax                          ; X = the pellet's slot * 2
+        rep #$20
+        .LONGA ON
+        sec                          ; px = impact_x - lat*sin
+        lda en_bx
+        sbc m_res
+        sta pf_px,x
+        lda pf_lat
+        sta m_a
+        lda zp_cos
+        sta m_b
+        sep #$20
+        .LONGA OFF
+        phx                          ; (smul_14 eats X)
+        jsr smul_14
+        plx
+        rep #$21                     ; ---- 16-bit A, C=0
+        .LONGA ON
+        lda en_by                    ; py = impact_y + lat*cos
+        adc m_res
+        sta pf_py,x
+        sep #$20
+        .LONGA OFF
+        dec pf_i
+        beq ?allset
+        jmp ?pel                     ; (out of branch range)
+?allset rep #$20
+        .LONGA ON
+        sec                          ; they hang at eye - 9, level: the height the
+        lda zp_pz                    ;   missiles fly at, and the shot is level too
+        sbc #9
+        sta pf_rec+4
+        lda en_bx                    ; the LEAF comes off the traced impact point
+        sta pf_rec
+        lda en_by
+        sta pf_rec+2
+        sep #$20
+        .LONGA OFF
+        ldx #5                       ; PUFF A/B/C/D, so it dies on frame 5
+        lda pf_id
+        ldy pf_mel
+        beq ?st
+        inc @                        ; "don't make punches spark on the wall"
+        inc @                        ;   (p_mobj.c): a melee puff starts at
+        ldx #3                       ;   S_PUFF3, i.e. PUFF C, and shows two
+?st     sta pf_rec+6
+        stx pf_lst
+        lda #PF_TICS
+        sta pf_tic
+        sta pf_ttl
+        lda #1
+        sta pf_on
+        jmp pf_leaf
+ .else
         lda pf_on
         bne ?out                     ; one already showing: let it finish. There
                                      ;   is ONE instance, so re-arming per shot
@@ -1621,6 +2200,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         lda en_by+1
         sta pf_rec+3
         jmp pf_leaf
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1648,6 +2228,57 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 pfg_resume = *
         org GORE_BASE
 .proc pf_gore
+ .if 1
+        lda en_kind                  ; MF_NOBLOOD -> a puff: kind 0 (a shootable
+        beq ?puff                    ;   this port names no kind for) and the
+        cmp #MK_BEXP                 ;   BARREL, which does have one
+        bne ?blood
+?puff   lda pf_id
+        bmi ?out
+        ldx #5                       ; PUFF A/B/C/D
+        ldy #PF_TICS
+        bne ?arm                     ; (always: PF_TICS is 6)
+?blood  lda pf_bid
+        bmi ?out
+        ldy en_dmg                   ; P_SpawnBlood's damage gate
+        cpy #13
+        bcs ?bset                    ; >= 13: BLUD C, three frames
+        ldx #3
+        cpy #9
+        bcs ?b2                      ; 9..12: BLUD B, two
+        ldx #2
+        inc @                        ; < 9: BLUD A, one (id + 2)
+?b2     inc @                        ; (+1 -- an id is never 0, and inc sets Z
+        bne ?bt                      ;  like the adc did: always taken)
+?bset   ldx #4                       ; BLUD C/B/A -> frames 1..3, dies on 4
+?bt     ldy #PF_TBLD
+?arm    sta pf_rec+6
+        stx pf_lst
+        sty pf_tic
+        sty pf_ttl
+        lda en_last                  ; the thing the shot connected with
+        jsr en_thing.en_th2          ;   -> sp_ptr = its record (x, y at 0..3)
+        rep #$20                     ; ---- 16-bit A: x, y as words, and the
+        .LONGA ON                    ;   anchor
+        lda (sp_ptr)
+        sta pf_px
+        sta pf_rec
+        ldy #2
+        lda (sp_ptr),y
+        sta pf_py
+        sta pf_rec+2
+        sec                          ; eye - 9, level, like the wall puff
+        lda zp_pz
+        sbc #9
+        sta pf_rec+4
+        sep #$20
+        .LONGA OFF
+        lda #1
+        sta pf_n                     ; ONE gore sprite, never seven
+        sta pf_on
+        jmp pf_leaf
+?out    rts
+ .else
         lda en_kind                  ; MF_NOBLOOD -> a puff: kind 0 (a shootable
         beq ?puff                    ;   this port names no kind for) and the
         cmp #MK_BEXP                 ;   BARREL, which does have one
@@ -1708,6 +2339,7 @@ pfg_resume = *
         sta pf_on                    ;   that connect all land on one vissprite
         jmp pf_leaf
 ?out    rts
+ .endif
 .endp
     .if * > GORE_END+1
         ert 'pf_gore outgrew GORE_BASE..GORE_END (memory_map.inc)'
@@ -1719,6 +2351,31 @@ pfg_resume = *
 ;   project it. locate_floor reads zp_px/zp_py, so borrow them (pj_leaf's dance).
 ;--------------------------------------------------------------
 .proc pf_leaf
+ .if 1
+        pei (zp_px)                  ; locate_floor reads zp_px/zp_py: park both
+        pei (zp_py)                  ;   words (pj_leaf's dance, 16-bit)
+        rep #$20
+        .LONGA ON
+        lda pf_rec
+        sta zp_px
+        lda pf_rec+2
+        sta zp_py
+        sep #$20
+        .LONGA OFF
+        jsr locate_floor             ; zp_nid = the leaf
+        rep #$20
+        .LONGA ON
+        lda zp_nid
+        and #$7FFF
+        sta pf_ss
+        pla
+        sta zp_py
+        pla
+        sta zp_px
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         lda zp_px
         pha
         lda zp_px+1
@@ -1750,6 +2407,7 @@ pfg_resume = *
         pla
         sta zp_px
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1757,6 +2415,44 @@ pfg_resume = *
 ;   missile's chain first (which starts with the movers), then the puff clock.
 ;--------------------------------------------------------------
 .proc pf_frameb
+ .if 1
+        jsr pj_frameb
+        lda current_level            ; a new level: forget the puff and learn
+        cmp pf_lvl                   ;   this level's PUFF id
+        beq ?same
+        sta pf_lvl
+        lda #0
+        sta pf_on
+        sta.l $010000+TH_HPL+TH_NOTHING     ; sentinel 253: health 0 so en_shoot skips
+        sta.l $010000+TH_HPL+$100+TH_NOTHING ;  it, state 0 so spr_dyn draws it live,
+        sta.l $010000+TH_STATE+TH_NOTHING   ;   kind 0 so wrot_idle does not send it
+        sta.l $010000+TH_KIND+TH_NOTHING    ;   down the monster path (proj.asm's note)
+        lda THINGS_BASE+24
+        sta pf_id
+        lda THINGS_BASE+25
+        sta pf_bid
+?same   lda pf_on
+        beq ?out
+        sec                          ; this drawn frame ate dt_vbl VBLANKs
+        lda pf_ttl
+        sbc dt_vbl
+        sta pf_ttl
+        bcc ?adv                     ; ran past, or out exactly -> next frame
+        beq ?adv
+        lda dt_vbl                    ; ...and one image per DRAWN frame once the
+        cmp #4                       ;   frames get long (the .else side's note)
+        bcc ?out
+?adv    inc pf_on
+        lda pf_on
+        cmp pf_lst
+        bcs ?gone                    ; the last frame ran out: S_NULL
+        inc pf_rec+6                 ; every chain here is packed CONSECUTIVE
+        lda pf_tic
+        sta pf_ttl
+?out    rts
+?gone   stz pf_on
+        rts
+ .else
         jsr pj_frameb
         lda current_level            ; a new level: forget the puff and learn
         cmp pf_lvl                   ;   this level's PUFF id
@@ -1801,6 +2497,7 @@ pfg_resume = *
 ?gone   lda #0
         sta pf_on
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1810,6 +2507,44 @@ pfg_resume = *
 pfh_resume = *
         org PFHK_BASE
 .proc spr_chased
+ .if 1
+        jsr spr_chasec
+        lda pf_on
+        beq ?out
+        lda zp_nid
+        cmp pf_ss
+        bne ?out
+        lda zp_nid+1
+        and #$7F
+        cmp pf_ss+1
+        bne ?out
+        lda pf_n                     ; every live pellet's puff, one at a time
+        sta pf_i                     ;   through the shared record
+?one    lda sp_n
+        cmp #VIS_MAX
+        bcs ?out
+        ldx pf_i
+        dex
+        txa
+        asl
+        tax
+        rep #$20                     ; ---- 16-bit A: the pellet's x, y into the
+        .LONGA ON                    ;   record and the record's address into
+        lda pf_px,x                  ;   sp_ptr, all words
+        sta pf_rec
+        lda pf_py,x
+        sta pf_rec+2
+        lda #pf_rec
+        sta sp_ptr
+        sep #$20
+        .LONGA OFF
+        lda #TH_NOTHING              ; vs_th: the puff's "not a thing"
+        sta sp_i
+        jsr spr_proj
+        dec pf_i
+        bne ?one
+?out    rts
+ .else
         jsr spr_chasec
         lda pf_on
         beq ?out
@@ -1848,6 +2583,7 @@ pfh_resume = *
         dec pf_i
         bne ?one
 ?out    rts
+ .endif
 .endp
     .if * > PFHK_END+1
         ert 'spr_chased outgrew PFHK_BASE..PFHK_END (memory_map.inc)'

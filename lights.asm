@@ -149,18 +149,46 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         ldx MAP_HNLIGHT
         bne ?any
         rts
+
 ?any    stx lt_n
         lda dt_vbl                    ; VBLANKs this frame (frame_dt), clamped
         cmp #LT_DTMAX
         bcc ?dt
         lda #LT_DTMAX
 ?dt     sta lt_dt
+ .if 1
+	asl			;precalc value for ?glow, outside the loop
+	sta lt_t
+	asl
+;	clc			;LT_DTMAX is 32, so carry always 0 here
+	adc lt_t
+	sta lt_t
+ .else
+	;nothing
+ .endif
         ldx #0                       ; X = BYTE offset of the record (pack_map
                                      ;     keeps the section inside one page)
 ?rec    lda.l LT_TAB+LT_SEC,x        ; zp_ptr = &MAP_SECTORS[sector]
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc #MAP_SECTORS
+	sta zp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         sta m_prod
+  .if 1
+	stz m_prod+1
+  .else
         lda #0
         sta m_prod+1
+  .endif
         asl m_prod                   ; sector*8 via shifts (tips #3)
         rol m_prod+1
         asl m_prod
@@ -174,12 +202,17 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         lda m_prod+1
         adc #>MAP_SECTORS
         sta zp_ptr+1
+ .endif
         lda.l LT_TAB+LT_KIND,x
         and #$0F
         cmp #LT_GLOW                 ; the glow ramps EVERY frame; the other
+ .if 1
+	jeq ?glow
+ .else
         bne ?timed                   ;   three are countdown-driven
         jmp ?glow
 ?timed
+ .endif
         lda.l LT_TAB+LT_CNT,x
         sec
         sbc lt_dt
@@ -187,6 +220,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         beq ?fire
         sta.l LT_TAB+LT_CNT,x
         jmp ?next
+
 ?fire   lda.l LT_TAB+LT_KIND,x
         and #$0F
         cmp #LT_STROBE               ; flash and fire flicker share this path --
@@ -194,15 +228,28 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 
         ; --- T_StrobeFlash: min <-> max, bright STROBEBRIGHT, dark FAST/SLOW --
         lda.l LT_TAB+LT_MIN,x
-        sta lt_t
+ .if 1
+	;nothing
+ .else
+	sta lt_t
+ .endif
         ldy #4
         cmp (zp_ptr),y               ; at minlight -> go bright
         bne ?dark
         lda.l LT_TAB+LT_MAX,x
         sta (zp_ptr),y
         lda #STROBE_VB
+ .if 1
+	bra ?setcnt
+ .else
         bne ?setcnt                  ; (always)
-?dark   lda lt_t
+ .endif
+?dark
+ .if 1
+	;nothing, accumulator still holds the value loaded from LT_TAB+LT__MIN,x
+ .else
+	lda lt_t
+ .endif
         sta (zp_ptr),y
         lda.l LT_TAB+LT_DARK,x
 ?setcnt sta.l LT_TAB+LT_CNT,x
@@ -217,26 +264,52 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         sta (zp_ptr),y
         lda RANDOM                   ; (P_Random()&mintime)+1, mintime = 7 tics
         and #7
+ .if 1
+;	sec		;C=1 after cmp above
+	adc #2-1
+	bra ?setcnt
+ .else
         clc
         adc #2
         bne ?setcnt                  ; (always: >= 2)
+ .endif
 ?fbright sta (zp_ptr),y              ; A = maxlight, from the compare above
+ .if 1
+        lda #FLASH_LONG
+	bit RANDOM
+	bvs ?setcnt
+	lda #2
+	bra ?setcnt
+ .else
         lda RANDOM
         and #$40                     ; see FLASH_LONG: the mask IS the count
         beq ?fshort
         lda #FLASH_LONG
+  .if 1
+	bra ?setcnt
+  .else
         bne ?setcnt
+  .endif
 ?fshort lda #2
+  .if 1
+	bra ?setcnt
+  .else
         bne ?setcnt
-
+  .endif
+ .endif
         ; --- T_Glow: a triangle wave between min and max --------------------
-?glow   lda lt_dt                    ; step = GLOW_STEP * dt
+?glow
+ .if 1
+	;nothing, moved outside the loop
+ .else
+	lda lt_dt                    ; step = GLOW_STEP * dt
         asl @
         sta lt_t
         asl @
         clc
         adc lt_t                     ; 2*dt + 4*dt = 6*dt (dt <= 32)
         sta lt_t
+ .endif
         ldy #4
         lda.l LT_TAB+LT_KIND,x
         and #LT_DIR
@@ -245,47 +318,90 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         lda (zp_ptr),y
         sbc lt_t
         bcc ?gmin                    ; wrapped past 0
+ .if 1
+	cmp.l LT_TAB+LT_MIN,x
+	bcc ?gmin
+	beq ?gmin
+	sta (zp_ptr),y
+	bra ?next
+ .else
         sta lt_u
         lda.l LT_TAB+LT_MIN,x
         cmp lt_u                     ; min < new -> keep falling
         bcc ?gput
+ .endif
 ?gmin   lda.l LT_TAB+LT_MIN,x        ; hit the floor: park and turn around
+ .if 1
+	sta (zp_ptr),y
+ .else
         sta lt_u
+ .endif
         lda.l LT_TAB+LT_KIND,x
         ora #LT_DIR
         sta.l LT_TAB+LT_KIND,x
+ .if 1
+	;nothing
+ .else
 ?gput   lda lt_u
         sta (zp_ptr),y
+ .endif
+ .if 1
+	bra ?next
+ .else
         jmp ?next
+ .endif
 ?gup    clc                          ; going UP
         lda (zp_ptr),y
         adc lt_t
         bcs ?gmax                    ; past 255
+ .if 1
+        cmp.l LT_TAB+LT_MAX,x
+	bcs ?gmax
+	sta (zp_ptr),y
+	bra ?next
+ .else
         sta lt_u
         lda.l LT_TAB+LT_MAX,x
         cmp lt_u                     ; max >= new -> keep rising
         bcs ?gput
+ .endif
 ?gmax   lda.l LT_TAB+LT_MAX,x
+ .if 1
+	sta (zp_ptr),y
+ .else
         sta lt_u
+ .endif
         lda.l LT_TAB+LT_KIND,x
         and #[$FF-LT_DIR]
         sta.l LT_TAB+LT_KIND,x
+ .if 1
+	;nothing (fall through to ?next)
+ .else
         jmp ?gput
-
+ .endif
 ?next   txa
         clc
         adc #LIGHT_SIZE
         tax
         dec lt_n
+ .if 1
+	jne ?rec
+	rts
+ .else
         beq ?ret
         jmp ?rec
 ?ret    rts
+ .endif
 .endp
                                      ;   segment never had to grow a byte.
 lt_n    dta 0                        ; records left in this pass
 lt_dt   dta 0                        ; VBLANKs this frame, clamped
 lt_t    dta 0                        ; per-record scratch (step / candidate)
+ .if 1
+	;nothing, unreferenced variable removed
+ .else
 lt_u    dta 0
+ .endif
     .if * > LIGHTS_END+1
         ert 'lights.asm outgrew LIGHTS_BASE..LIGHTS_END (memory_map.inc)'
     .endif
@@ -340,6 +456,19 @@ ltsf_resume = *
 ;--------------------------------------------------------------
 .proc wp_flight
         ldy wp_fstate
+ .if 1
+        ldx WS_LIGHT,y
+        stx EXTRALIGHT
+	rep #$20
+	.LONGA ON
+	lda #lt_seg
+	txy			;restore NZ
+	beq ?set
+	lda #lt_seg_flash
+?set	sta process_seg.ltsj+1
+	sep #$20
+	.LONGA OFF
+ .else
         lda WS_LIGHT,y
         sta EXTRALIGHT
         beq ?off
@@ -352,6 +481,7 @@ ltsf_resume = *
         sta process_seg.ltsj+1
         lda #>lt_seg
         sta process_seg.ltsj+2
+ .endif
         rts
 .endp
     .if * > LTSEGF_END+1

@@ -42,8 +42,12 @@
 ; cm_reset -- called once per seg, before its column loop.
 ;--------------------------------------------------------------
 .proc cm_reset
+ .if 1
+        stz cm_n
+ .else
         lda #0
         sta cm_n
+ .endif
         lda #$FF
         sta cm_x                     ; no source column yet
         rts
@@ -56,6 +60,13 @@
 .proc cm_test
         lda cm_x
         bmi ?no                      ; nothing drawn yet / run broken
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_top		;rs_top and rs_bot are adjacent in memory
+        cmp cm_top		;cm_top and cm_bot are adjacent in memory
+        bne ?no16
+ .else
         lda rs_top
         cmp cm_top
         bne ?no
@@ -71,6 +82,7 @@
         ;     it anyway.
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
+ .endif
         lda rs_ycacc+1
         cmp cm_sig
         bne ?no16
@@ -90,11 +102,18 @@
                                      ;   actually uses, and the accumulator bytes
                                      ;   above already pin dscr to within 1/16 row
         .LONGA OFF
+ .if 1
+        sep #$21                     ; ---- 8-bit again
+        lda rs_uacc+1
+        eor cm_sig+10
+        bne ?no
+ .else
         sep #$20                     ; ---- 8-bit again
         lda rs_uacc+1
         cmp cm_sig+10
         bne ?no
         sec
+ .endif
         rts
 ?no16
         .LONGA OFF
@@ -113,6 +132,12 @@
         stz cm_n                     ; not `lda #0`+`sta`: A is rewritten two
                                      ;   ops down, so the load was pure cost --
                                      ;   405 executions/frame (_an_waste)
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_top		;rs_top/rs_bot
+        sta cm_top		;cm_top/cm_bot
+ .else
         lda rs_top
         sta cm_top
         lda rs_bot
@@ -128,6 +153,7 @@
         ;     stray lines before it was written).
         rep #$20                     ; ---- 16-bit A
         .LONGA ON                    ;   ...and MADS with it
+ .endif
         lda rs_ycacc+1
         sta cm_sig
         lda rs_yfacc+1
@@ -208,12 +234,19 @@
         sta MEMW+MEMW_TW_OFF+BCB_SRC_STEPY
         lda #>SCREEN_WIDTH
         sta MEMW+MEMW_TW_OFF+BCB_SRC_STEPY+1
+ .if 1
+        stz MEMW+MEMW_TW_OFF+BCB_ZOOM
+        stz MEMW+MEMW_TW_OFF+BCB_WIDTH+1
+        lda cm_n                     ; WIDTH-1 = deferred columns - 1
+        dec
+ .else
         lda #0
         sta MEMW+MEMW_TW_OFF+BCB_ZOOM
         sta MEMW+MEMW_TW_OFF+BCB_WIDTH+1
         lda cm_n                     ; WIDTH-1 = deferred columns - 1
         sec
         sbc #1
+ .endif
         sta MEMW+MEMW_TW_OFF+BCB_WIDTH
         sec                          ; HEIGHT-1 = bot - top
         lda cm_bot
@@ -256,11 +289,18 @@
                                      ;   the TWALL BCB and it writes WIDTH on
                                      ;   every call. draw_vspan, which did rely on
                                      ;   the 1-px invariant, is compiled out.
+ .if 1
+    .if !TEX_RUNS
+        stz MEMW+MEMW_TW_OFF+BCB_WIDTH   ; draw_vspan never sets WIDTH itself
+    .endif
+        stz cm_n
+ .else
         lda #0
     .if !TEX_RUNS
         sta MEMW+MEMW_TW_OFF+BCB_WIDTH   ; draw_vspan never sets WIDTH itself
     .endif
         sta cm_n
+ .endif
         ldx cm_savex
 ?none   lda #$FF                     ; the run is over either way
         sta cm_x
@@ -323,7 +363,11 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
         cmp bg_bot
         bne ?emit
         inc bg_w
+ .if 1
+        bra ?ext
+ .else
         jmp ?ext
+ .endif
 ?emit   jsr bg_blit
         cpx vw_xend
         bcc ?scan
@@ -362,8 +406,12 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
         sbc bg_top
         sta MEMW+MEMW_VL_OFF+BCB_HEIGHT
         lda bg_w
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         sta MEMW+MEMW_VL_OFF+BCB_WIDTH
         lda #BG_COLOUR
         sta MEMW+MEMW_VL_OFF+BCB_XOR
@@ -389,8 +437,12 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
                                      ;   user of the VLINE BCB's slot 0, so the
                                      ;   invariant it restored has no reader left.
     .if !TEX_RUNS
+ .if 1
+        stz MEMW+MEMW_VL_OFF+BCB_WIDTH
+ .else
         lda #0                       ; back to a 1-pixel column for draw_vspan
         sta MEMW+MEMW_VL_OFF+BCB_WIDTH
+ .endif
     .endif
         ldx cm_savex
         rts
@@ -425,8 +477,13 @@ cbo_resume = *
         sta zback_hi
         lda #BG_COLOUR
         jsr clear_screen
+ .if 1
+                                     ; leave pointing to FRAME_A, skip clearing
+        stz zback_hi                 ; it (displayed) to avoid black flash
+ .else
         lda #$00                     ; leave pointing to FRAME_A, skip clearing
         sta zback_hi                 ; it (displayed) to avoid black flash
+ .endif
         rts
 .endp
     .if * > CLRBOTH_END+1
@@ -459,8 +516,12 @@ CU_SHIFT  equ 3                      ; log2(CU_SUB)
 ; cu_seg_init -- call once per seg, before its column loop.
 ;--------------------------------------------------------------
 .proc cu_seg_init
+ .if 1
+        stz cu_cnt                   ; 0 -> the first column is an anchor
+ .else
         lda #0
         sta cu_cnt                   ; 0 -> the first column is an anchor
+ .endif
         lda #$FF                     ; ... and no look-ahead u carries over: the
         sta cu_cx                    ;   t1/t2 tracks are this seg's now
         rts
@@ -489,8 +550,12 @@ CU_SHIFT  equ 3                      ; log2(CU_SUB)
         rts
 ?far    jmp cu_anchor
 ?exact  jsr calc_u                   ; exact u at THIS column (calc_u keeps X)
+ .if 1
+        stz cu_cnt                   ; leaving steep mode re-anchors immediately
+ .else
         lda #0
         sta cu_cnt                   ; leaving steep mode re-anchors immediately
+ .endif
         rts
 .endp
 
@@ -513,27 +578,90 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         stx cu_sx                    ; calc_u preserves X, but the t1/t2 shuffle
         cpx cu_cx                    ; did the LAST block's look-ahead land
         bne ?fresh                   ;   exactly here? then u is already known
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda cu_ah		;0/1
+	sta cu_u0
+	lda cu_ah+1		;1/2
+	sta cu_u0+1
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #2
 ?cp     lda cu_ah,y
         sta cu_u0,y
         dey
         bpl ?cp
+ .endif
+ .if 1
+        bra ?have0                   ; always (dey wrapped to $FF)
+ .else
         bmi ?have0                   ; always (dey wrapped to $FF)
+ .endif
 ?fresh  jsr calc_u                   ; exact u at THIS column
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_uacc                  ; keep it: the block starts here
+        sta cu_u0
+        lda rs_uacc+1
+        sta cu_u0+1
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_uacc                  ; keep it: the block starts here
         sta cu_u0
         lda rs_uacc+1
         sta cu_u0+1
         lda rs_uacc+2
         sta cu_u0+2
+ .endif
 ?have0  jsr twlas_room               ; F6: never walk past the seg's right edge
         ; --- t1/t2 las_n columns ahead (they advance by constants per column) --
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda rs_t1
+	sta cu_save
+	lda rs_t1+2
+	sta cu_save+2
+	lda rs_t1+4
+	sta cu_save+4
+
+	lda rs_utR
+	jsr ?calc_delta
+	clc
+	lda rs_t1
+	adc m_prod
+	sta rs_t1
+	sep #$20
+	.LONGA OFF
+	lda rs_t1+2
+	adc m_prod+2
+	sta rs_t1+2
+
+	rep #$20
+	.LONGA ON
+	lda rs_utL
+	jsr ?calc_delta
+	sec
+	lda rs_t2
+	sbc m_prod
+	sta rs_t2
+	sep #$20
+	.LONGA OFF
+	lda rs_t2+2
+	sbc m_prod+2
+	sta rs_t2+2
+ .else
         ldy #0
 ?sv     lda rs_t1,y                  ; save both tracks (3 bytes each)
         sta cu_save,y
         iny
         cpy #6
         bne ?sv
+
         ldy las_n
 ?adv    clc                          ; t1 += scR, t2 -= scL, las_n times
         lda rs_t1
@@ -557,22 +685,47 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         sta rs_t2+2
         dey
         bne ?adv
+ .endif
         jsr calc_u                   ; exact u at column x + las_n
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda rs_uacc
+	sta cu_ah
+	lda rs_uacc+1
+	sta cu_ah+1
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #2                       ; ... which is where the NEXT anchor starts,
 ?sa     lda rs_uacc,y                ;   so hand it the answer instead of making
         sta cu_ah,y                  ;   it divide for the same number again
         dey
         bpl ?sa
+ .endif
         txa                          ; X is still this anchor's column
         clc
         adc las_n
         sta cu_cx
+ .if 1
+	rep #$20		;put the real tracks back
+	.LONGA ON
+	lda cu_save		;0/1
+	sta rs_t1
+	lda cu_save+2		;2/3
+	sta rs_t1+2
+	lda cu_save+4
+	sta rs_t1+4
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
 ?rs     lda cu_save,y                ; put the real tracks back
         sta rs_t1,y
         iny
         cpy #6
         bne ?rs
+ .endif
         sec                          ; step = (u_ahead - u0) >> las_sh (signed)
         lda rs_uacc
         sbc cu_u0
@@ -583,8 +736,19 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         lda rs_uacc+2
         sbc cu_u0+2
         sta cu_sgn                   ; the difference's sign/high byte
+
         ldy las_sh
         beq ?shdone                  ; las_n = 1: the step is never consumed
+ .if 1
+	lda cu_sgn                   ; arithmetic shift right of the 24-bit delta
+?sh	cmp #$80
+        ror
+        ror cu_step+1
+        ror cu_step
+        dey
+        bne ?sh
+	sta cu_sgn
+ .else
 ?sh     lda cu_sgn                   ; arithmetic shift right of the 24-bit delta
         cmp #$80
         ror cu_sgn
@@ -592,23 +756,53 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         ror cu_step
         dey
         bne ?sh
+ .endif
 ?shdone lda cu_sgn                   ; keep only the sign for the 24-bit adds
         bpl ?pos
         lda #$FF
+ .if 1
+        bra ?ssv                     ; always taken
+ .else
         bne ?ssv                     ; always taken
+ .endif
 ?pos    lda #0
 ?ssv    sta cu_sgn
+ .if 1
+	rep #$20		;size-optimization here, 2 bytes gain, 2 cycles loss
+	.LONGA ON
+        lda cu_u0                    ; the block starts at the exact value
+        sta rs_uacc
+        lda cu_u0+1
+        sta rs_uacc+1
+	sep #$20
+	.LONGA OFF
+ .else
         lda cu_u0                    ; the block starts at the exact value
         sta rs_uacc
         lda cu_u0+1
         sta rs_uacc+1
         lda cu_u0+2
         sta rs_uacc+2
+ .endif
         ldy las_n
         dey
         sty cu_cnt
         ldx cu_sx
         rts
+ .if 1
+	.LONGA ON
+?calc_delta
+	stz m_prod+2
+	ldy las_sh
+	beq ?d_ok
+?d_sh	asl
+	rol m_prod+2
+	dey
+	bne ?d_sh
+?d_ok	sta m_prod
+	rts
+	.LONGA OFF
+ .endif
 .endp
 
 ;==============================================================
@@ -629,9 +823,14 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
 ; needs (calc_u_sub reads tws_exact), and the block counter that paces it.
 ;==============================================================
 .proc tw_seg_init
+ .if 1
+        stz tws_cnt
+        stz tws_exact                ; steep mode never leaks across segs
+ .else
         lda #0
         sta tws_cnt
         sta tws_exact                ; steep mode never leaks across segs
+ .endif 
         rts
 .endp
 
@@ -702,15 +901,27 @@ twa_resume = *
         lda #1                       ; room 0..1: anchor-only block (the step is
         sta las_n                    ;   dead -- las_n-1 = 0 columns follow it)
         lda #0
+ .if 1
+        bra ?ssh                     ; always
+ .else
         beq ?ssh                     ; always
+ .endif
 ?n2     lda #2
         sta las_n
         lda #1
+ .if 1
+        bra ?ssh
+ .else
         bne ?ssh
+ .endif
 ?n4     lda #4
         sta las_n
         lda #2
+ .if 1
+        bra ?ssh
+ .else
         bne ?ssh
+ .endif
 ?full   lda #CU_SUB
         sta las_n
         lda #CU_SHIFT
@@ -740,15 +951,27 @@ las_sh    dta 0                      ; ... and its shift (0/1/2/3)
         lda rs_yfacc+2
         sbc rs_ycacc+2
         sta m_prod+2
+ .if 1
+	jmi ?nosteep
+ .else
         bpl ?dok                     ; D < 0: sliver/degenerate -> interpolate
         jmp ?nosteep
-?dok    bne ?big                     ; D >= 65536 > 4096
+?dok
+ .endif
+	bne ?big                     ; D >= 65536 > 4096
         lda m_prod+1
         cmp #$10                     ; D >= 4096 <=> mid byte >= $10 (hi = 0)
         bcc ?nosteep
-?big    lda #0                       ; dS = yfS - ycS as SIGNED 17-bit: both are
+?big
+ .if 1
+	                             ; dS = yfS - ycS as SIGNED 17-bit: both are
+        stz m_res                    ;   s16, so the plain 16-bit difference can
+        stz m_res+1                  ;   wrap -- extend both before subtracting
+ .else
+	lda #0                       ; dS = yfS - ycS as SIGNED 17-bit: both are
         sta m_res                    ;   s16, so the plain 16-bit difference can
         sta m_res+1                  ;   wrap -- extend both before subtracting
+ .endif
         lda rs_yfS+1
         bpl ?ya
         dec m_res                    ; m_res   = sign of yfS
@@ -766,36 +989,67 @@ las_sh    dta 0                      ; ... and its shift (0/1/2/3)
         sbc m_res+1
         sta m_b                      ; (m_b, m_a+1, m_a) = dS, 24-bit
         bpl ?abs
+
         jsr m_neg                    ; |dS|
         lda #0
         sbc m_b
         sta m_b
+
 ?abs    ldy #6                       ; |dS| << 6 (<= 17 bits in -> fits 24)
+ .if 1
+	lda m_a
+?shl    asl
+        rol m_a+1
+        rol m_b
+        dey
+        bne ?shl
+	sta m_a
+ .else
 ?shl    asl m_a
         rol m_a+1
         rol m_b
         dey
         bne ?shl
+ .endif
         lda m_b                      ; steep <=> |dS|<<6 >= D
         cmp m_prod+2
         bcc ?nosteep
         bne ?steep
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_a
+	cmp m_prod
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_a+1
         cmp m_prod+1
         bcc ?nosteep
         bne ?steep
         lda m_a
         cmp m_prod
+ .endif
         bcc ?nosteep
 ?steep  lda #1
         sta tws_exact
+ .if 1
+        stz tws_cnt                  ; cnt 0 -> re-test steepness NEXT column too
+ .else
         lda #0
         sta tws_cnt                  ; cnt 0 -> re-test steepness NEXT column too
+ .endif
         ldx tws_sx
         rts
+
 ?nosteep
+ .if 1
+                                     ; F6: the block still ends where the u track's
+        stz tws_exact                ;   does, so the two stay in step -- but with
+ .else
         lda #0                       ; F6: the block still ends where the u track's
         sta tws_exact                ;   does, so the two stay in step -- but with
+ .endif
         jsr twlas_room               ;   nothing to interpolate that is all an
         ldy las_n                    ;   anchor has left to do
         dey

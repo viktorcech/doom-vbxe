@@ -227,13 +227,24 @@ snda_resume = *
 ;   last voice goes quiet -- no interrupt at all in a silent frame.
 ;--------------------------------------------------------------
 .proc snd_init
+ .if 1
+        sei
+        stz AUDCTL_R                 ; 64 kHz base, no channel pairing
+        stz POKMSK_R                 ; POKMSK only ever holds $00 or $01 from
+ .else
         sei
         lda #0
         sta AUDCTL_R                 ; 64 kHz base, no channel pairing
         sta POKMSK_R                 ; POKMSK only ever holds $00 or $01 from
+ .endif
                                      ;   here on: no OS key click, no BREAK, no
+ .if 1
+                                     ;   serial -- the OS boots it at $C0
+        stz VBXE_MEMAC_B             ; window off
+ .else
                                      ;   serial -- the OS boots it at $C0
         sta VBXE_MEMAC_B             ; window off
+ .endif
         jsr snd_stop                 ; every voice idle, every AUDCn at 0, timer
                                      ;   off (and IRQEN with it)
         lda #$FF
@@ -283,8 +294,11 @@ snda_resume = *
         tax                          ; the SFX id is spent -- X is the voice now
         jsr snd_fetch                ; prime the first byte. No blitter wait any
                                      ;   more: the samples are in Rapidus RAM.
-        lda #1
-        sta sv_act,x                 ; 1 = phase 0 (hi nibble) next
+        jsr snd_vgo                  ; STEREO: the trigger's pan -> this voice,
+                                     ;   then sv_act = 1 (the old two lines
+                                     ;   moved out with it: this segment ends
+                                     ;   FLUSH, and the jsr is 2 B SHORTER
+                                     ;   than what it replaced)
         ; fall through
     .endif
 .endp
@@ -410,12 +424,21 @@ snda_resume = *
                                      ;   discarded, which the old path had no way
                                      ;   to do and the OS is entitled to.
         jmp (snd_old_irq)
+ .if 1
+?mine
+        stz IRQEN_R                  ; ack Timer-1: drop bit 0, then restore it.
+        lda POKMSK_R                 ;   POKMSK is $01 here -- this IS its timer,
+        sta IRQEN_R                  ;   and snd_init/snd_disarm are the only
+                                     ;   writers (it holds $00 or $01, never
+                                     ;   more) -- so `and #$FE` of it is 0
+ .else
 ?mine
         lda POKMSK_R                 ; ack Timer-1: drop bit 0, then restore it
         and #$FE
         sta IRQEN_R
         lda POKMSK_R
         sta IRQEN_R                  ; (X is already saved, full width, at entry)
+ .endif
 
         ldx #SND_VTOP
 ?voice  lda sv_act,x                 ; 0 = idle, 1 = playing
@@ -424,17 +447,30 @@ snda_resume = *
         ;     position inside the sample BYTE in 1/128ths, so its top bit IS
         ;     the old phase flag -- 0 = high nibble, 1 = low -- and the two
         ;     no longer have to be kept in step with each other.
+ .if 1
+        lda sv_cur,x
+        bit sv_frc,x                 ; N = bit 7 (A untouched): the LOW nibble
+        bmi ?nib                     ;   is current
+        lsr                          ; (NOT `?out` -- that is the handler's own
+ .else
         lda sv_frc,x
         asl
         lda sv_cur,x
         bcs ?nib                     ; C = bit 7: the LOW nibble is current
         lsr                          ; (NOT `?out` -- that is the handler's own
+ .endif
         lsr                          ;  exit label further down, and reusing it
         lsr                          ;  silently pointed the empty-mixer sweep's
         lsr                          ;  `beq ?out` back INTO this loop)
 ?nib    and #$0F
         ora #$10
-        sta AUDC1_R,x                ; output ASAP -- less jitter
+        jsr snd_out                  ; output ASAP -- less jitter. STEREO
+                                     ;   (2026-08-31): the voice's side routes
+                                     ;   it to POKEY1/POKEY2/both -- same 3 B
+                                     ;   as the old `sta AUDC1_R,x`, this block
+                                     ;   is full. A mono machine mirrors $D21x
+                                     ;   onto $D20x (pokey.cpp mAddressMask),
+                                     ;   so every side is audible there
         ; --- ADVANCE by this play's pitch. DOOM walks the sample with a
         ;     fractional step (i_sound.c:599-603, channelstepremainder); this
         ;     is the same walk one byte wide. SND_PITCH_ONE (128) is half a
@@ -456,8 +492,10 @@ snda_resume = *
                                      ;   is owed exactly here (see ?any)
         lda #0                       ; done: this voice only. The timer belongs
         sta sv_act,x                 ;   to ALL of them, so only the sweep after
-        sta AUDC1_R,x                ;   the loop may switch it off
-        beq ?next                    ; (always)
+        jsr snd_out                  ;   the loop may switch it off. snd_out's
+        beq ?next                    ; (always: BIT with A=0 leaves Z=1, and
+                                     ;   both stores keep it -- the contract
+                                     ;   this beq was already leaning on)
 ?adv    inc sv_al,x                  ; advance this voice's read address
         bne ?fetch
         inc sv_ah,x                  ;   (a sound never crosses a bank end, so
@@ -481,11 +519,18 @@ snda_resume = *
         ;     live voices is exactly what it was on entry -- and the timer was
         ;     armed then, so it must stay armed. Same behaviour, ~36 cycles less
         ;     on almost every interrupt.
+ .if 1
+        lda sv_fin
+        beq ?out
+        stz sv_fin
+        ldx #SND_VTOP
+ .else
         lda sv_fin
         beq ?out
         lda #0
         sta sv_fin
         ldx #SND_VTOP
+ .endif
         lda #0
 ?any    ora sv_act,x
         dex
@@ -507,16 +552,22 @@ snda_resume = *
         ldx #SND_VTOP
         lda #0
 ?z      sta sv_act,x
-        sta AUDC1_R,x
-        dex
-        dex
+        jsr snd_out                  ; both chips where the side says so; a
+        dex                          ;   left-only voice never wrote POKEY2,
+        dex                          ;   so there is nothing to clear there
         bpl ?z
         ; fall through
 .endp
 .proc snd_disarm
+ .if 1
+        stz POKMSK_R                 ; NOT `POKMSK and #$FE`. A mid-game load
+        stz IRQEN_R                  ;   (exit_level / pl_reload -> snd_sio) hands
+                                     ;   POKEY to SIO, and snd_resume's snd_stop
+ .else
         lda #0                       ; NOT `POKMSK and #$FE`. A mid-game load
         sta POKMSK_R                 ;   (exit_level / pl_reload -> snd_sio) hands
         sta IRQEN_R                  ;   POKEY to SIO, and snd_resume's snd_stop
+ .endif
         rts                          ;   lands here to take it back -- so masking
                                      ;   one bit KEEPS whatever serial bits SIO
                                      ;   left, and foreign POKEY IRQs come back on
@@ -530,6 +581,359 @@ snda_resume = *
                                      ;   POKMSK only ever holds $00 or $01 (see
                                      ;   snd_init) -- so write the $00 outright.
 .endp
+
+;--------------------------------------------------------------
+; STEREO FOR THE MONSTERS (2026-09-09, "aby bolo pocut zvuky priser odtial ako
+;   stoja"). snd_setpan (doors.asm) already pans a DOOR: the quadrant its
+;   soundorg lies in against the facing, out of the signs in sda_sx/sda_sy. The
+;   same routine pans a THING once those hold player - thing. What was missing
+;   was WHO cried: en_snd_q and snd_pending are one byte each and carry the SFX
+;   id alone, so every monster voice started at the centre. The queue sites go
+;   through the helpers below now -- the same 3 bytes as the `sta` each of them
+;   replaced, so no packed block grew -- and park the thing beside the id;
+;   snd_dispatch pans the voice from it right before snd_play.
+;   The monster's voice (en_snd_q) is queued by en_hurt_snd (pain), en_die_snd,
+;   en_gibq (the gib scream) and ai_atk's grunt; the first three key on en_last
+;   -- en_shoot's victim, and en_bhit sets it to en_bi for a blast kill, infight
+;   to ai_vt -- the grunt on ai_t. A_Look's seesound goes into snd_pending
+;   (ai_start), the slot the player's own sounds share -- as do the A_Chase
+;   grunt, hoof/metal, the bite and the claw (all ai_t), the ball's launch (its
+;   imp) and the two bursts (the ball's and the missile's own position). Those
+;   pan at QUEUE time into snd_ppan, and snd_pid remembers which id was queued
+;   that way, so a gunshot stored over it stays at the centre.
+;--------------------------------------------------------------
+sndpth_resume = *
+        org SNDPTH_BASE
+.proc snd_qm_last                    ; A = SFX -> the monster voice; en_last cried
+        sta en_snd_q
+        lda en_last
+        sta en_snd_th
+        rts
+.endp
+.proc snd_qm_ai                      ; ... ai_t cried (the attack grunt)
+        sta en_snd_q
+        lda ai_t
+        sta en_snd_th
+        rts
+.endp
+.proc snd_qp_ai                      ; A = SFX -> the frame's SFX slot, from
+        sta snd_pending              ;   where thing ai_t stands (A_Look's
+        sta snd_pid                  ;   seesound, the A_Chase grunt, hoof/metal,
+        lda ai_t                     ;   the bite and the claw, the ball's
+        jsr snd_panth                ;   launch). Preserves X and Y.
+        bra snd_qp_take
+.endp
+.proc snd_qp_ball                    ; A = SFX at the imp's ball (bl_x/bl_y):
+        sta snd_pending              ;   the fireball's burst. Preserves X/Y.
+        sta snd_pid
+        rep #$20                     ; ---- 16-bit A: player - ball
+        .LONGA ON
+        sec
+        lda zp_px
+        sbc bl_x
+        sta sda_sx
+        sec
+        lda zp_py
+        sbc bl_y
+        sta sda_sy
+        sep #$20
+        .LONGA OFF
+        bra snd_qp_pan
+.endp
+.proc snd_qp_pj                      ; A = SFX at the player's missile (pj_x/pj_y
+        sta snd_pending              ;   of the slot pj_load swapped in): the
+        sta snd_pid                  ;   rocket/plasma burst. Preserves X/Y.
+        rep #$20                     ; ---- 16-bit A: player - missile
+        .LONGA ON
+        sec
+        lda zp_px
+        sbc pj_x
+        sta sda_sx
+        sec
+        lda zp_py
+        sbc pj_y
+        sta sda_sy
+        sep #$20
+        .LONGA OFF
+        ; fall through
+.endp
+.proc snd_qp_pan                     ; sda_sx/sda_sy -> the pending pan
+        phx
+        jsr snd_setpan               ; quadrant x facing -> snd_side (eats X)
+        plx
+        ; fall through
+.endp
+.proc snd_qp_take                    ; snd_side -> snd_ppan. The pan is computed
+        bcs ?far                     ;   at QUEUE time and parked here: snd_side
+        lda snd_side                 ;   itself goes to the NEXT snd_play, which
+        sta snd_ppan                 ;   would be the monster voice snd_dispatch
+        stz snd_side                 ;   starts first, not this sound
+        rts
+?far    lda #$FF                     ; past S_CLIPPING_DIST: s_sound.c plays
+        sta snd_pending              ;   nothing at all -- unqueue it
+        rts
+.endp
+;--------------------------------------------------------------
+; snd_panth -- A = the thing whose voice snd_play starts next ($FF = nobody:
+;   the centre stays). Preserves X (the SFX id snd_play wants). Native mode
+;   only (the frame loop): en_th2 and the word subtracts are 16-bit blocks.
+;--------------------------------------------------------------
+.proc snd_panth
+        cmp #$FF
+        beq ?none
+        phx
+        phy
+        jsr en_thing.en_th2          ; sp_ptr = its record: x @0, y @2
+        rep #$20                     ; ---- 16-bit A: player - thing, both axes,
+        .LONGA ON                    ;   whole words -- snd_setpan reads the
+        sec                          ;   SIGN out of sda_sx+1/sda_sy+1
+        lda zp_px
+        sbc (sp_ptr)
+        sta sda_sx
+        ldy #2
+        sec
+        lda zp_py
+        sbc (sp_ptr),y
+        sta sda_sy
+        sep #$20
+        .LONGA OFF
+        jsr snd_setpan               ; angle x facing -> snd_side; C=1 = too
+        ply                          ;   far to hear at all (S_CLIPPING_DIST)
+        plx
+        rts
+?none   clc                          ; nobody: audible, centre (the cmp left C=1)
+        rts
+.endp
+.proc snd_dispatch
+ .if 1
+        stz snd_menu                 ; the game is running: the pitch rolls again
+        ldx en_snd_q                 ; the monster's voice takes a voice of its
+        bmi ?sfx                     ;   own: the cry and the gunshot both play,
+        lda #$FF                     ;   and neither has to lose a channel to
+        sta en_snd_q                 ;   the other. DOOM mixes eight; this mixes
+        lda en_snd_th                ;   SND_NV, in POKEY itself.
+        jsr snd_panth                ; STEREO (2026-09-09): the cry comes from
+        lda #$FF                     ;   where the monster stands -- snd_side for
+        sta en_snd_th                ;   the voice snd_play is about to take
+        bcs ?sfx                     ;   (X survives snd_panth). C=1: too far
+        jsr snd_play                 ;   to hear (S_CLIPPING_DIST) -- dropped
+?sfx    ldx snd_pending
+        bmi ?done                    ; $FF = nothing queued
+        lda #$FF
+        sta snd_pending
+        cpx snd_pid                  ; still the id a monster (or a burst)
+        bne ?pl                      ;   queued? then the pan it was queued with
+        lda snd_ppan                 ;   goes to the voice; the player's own
+        sta snd_side                 ;   sounds never match it (posit/bgsit/
+?pl     jmp snd_play                 ;   claw/firxpl... are never his)
+ .else
+        ldx en_snd_q                 ; the monster's voice takes a voice of its
+        bmi ?sfx                     ;   own: the cry and the gunshot both play,
+        lda #$FF                     ;   and neither has to lose a channel to
+        sta en_snd_q                 ;   the other. DOOM mixes eight; this mixes
+        jsr snd_play                 ;   SND_NV, in POKEY itself.
+?sfx    ldx snd_pending
+        bmi ?done                    ; $FF = nothing queued
+        lda #$FF
+        sta snd_pending
+        jmp snd_play
+ .endif
+?done   rts                          ; (2026-08-08: this tail-called mus_play
+                                     ;  for one afternoon -- music.asm's only
+                                     ;  hook into the frame loop. The songs are
+                                     ;  out again: the RMT renderings did not
+                                     ;  sound right. Everything else about that
+                                     ;  path still works and is still tested --
+                                     ;  see music.asm's header for how to put
+                                     ;  the four hooks back.)
+.endp
+en_snd_th dta $FF                    ; who queued en_snd_q ($FF = nobody)
+snd_menu  dta 0                      ; nonzero = the MENU is up (mn_head bumps
+                                     ;   it, the frame loop's snd_dispatch
+                                     ;   zeroes it): its sounds play at the
+                                     ;   fixed pitch -- snd_pstep (2026-09-09,
+                                     ;   "rychlost zvukov sa meni aj v menu")
+snd_ppan  dta 0                      ; the pan snd_pending's sound was queued with
+snd_pid   dta $FF                    ;   ...and the id it was queued as, so a
+                                     ;   player sound stored over it (a different
+                                     ;   id) plays at the centre
+    .if * > SNDPTH_END+1
+        ert 'snd_panth + the stereo queue helpers outgrew SNDPTH_BASE..END (memory_map.inc)'
+    .endif
+        org sndpth_resume
+
+;--------------------------------------------------------------
+; snd_setpan -- sda_sx/sda_sy = player - source (16-bit, the WHOLE difference).
+;   C=1: inaudible -- max(|dx|,|dy|) >= 1200 (s_sound.c S_CLIPPING_DIST; the
+;   Chebyshev reach snd_q_door_at already used). C=0: snd_side = the ear for
+;   the NEXT snd_play. DOOM's S_AdjustSoundParams pans by
+;       sep = 128 - 96 * sin(angle(listener -> source) - listener->angle)
+;   i.e. a source ahead or behind sits at the centre and one beside the
+;   player at the far ear. POKEY has three states per voice (snd_out), so the
+;   relative direction is folded onto OCTANTS: 0 (ahead) and 4 (behind) are
+;   the centre, 1-3 (counter-clockwise from the facing = the LEFT) POKEY1,
+;   5-7 POKEY2. The octant of the source is sign-quadrant x dominance, with
+;   "diagonal" = neither axis twice the other, so the ahead/behind lanes are
+;   ~53 degrees wide -- where DOOM's sep sits within +-43 of the centre.
+;   ASSUMES BAM 0 = east, 64 = north (counter-clockwise, like oct_of), +y =
+;   north, POKEY1 = the left ear: if the ears come out MIRRORED, swap the
+;   $40/$80 in side_tab -- nothing else changes. Clobbers A/X/Y, sda_sx/sy
+;   (they come back as |dx|/|dy|) and sda_f. Cold: one call per queued
+;   sound. Native mode only (the frame loop).
+;--------------------------------------------------------------
+sndpan2_resume = *
+        org SNDPAN2_BASE
+.proc snd_setpan
+        ldy #0                       ; Y = sign quadrant of the SOURCE: bit1 =
+        lda sda_sx+1                 ;   west of the player, bit0 = south
+        bmi ?e                       ;   (player - source < 0 <=> source east)
+        iny
+        iny
+?e      lda sda_sy+1
+        bmi ?n
+        iny
+?n      sty sda_f
+        rep #$20                     ; ---- 16-bit A: |dx|, |dy|, the reach test
+        .LONGA ON                    ;   and the dominance, one word each
+        lda sda_sx
+        bpl ?ax
+        eor #$FFFF
+        inc @
+?ax     sta sda_sx                   ; |dx|
+        lda sda_sy
+        bpl ?ay
+        eor #$FFFF
+        inc @
+?ay     sta sda_sy                   ; |dy|
+        cmp sda_sx
+        bcs ?mx                      ; max(|dx|,|dy|) in A
+        lda sda_sx
+?mx     cmp #1200
+        bcs ?far                     ; C=1: nothing to hear
+        ldx #1                       ; dominance: 1 = diagonal...
+        lda sda_sy
+        asl @
+        cmp sda_sx
+        bcc ?xd                      ; 2|dy| < |dx| -> 0, along x
+        lda sda_sx
+        asl @
+        cmp sda_sy
+        bcs ?have                    ; 2|dx| >= |dy| -> diagonal
+        inx                          ; 2|dx| < |dy| -> 2, along y
+        bra ?have
+?xd     dex
+?have   sep #$20
+        .LONGA OFF
+        lda sda_f                    ; quadrant*3 + dominance -> oct_tab
+        asl @
+        adc sda_f                    ; (C=0: the asl of a value <= 3)
+        sta sda_f
+        txa
+        adc sda_f
+        tax
+        lda zp_ang                   ; the facing, rounded to its octant
+        clc
+        adc #16                      ;   (BAM 240..255 wraps to octant 0: right)
+        lsr @
+        lsr @
+        lsr @
+        lsr @
+        lsr @
+        sta sda_f
+        lda oct_tab,x                ; the source's octant, counter-clockwise
+        sec                          ;   from east...
+        sbc sda_f                    ;   ...relative to the facing
+        and #7
+        tax
+        lda side_tab,x
+        sta snd_side
+        clc                          ; C=0: audible, and the ear is set
+        rts
+        .LONGA ON
+?far    sep #$20                     ; (C=1 survives the sep)
+        .LONGA OFF
+        rts
+.endp
+oct_tab dta 0,1,2                    ; source E & N of the player: along x, diag, along y
+        dta 0,7,6                    ;   E & S
+        dta 4,3,2                    ;   W & N
+        dta 4,5,6                    ;   W & S
+side_tab dta $00,$40,$40,$40         ; relative octant 0 (ahead) centre, 1-3 LEFT
+        dta $00,$80,$80,$80          ;   4 (behind) centre, 5-7 RIGHT
+
+    .if * > SNDPAN2_END+1
+        ert 'snd_setpan outgrew SNDPAN2_BASE..END (memory_map.inc)'
+    .endif
+        org sndpan2_resume
+
+; snd_pstep's CODE (2026-09-09): out of SNDPITCH, which is full to the byte
+;   (the per-voice data and snd_pitch stay there for the IRQ), into its own
+;   hole -- SNDPAN2 could not take both.
+sndpst_resume = *
+        org SNDPST_BASE
+.proc snd_pstep
+        lda #0
+        sta sv_frc,y
+        cpx #SFX_ITEMUP
+        beq ?flat                    ; s_sound.c: this one is never varied
+ .if 1
+        lda snd_menu                 ; ...and neither is anything the MENU plays
+        bne ?flat                    ;   (2026-09-09): the switch and the pistol
+                                     ;   there sounded different on every press
+ .endif
+        stx snd_sid                  ; X is the SFX id and the caller still
+                                     ;   wants it; the table read needs X too
+        lda RANDOM                   ; POKEY's LFSR -- the port's M_Random
+        cpx #SFX_SAWFUL
+        beq ?saw
+        cpx #SFX_SAWUP
+        bcc ?wide
+        cpx #SFX_SAWHIT+1
+        bcs ?wide
+?saw    and #$0F                     ; 8 - (M_Random()&15)
+        clc
+        adc #8
+        bne ?tab                     ; (always: 8..23)
+?wide   and #$1F                     ; 16 - (M_Random()&31)
+?tab    tax
+        lda snd_pitch,x
+        ldx snd_sid
+        sta sv_stp,y
+        rts
+?flat   lda #SND_PITCH_ONE
+        sta sv_stp,y
+        rts
+.endp
+    .if * > SNDPST_END+1
+        ert 'snd_pstep outgrew SNDPST_BASE..END (memory_map.inc)'
+    .endif
+        org sndpst_resume
+
+;--------------------------------------------------------------
+; snd_out -- A = the AUDC byte, X = slot*2 (both preserved): route it by the
+;   voice's side. POKEY2 is the STEREO mod at $D210 (address bit4); on a mono
+;   machine the decoder masks bit4 away (alt-src pokey.cpp mAddressMask $0F),
+;   so a "right" write lands on POKEY1's same channel and mono hears every
+;   voice -- stereo needs no detection and no option. CONTRACT: A=0 exits
+;   with Z=1 (BIT of 0 sets Z, the stores keep it) -- snd_irq's silence path
+;   does `beq (always)` after this. Parked below $B000: the IRQ calls it
+;   with the ROM in OR out, so an under-ROM home would fetch OS bytes.
+;--------------------------------------------------------------
+sout_resume = *
+        org SNDOUT_BASE
+.proc snd_out
+        bit sv_side,x                ; N = right-only, V = left-only, 0 = centre
+        bmi ?r
+        sta AUDC1_R,x                ; POKEY1: the left half or the centre
+        bvs ?done                    ; left only -> POKEY2 stays silent
+?r      sta AUDC1_R+$10,x            ; POKEY2: the right half or the centre
+?done   rts
+.endp
+sv_side dta 0,0,0,0,0,0,0            ; per voice slot: 0 centre / $40 L / $80 R
+    .if * > SNDOUT_END+1
+        ert 'snd_out outgrew SNDOUT_BASE..END (memory_map.inc)'
+    .endif
+        org sout_resume
 
 ;==============================================================
 ; Trigger wrappers -- called BY the game code. The id-only ones sit in their own
@@ -555,32 +959,8 @@ sndq2_resume = *
 ;   The two queue bytes are the ceiling on NEW sounds per frame, not on
 ;   simultaneous ones: SND_NV voices keep playing across frames underneath.
 ;--------------------------------------------------------------
-snddisp_resume = *
-        org SNDDISP_BASE
-.proc snd_dispatch
-        ldx en_snd_q                 ; the monster's voice takes a voice of its
-        bmi ?sfx                     ;   own: the cry and the gunshot both play,
-        lda #$FF                     ;   and neither has to lose a channel to
-        sta en_snd_q                 ;   the other. DOOM mixes eight; this mixes
-        jsr snd_play                 ;   SND_NV, in POKEY itself.
-?sfx    ldx snd_pending
-        bmi ?done                    ; $FF = nothing queued
-        lda #$FF
-        sta snd_pending
-        jmp snd_play
-?done   rts                          ; (2026-08-08: this tail-called mus_play
-                                     ;  for one afternoon -- music.asm's only
-                                     ;  hook into the frame loop. The songs are
-                                     ;  out again: the RMT renderings did not
-                                     ;  sound right. Everything else about that
-                                     ;  path still works and is still tested --
-                                     ;  see music.asm's header for how to put
-                                     ;  the four hooks back.)
-.endp
-    .if * > SNDDISP_END+1
-        ert 'snd_dispatch outgrew SNDDISP_BASE..END (memory_map.inc)'
-    .endif
-        org snddisp_resume                                ;   cry from surviving into a later frame.
+; (snd_dispatch lived at SNDDISP_BASE until 2026-09-09; it rides in the
+;  SNDPTH block with the stereo helpers now -- see there. $BD4A-$BD64 is free.)                                ;   cry from surviving into a later frame.
 
 ; snd_q_dorcls lived here and had NO caller left. Every "a door starts closing"
 ; site went positional when snd_q_door_at landed: update_doors' dwell end
@@ -678,16 +1058,27 @@ sndsio_resume = *
         org SNDSIO_BASE
 
 .proc snd_sio                        ; BEFORE the loaders: DAC silent, Timer-1
+ .if 1
+        jsr snd_stop                 ;   disarmed, and the OS load noise off
+        stz SOUNDR_R                 ;   for mid-game loads (boot keeps it: the
+                                     ;   OS cold-starts SOUNDR back to 3)
+ .else
         jsr snd_stop                 ;   disarmed, and the OS load noise off
         lda #0                       ;   for mid-game loads (boot keeps it: the
         sta SOUNDR_R                 ;   OS cold-starts SOUNDR back to 3)
+ .endif
         jmp load_level_c
 .endp
 
 .proc snd_pokey                      ; AFTER them: put POKEY back the way
+ .if 1
+        sei                          ;   snd_init left it
+        stz AUDCTL_R                 ; 64 kHz base, no serial pairing
+ .else
         sei                          ;   snd_init left it
         lda #0
         sta AUDCTL_R                 ; 64 kHz base, no serial pairing
+ .endif
         jsr snd_stop                 ; every voice idle + Timer-1 off (SIO left
                                      ;   AUDCTL and channels 3/4 its way)
         lda #15
@@ -778,34 +1169,10 @@ snd_sid       dta 0                  ; the SFX id, parked across the table read
 ;   The chainsaw's narrower roll reads the SAME table 8 rows in -- (rnd&15)+8
 ;   is delta +8..-7, which is exactly `8 - (M_Random()&15)`.
 ;--------------------------------------------------------------
-.proc snd_pstep
-        lda #0
-        sta sv_frc,y
-        cpx #SFX_ITEMUP
-        beq ?flat                    ; s_sound.c: this one is never varied
-        stx snd_sid                  ; X is the SFX id and the caller still
-                                     ;   wants it; the table read needs X too
-        lda RANDOM                   ; POKEY's LFSR -- the port's M_Random
-        cpx #SFX_SAWFUL
-        beq ?saw
-        cpx #SFX_SAWUP
-        bcc ?wide
-        cpx #SFX_SAWHIT+1
-        bcs ?wide
-?saw    and #$0F                     ; 8 - (M_Random()&15)
-        clc
-        adc #8
-        bne ?tab                     ; (always: 8..23)
-?wide   and #$1F                     ; 16 - (M_Random()&31)
-?tab    tax
-        lda snd_pitch,x
-        ldx snd_sid
-        sta sv_stp,y
-        rts
-?flat   lda #SND_PITCH_ONE
-        sta sv_stp,y
-        rts
-.endp
+; (snd_pstep is CODE and moved to the SNDPAN2 block on 2026-09-09 -- this
+;  block was full to the byte: SNDPITCH_END said $3AFF and $3AF1 is the next
+;  segment, check_xex caught the 5 B the menu test added. The per-voice data
+;  and the table stay here, below $8000, for the IRQ.)
     .if SFX_SAWHIT != SFX_SAWUP+2
         ert 'SAWUP/SAWIDL/SAWHIT are no longer three consecutive SFX ids -- the range test in snd_pstep assumes it (wadsound.py SFX order)'
     .endif
@@ -936,8 +1303,9 @@ snd_stage
         pla
         clc
         adc en_t
-?one    sta en_snd_q                 ; NOT snd_pending: wp_fire_a queues the
-?no     rts                          ;   grunt AFTER the gunshot (enemy.asm)
+?one    jsr snd_qm_last              ; NOT snd_pending: wp_fire_a queues the
+?no     rts                          ;   grunt AFTER the gunshot (enemy.asm).
+                                     ;   STEREO: en_last is the one that died
 .endp
 
 ; snd_q_nowayx -- try_use's miss, one hop out of the use-ray run (which ends

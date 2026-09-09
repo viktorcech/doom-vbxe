@@ -118,8 +118,13 @@ pldq_resume = *
         lda pl_keyw                  ; a key held from BEFORE the death must not
         bne ?out                     ;   count: wait for a release first, then the
         jmp pl_restart               ;   next press restarts. (DOOM takes BT_USE
+ .if 1
+?rel    stz pl_keyw                  ;   the instant P_DeathThink runs; any key is
+                                     ;   easier to hit by accident, hence the edge)
+ .else
 ?rel    lda #0                       ;   the instant P_DeathThink runs; any key is
         sta pl_keyw                  ;   easier to hit by accident, hence the edge)
+ .endif
 ?out    rts
 .endp
 
@@ -129,6 +134,14 @@ pldq_resume = *
 ;   BOOT-time PSTATE init again: 100 health, 50 bullets, fist + pistol, no keys.
 ;--------------------------------------------------------------
 .proc pl_restart
+ .if 1
+        stz pl_dead
+        stz ps_started
+        lda #EYE_H
+        sta pl_vh
+        jsr rom_in                   ; SIOV is in the OS ROM
+        jmp exit_level.pl_reload     ; reload current_level, then init_level
+ .else
         lda #0
         sta pl_dead
         sta ps_started
@@ -136,6 +149,7 @@ pldq_resume = *
         sta pl_vh
         jsr rom_in                   ; SIOV is in the OS ROM
         jmp exit_level.pl_reload     ; reload current_level, then init_level
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -156,6 +170,35 @@ pldq_resume = *
 ;   already trusts.
 ;--------------------------------------------------------------
 .proc sh_leaf
+ .if 1
+        jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
+        lda zp_segcnt
+        ora zp_segcnt+1
+        beq ?none
+?loop   ldy #SEG_BACK                ; the CHEAP half first: can this seg stop a
+        lda [zp_sptr],y              ;   bullet at all? (the .else side has the
+        cmp #NO_SECTOR               ;   cycle counts)
+        beq ?geo
+        jsr sg_shut
+        beq ?next
+?geo    jsr use_seg_hit
+        bne ?block
+?next   rep #$21                     ; ---- 16-bit A, C=0: next seg, count down
+        .LONGA ON
+        lda zp_sptr
+        adc #SEG_SIZE
+        sta zp_sptr
+        lda zp_segcnt
+        dec @
+        sta zp_segcnt
+        sep #$20                     ; (sep keeps Z: the count's)
+        .LONGA OFF
+        bne ?loop
+?none   clc
+        rts
+?block  sec
+        rts
+ .else
         jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
 ?loop   lda zp_segcnt
         ora zp_segcnt+1
@@ -187,6 +230,7 @@ pldq_resume = *
         rts
 ?none   clc
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -194,6 +238,18 @@ pldq_resume = *
 ;   ray out of USE_PT_A/USE_PT_B, so shortening THAT is the binary search.
 ;--------------------------------------------------------------
 .proc sh_setb
+ .if 1
+        jsr sh_dist
+        rep #$20
+        .LONGA ON
+        lda zp_px
+        sta USE_PT_B
+        lda zp_py
+        sta USE_PT_B+2
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         jsr sh_dist
         lda zp_px
         sta USE_PT_B
@@ -204,6 +260,7 @@ pldq_resume = *
         lda zp_py+1
         sta USE_PT_B+3
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -212,6 +269,23 @@ pldq_resume = *
 ;   ROCKW block, which sh_trace fills to within a dozen bytes.
 ;--------------------------------------------------------------
 .proc sh_end
+ .if 1
+        php                          ; C has to survive the restore below
+        rep #$20                     ; ---- 16-bit A: four word moves
+        .LONGA ON
+        lda zp_px                    ; the impact point...
+        sta en_bx
+        lda zp_py
+        sta en_by
+        lda USE_PT_A                 ; ...and the player goes back where he was
+        sta zp_px
+        lda USE_PT_A+2
+        sta zp_py
+        sep #$20
+        .LONGA OFF
+        plp
+        rts
+ .else
         php                          ; C has to survive the restore below
         lda zp_px                    ; the impact point...
         sta en_bx
@@ -231,6 +305,7 @@ pldq_resume = *
         sta zp_py+1
         plp
         rts
+ .endif
 .endp
 
 sh_sa   dta 0                        ; sh_refine: which side of the blocking seg

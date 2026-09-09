@@ -34,11 +34,44 @@ b1_resume = *
 b1_code_start = *
 
 .proc b1_oct_of
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda swr_vx                   ; swr_ax = |vx|
+        bpl ?axp
+
+	eor #$ffff
+	inc
+
+?axp	sta swr_ax
+
+	lda swr_vy
+	bpl ?ayp
+
+	eor #$ffff
+	inc
+
+?ayp	sta swr_ay
+	ora swr_ax
+	and #$ff00
+	beq ?small
+
+?nrm	lsr swr_ax
+	lsr swr_ay
+	lda swr_ax
+	ora swr_ay
+	and #$ff00
+	bne ?nrm
+
+?small	sep #$20
+	.LONGA OFF
+ .else
         lda swr_vx                   ; swr_ax = |vx|
         sta swr_ax
         lda swr_vx+1
         sta swr_ax+1
         bpl ?axp
+
         sec
         lda #0
         sbc swr_ax
@@ -46,11 +79,13 @@ b1_code_start = *
         lda #0
         sbc swr_ax+1
         sta swr_ax+1
+
 ?axp    lda swr_vy                   ; swr_ay = |vy|
         sta swr_ay
         lda swr_vy+1
         sta swr_ay+1
         bpl ?ayp
+
         sec
         lda #0
         sbc swr_ay
@@ -58,9 +93,11 @@ b1_code_start = *
         lda #0
         sbc swr_ay+1
         sta swr_ay+1
+
 ?ayp    lda swr_ax+1                 ; shift both right until both fit a byte:
         ora swr_ay+1                 ;   the octant only needs the RATIO
         beq ?small
+
 ?nrm    lsr swr_ax+1
         ror swr_ax
         lsr swr_ay+1
@@ -68,12 +105,18 @@ b1_code_start = *
         lda swr_ax+1
         ora swr_ay+1
         bne ?nrm
-?small  lda swr_ay                   ; swr_t = ay*2 + ay/4 (16-bit: max 573)
+?small
+ .endif
+	lda swr_ay                   ; swr_t = ay*2 + ay/4 (16-bit: max 573)
         lsr
         lsr
         sta swr_t
+ .if 1
+        stz swr_t+1
+ .else
         lda #0
         sta swr_t+1
+ .endif
         lda swr_ay
         asl
         rol swr_t+1
@@ -92,8 +135,12 @@ b1_code_start = *
         lsr
         lsr
         sta swr_t
+ .if 1
+        stz swr_t+1
+ .else
         lda #0
         sta swr_t+1
+ .endif
         lda swr_ax
         asl
         rol swr_t+1
@@ -108,6 +155,7 @@ b1_code_start = *
         cmp swr_t
         beq ?diag
         bcs ?yaxis
+
 ?diag   ldx #1                       ; a diagonal: pick the quadrant by signs
         lda swr_vx+1
         bpl ?dxp
@@ -115,16 +163,28 @@ b1_code_start = *
         lda swr_vy+1
         bpl ?oct
         ldx #5
+ .if 1
+	bra ?oct
+ .else
         bne ?oct                     ; always
+ .endif
 ?dxp    lda swr_vy+1
         bpl ?oct
         ldx #7
+ .if 1
+	bra ?oct
+ .else
         bne ?oct                     ; always
+ .endif
 ?xaxis  ldx #0                       ; within ~24 deg of the x axis
         lda swr_vx+1
         bpl ?oct
         ldx #4
+ .if 1
+	bra ?oct
+ .else
         bne ?oct                     ; always
+ .endif
 ?yaxis  ldx #2                       ; within ~24 deg of the y axis
         lda swr_vy+1
         bpl ?oct
@@ -134,6 +194,57 @@ b1_code_start = *
 .endp
 
 .proc b1_aif_alen
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda ai_alx
+	bpl ?xok
+	eor #$ffff
+	inc
+?xok	sta ai_aax
+
+	lda ai_aly
+	bpl ?yok
+	eor #$ffff
+	inc
+?yok	sta ai_aay
+
+	lda ai_aax
+	cmp ai_aay
+	bcs ?xbig
+
+	ldy #$00
+	sty ai_axmaj
+
+	lda ai_aax
+	lsr
+	sta ai_ahalf
+
+        clc
+        lda ai_aay
+        adc ai_ahalf
+        sta ai_alen
+
+	sep #$20
+	.LONGA OFF
+	rtl
+
+?xbig	.LONGA ON
+	ldy #$01
+	sty ai_axmaj
+
+	lda ai_aay
+	lsr
+	sta ai_ahalf
+
+        clc
+        lda ai_aax
+        adc ai_ahalf
+        sta ai_alen
+	sep #$20
+	.LONGA OFF
+	rtl
+ .else
         lda ai_alx
         sta ai_aax
         lda ai_alx+1
@@ -158,6 +269,7 @@ b1_code_start = *
         lda #0
         sbc ai_aay+1
         sta ai_aay+1
+
 ?yok    lda #1
         sta ai_axmaj
         sec
@@ -166,6 +278,7 @@ b1_code_start = *
         lda ai_aax+1
         sbc ai_aay+1
         bcs ?xbig
+
         lda #0
         sta ai_axmaj
         lda ai_aax+1                 ; y is bigger: len = |dy| + |dx|/2
@@ -182,6 +295,7 @@ b1_code_start = *
         adc ai_ahalf+1
         sta ai_alen+1
         rtl
+
 ?xbig   lda ai_aay+1                 ; x is bigger: len = |dx| + |dy|/2
         lsr
         sta ai_ahalf+1
@@ -196,6 +310,7 @@ b1_code_start = *
         adc ai_ahalf+1
         sta ai_alen+1
         rtl
+ .endif
 .endp
 
 ; fps_tab is GONE (2026-08-31): the readout's mean was floor(sum/4), which
@@ -241,6 +356,20 @@ b1_code2_start = *
 ;--------------------------------------------------------------
 .proc b1_build_frac
         ; --- |sin| + sign -> TSIN ---
+ .if 1
+	ldy #$00
+	rep #$20
+	.LONGA ON
+	lda zp_sin
+	bpl ?sp
+	iny
+	eor #$ffff
+	inc
+?sp	sta m_a
+	sty sin_sgn
+	sep #$20
+	.LONGA OFF
+ .else
         lda #0
         sta sin_sgn
         lda zp_sin
@@ -248,6 +377,7 @@ b1_code2_start = *
         lda zp_sin+1
         sta m_a+1
         bpl ?sp
+
         inc sin_sgn
         sec                        ; m_a = -m_a (m_neg, inlined)
         lda #0
@@ -256,7 +386,10 @@ b1_code2_start = *
         lda #0
         sbc m_a+1
         sta m_a+1
-?sp     jsr ?step4                 ; m_ma = |sin| << 2 -- the >>14 FMUL used to
+?sp
+ .endif
+	jsr ?step4                 ; m_ma = |sin| << 2 -- the >>14 FMUL used to
+
         lda #0                     ;   pay eight shifts for, folded into the
         sta m_prod                 ;   table once per rotation frame instead
         sta m_prod+1
@@ -284,6 +417,20 @@ b1_code2_start = *
         inx
         bne ?sl
         ; --- |cos| + sign -> TCOS ---
+ .if 1
+	ldy #$00
+	rep #$20
+	.LONGA ON
+	lda zp_cos
+	bpl ?cp
+	iny
+	eor #$ffff
+	inc
+?cp	sta m_a
+	sty cos_sgn
+	sep #$20
+	.LONGA OFF
+ .else
         lda #0
         sta cos_sgn
         lda zp_cos
@@ -299,7 +446,9 @@ b1_code2_start = *
         lda #0
         sbc m_a+1
         sta m_a+1
-?cp     jsr ?step4
+?cp
+ .endif
+	jsr ?step4
         lda #0
         sta m_prod
         sta m_prod+1

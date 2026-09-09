@@ -15,6 +15,16 @@
         org SPRDRAW_BASE             ; 2026-08-11 win2 evacuation T2: the drawing
                                      ;   flow splits in three (memory_map.inc)
 .proc spr_draw
+ .if 1
+	ldy sp_n
+	beq ?ret
+?loop	dey			;save 10 bytes and 7 clock cycles per iteration
+	phy			;eliminate static sp_oi (used only here)
+	ldx vs_ord,y
+	jsr spr_one
+	ply
+	bne ?loop
+ .else
         lda sp_n
         beq ?ret
         sta sp_oi
@@ -25,6 +35,7 @@
         jsr spr_one
         lda sp_oi
         bne ?loop
+ .endif
 ?ret    rts
 .endp
 
@@ -36,13 +47,23 @@
     .endif
         org SPRONE_BASE
 .proc spr_one
+ .if 1
+        ldy vs_x1l,x		;eliminate one memory load lda sp_x1, replace with tya
+	sty sp_x1		;save 3 bytes
+ .else
         lda vs_x1l,x
-        sta sp_x1
+	sta sp_x1
+ .endif
         lda vs_x1h,x
         sta sp_x1+1
         bmi ?xa0                     ; xa = max(x1, 0), rebuilt instead of stored:
-        lda sp_x1                    ; x1 >= 256 was rejected at collection, so the
-        jmp ?xas                     ; hi byte is either 0 (xa = the low byte, and
+ .if 1
+        tya	                    ; x1 >= 256 was rejected at collection, so the
+        bra ?xas                     ; hi byte is either 0 (xa = the low byte, and
+ .else
+	lda sp_x1
+	jmp ?xas
+ .endif
 ?xa0    lda #0                       ; it is < SCREEN_WIDTH) or negative (xa = 0)
 ?xas    sta sp_xa
         sta sp_col
@@ -97,11 +118,18 @@
                                      ;   pixels from SDRAM on the first look
                                      ;   -- and to its coltab (SPRCROP block)
         ldy #3
+ .if 1
+	rep #$20
+        lda (sp_tab),y
+        sta sp_w			;sp_h is sp_w+1, so OK to do word-store
+	sep #$20			;save 3 cycles and 2 bytes
+ .else
         lda (sp_tab),y
         sta sp_w
         iny
         lda (sp_tab),y
         sta sp_h
+ .endif
         lda #$FF                     ; no source column in the scratch yet: this
         sta sp_lastx                 ;   sprite may reuse the previous one's
                                      ;   column number at a different scale
@@ -112,8 +140,18 @@
         sta m_b
         lda sp_scale+1
         sta m_b+1
+
         jsr umul16
-        lda m_prod+1
+ .if 1
+	rep #$21		;switch to 16-bit A, clear C
+        .LONGA ON
+        lda m_prod+1		; bottom row = ytop + rows - 1
+;       sta sp_rows		;eliminate use of sp_rows here
+        adc sp_ytop
+	dec
+        sta sp_ybot		; 5 inss, 11 bytes, 19 cycles, continue with 16-bit accumulator
+ .else
+        lda m_prod+1		; 18 inss, 46 bytes, 58 cycles
         sta sp_rows
         lda m_prod+2
         sta sp_rows+1
@@ -131,6 +169,7 @@
         lda sp_ybot+1
         sbc #0
         sta sp_ybot+1
+ .endif
         ; --- vertical rate ---------------------------------------------------
         ; The scratch holds S = 8 samples per texel and SRC_STEPY alone carries
         ; the rate: spy = round(2048 / scale) samples per screen row.
@@ -154,13 +193,31 @@
         ; The cost is the ladder itself -- the rate now quantises to whole
         ; samples, up to ~13% short vertically at the very largest scales.
         ;   spy8 = round(8 * 2048 / scale), so spy = (spy8 + 4) >> 3
-        stz m_prod
+ .if 1
+	lda sp_scale		;16-bit accumulator and M, continued
+	and #$fffe
+	sta m_den
+;	sta sp_scale		;this gets updated in the original, but see comment below in the 8-bit section
+        lsr
+;       clc
+        adc #$4000
+        sta m_prod		;max. $7FFF+$4000=$BFFF, C always 0
+	sep #$20		;switch to 8-bit A
+        .LONGA OFF
+	stz m_prod+2		;no Carry into m_prod+2
+ .else
+        stz m_prod		;23 inss, 53 bytes, 81 cycles
         lda #$40                     ; 16384 = 8*2048
         sta m_prod+1
+ .if 1
+	stz m_prod+2
+ .else
         lda #0
         sta m_prod+2
+ .endif
         lsr sp_scale+1               ; + scale/2 (round to nearest)
-        ror sp_scale
+        ror sp_scale	;<-- here sp_scale loses its lowest bit and it is not restored by asl/rol below, not sure if intentionally
+
         clc
         lda m_prod
         adc sp_scale
@@ -171,13 +228,17 @@
         lda m_prod+2
         adc #0
         sta m_prod+2
+
         asl sp_scale                 ; put scale back
         rol sp_scale+1
+
         lda sp_scale
         sta m_den
         lda sp_scale+1
         sta m_den+1
+ .endif
         jsr udiv24                   ; m_quot = spy8 = samples per row at z = 8
+
         ; 16-BIT A (2026-08-31, drac030 round two): this built (m_quot+4)>>3 by STORING the sum and
         ; then shifting it IN MEMORY, six lsr/ror abs pairs at 12 cycles each,
         ; with an lda/ora/bne re-load to test what the accumulator had just
@@ -185,10 +246,10 @@
         ; and `inc @` fixes a latent bug on the way: the old minified-path
         ; clamp tested sp_spy's LOW byte alone, so a value of exactly $0100
         ; would have been "zero" and bumped to $0101.
-        rep #$20
+        rep #$21		;clear C to avoid CLC below
         .LONGA ON
         lda m_quot
-        clc
+;	clc			;eliminate
         adc #4                       ; rounding
         lsr @
         lsr @
@@ -196,6 +257,30 @@
         bne ?spyok
         inc @                        ; never zero (65816 inc a)
 ?spyok  sta sp_spy
+ .if 1
+        ldx #8                       ; the scratch always holds 8 samples/texel
+	ldy sp_scale+1		;X/Y are still 8-bit, take advantage of that
+	bne ?fine		;to avoid rep/sep
+	ldy sp_scale
+	cpy #65
+	bcs ?fine
+	ldx #1
+        lda sp_spy
+        lsr
+        lsr
+        lsr
+        bne ?nz2
+        inc                        ; never zero -- ALL 16 bits tested now
+?nz2    sta sp_spy
+?fine	stx sp_s
+        stz m_prod
+        ldy #1
+        sty m_prod+2
+        lda sp_hs
+        sta m_den
+        .LONGA OFF
+        sep #$20
+ .else
         .LONGA OFF
         sep #$20
         ; z IS 1 -- always, since 2026-08-04 (the note above). Everything that
@@ -222,16 +307,38 @@
 ?nz2    sta sp_spy
         .LONGA OFF
         sep #$20
-?fine   lda #0                       ; texels per screen column = 65536 / hs (Q8)
+?fine
+ .if 1
+        stz m_prod                   ; texels per screen column = 65536 / hs (Q8)
+        stz m_prod+1
+ .else
+	lda #0                       ; texels per screen column = 65536 / hs (Q8)
         sta m_prod
         sta m_prod+1
+ .endif
         lda #1
         sta m_prod+2
         lda sp_hs
         sta m_den
         lda sp_hs+1
         sta m_den+1
+ .endif
         jsr udiv24
+
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda m_quot
+        sta sp_ustep
+        sta m_b
+	lda sp_xa
+	and #$00ff
+	sec
+	sbc sp_x1
+	sta m_a
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_quot
         sta sp_ustep
         lda m_quot+1
@@ -247,13 +354,29 @@
         sta m_b
         lda sp_ustep+1
         sta m_b+1
+ .endif
         jsr umul16
+
         lda m_prod
         sta sp_uacc
         lda m_prod+1
         sta sp_uacc+1
-        ; ===================== per-column loop =====================
-?col    ldy #0                       ; this column's clip window
+
+; ===================== per-column loop =====================
+
+ .if 1
+	rep #$21		;clear C to avoid CLC below
+	.LONGA ON
+?col	lda (sp_clip)                ; this column's clip window
+        sta sp_t		; write sp_t and sp_b, they're consecutive in memory
+        lda sp_cstep                 ; 0 when one window covers the whole sprite
+	and #$00ff
+        adc sp_clip
+        sta sp_clip
+	sep #$20
+	.LONGA OFF
+ .else
+?col	ldy #0                       ; this column's clip window
         lda (sp_clip),y
         sta sp_t
         iny
@@ -265,19 +388,34 @@
         sta sp_clip
         bcc ?c1
         inc sp_clip+1
-?c1     jsr spr_ncut                 ; a wall the walk reached LATER can still be
+?c1
+ .endif
+
+; the spr_ncut seems called only once
+; inline this to save jsr/rts overhead
+;
+	jsr spr_ncut                 ; a wall the walk reached LATER can still be
                                      ;   NEARER than this sprite: spr_ncut forces
                                      ;   sp_t to 255 for those columns
         lda sp_t
         cmp #255
+ .if 1
+	jeq ?cnext
+ .else
         bne ?cvis                    ; covered by nearer geometry
         jmp ?cnext
-?cvis   lda sp_uacc+1                ; source column = u >> 8
+?cvis
+ .endif
+	lda sp_uacc+1                ; source column = u >> 8
         cmp sp_w
         bcc ?tok
         lda sp_w
+ .if 1
+	dec
+ .else
         sec
         sbc #1                       ; clamp (right-edge rounding)
+ .endif
 ?tok    bit sp_dfix                  ; the mirrored profile (DOOM rot 7): the
         bpl ?nofl                    ;   SAME stored image, columns read from
         eor #$FF                     ;   the other end -- A = w-1-A (255-A+w
@@ -298,17 +436,38 @@
 ?useT   lda sp_t
 ?y0set  sta sp_y0
         lda sp_ybot+1                ; y1 = min(ybot, window bottom)
+ .if 1
+	jmi ?cnext		;auto-shortened to bmi when in range
+ .else
         bpl ?ynn
 ?cjmp   jmp ?cnext                   ; (trampoline: ?cnext is out of branch range)
-?ynn    bne ?useB
+?ynn
+ .endif
+	bne ?useB
         lda sp_ybot
         cmp sp_b
         bcc ?y1set
 ?useB   lda sp_b
 ?y1set  sta sp_y1
         cmp sp_y0
+ .if 1
+        jcc ?cnext                   ; auto-shortened to bcc when in range
+ .else
         bcc ?cjmp                    ; nothing visible in this column
-        sec                          ; d = rows into the sprite at the clip top
+ .endif
+
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda sp_y0
+	and #$00ff
+;	sec
+	sbc sp_ytop
+	sta sp_q
+	sep #$20
+	.LONGA OFF
+ .else
+;       sec                          ; d = rows into the sprite at the clip top
         lda sp_y0
         sbc sp_ytop
         sta m_a
@@ -319,27 +478,51 @@
         sta sp_q                     ;   so there is no ceil() and no shift -- the
         lda m_a+1                    ;   rounding term spr_zm[0] was 0 and the
         sta sp_q+1                   ;   shift count sp_zsh was 0 on every path
+ .endif
         jsr spr_cspan                ; T4 (SPRCROP block): raise q to the crop
         bcc ?cnext                   ;   top, y0 with it, cap the reads at the
+
         jsr spr_blit                 ;   stored end, sp_soff into the CROPPED
                                      ;   data -- C=0 = nothing left to draw.
                                      ;   MF_SHADOW costs nothing here: spr_shadow
                                      ;   left the BCB in its see-through mode
-?cnext  clc                          ; u += ustep, next column
+?cnext
+ .if 1
+	rep #$21		;switch to 16-bit acc. and clear C
+	.LONGA ON
+        lda sp_uacc
+        adc sp_ustep
+        sta sp_uacc
+
+        ldy sp_col
+        cpy sp_xb
+        beq ?done
+	iny			;if we are here, C=0
+        sty sp_col
+	jmp ?col
+
+?done	sep #$20
+	.LONGA OFF
+	rts
+ .else
+	clc                          ; u += ustep, next column
         lda sp_uacc
         adc sp_ustep
         sta sp_uacc
         lda sp_uacc+1
         adc sp_ustep+1
         sta sp_uacc+1
+
         lda sp_col
         cmp sp_xb
         beq ?done
         inc sp_col
         jmp ?col
+
 ?done   rts                          ; (invalidated the expander's tw_lastsrc
                                      ;  cache here until 2026-08-14 -- that
                                      ;  cache is gone, see textures.asm)
+ .endif
 .endp
 
 ; (the spr_zm / spr_zoom pair lived here: z = 1,2,4,8 indexed by log2(z). z has
@@ -363,7 +546,8 @@ sb_resume = *
         lda sp_s
         cmp #2
         bcs ?ex
-        clc                          ; SRC = sprite column + offset
+; if we get here, C=0
+;       clc                          ; SRC = sprite column + offset
         lda rs_tsrc
         adc sp_soff
         sta MEMW+MEMW_SP_OFF+BCB_SRC_ADDR
@@ -371,8 +555,12 @@ sb_resume = *
         adc sp_soff+1
         sta MEMW+MEMW_SP_OFF+BCB_SRC_ADDR+1
         lda rs_tsrc+2
+ .if 1
+	bra ?srchi
+ .else
         adc #0
         jmp ?srchi
+ .endif
 ?ex     clc                          ; SRC = expanded scratch + offset. tw_base,
         lda tw_base                  ;   not a constant: the expander alternates
         adc sp_soff                  ;   between TWO scratches now (chains)
@@ -381,8 +569,13 @@ sb_resume = *
         adc sp_soff+1
         sta MEMW+MEMW_SP_OFF+BCB_SRC_ADDR+1
         lda tw_base+2
+ .if 1
+?srchi	adc #0
+	sta MEMW+MEMW_SP_OFF+BCB_SRC_ADDR+2
+ .else
         adc #0
 ?srchi  sta MEMW+MEMW_SP_OFF+BCB_SRC_ADDR+2
+ .endif
         lda sp_spy
         sta MEMW+MEMW_SP_OFF+BCB_SRC_STEPY
         lda sp_spy+1
@@ -415,6 +608,9 @@ sb_resume = *
         sta VBXE_BL_START
         rts
 .endp
+    .if * > SPRBLIT_END+1
+        ert 'spr_blit outgrew SPRBLIT_BASE..END (memory_map.inc)'
+    .endif
 
 ;==============================================================
 ; MF_SHADOW -- the spectre, drawn SEE-THROUGH (2026-08-16).
@@ -512,6 +708,19 @@ FUZZ_OR equ $07                      ; how far down its ramp a pixel behind the
         pha                          ; spr_dyn wants the index back in A
         cmp #254
         bcs ?pseudo
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc th_things
+	sta sp_tab
+	sep #$20
+	.LONGA OFF
+ .else
         sta m_prod                   ; record = th_things + i*8
         stz m_prod+1
         asl m_prod
@@ -527,6 +736,7 @@ FUZZ_OR equ $07                      ; how far down its ramp a pixel behind the
         lda m_prod+1                 ;   spr_one's paths load it right after
         adc th_things+1
         sta sp_tab+1
+ .endif
         ldy #7
         lda (sp_tab),y
         and #F_FUZZ
@@ -539,16 +749,25 @@ FUZZ_OR equ $07                      ; how far down its ramp a pixel behind the
         lsr
         lsr
         lsr
+ .if 1
+	dec
+ .else
         sec
         sbc #1                       ; $00 = ignore the source (spectre),
+ .endif
         sta MEMW+MEMW_SP_OFF+BCB_AND ;   $FF = the art straight through
         eor #$FF
         and #FUZZ_OR                 ; the constant the OR writes, or 0
         sta MEMW+MEMW_SP_OFF+BCB_XOR
         pla
         jmp spr_dyn
+
 ?pseudo lda #0                       ; no record to read: never a spectre
+ .if 1
+	bra ?mode
+ .else
         beq ?mode                    ;   (always taken)
+ .endif
 .endp
 
     .if * > SPRFUZZ_END+1
@@ -584,6 +803,19 @@ scrop_resume = *
 ;   Preserves X. (Lived inline in spr_one; the $B000 segment is full.)
 ;--------------------------------------------------------------
 .proc spr_sidtab
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc th_sprtab
+	sta sp_tab
+	sep #$20
+	.LONGA OFF
+ .else
         sta m_prod
         stz m_prod+1
         asl m_prod
@@ -599,6 +831,7 @@ scrop_resume = *
         lda m_prod+1
         adc th_sprtab+1
         sta sp_tab+1
+ .endif
         rts
 .endp
 
@@ -613,6 +846,69 @@ scrop_resume = *
 ;--------------------------------------------------------------
 .proc spr_fget
         sta sp_fid
+ .if 0                               ; E=1 BLOCK (2026-09-09): arena_prefetch calls this at LEVEL LOAD
+                                     ;   with the ROM IN = emulation mode, where rep/sep cannot touch M/X:
+                                     ;   `and #$00ff` decodes as and #$FF + BRK at $7917 (tools/tests/
+                                     ;   _probe_draco_emu.py, _bench_frame.py). The .else side is what runs
+                                     ;   until the prefetch moves behind rom_out.
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc #FTAB_EXT
+	sta zp_ptr
+        ldy #SPRCOL_BANK             ; the FTAB rode out of bank $01 with the
+        sty zp_ptr+2                 ;   coltab it indexes
+
+;       ldy #0                       ; u24 file offset
+        lda [zp_ptr]		;fetch word
+        sta sf_off		;write word
+        ldy #2
+        lda [zp_ptr],y		;fetch word
+	tax
+        stx sf_off+2		;write byte
+        iny
+        lda [zp_ptr],y               ; u16 stored size, fetch word
+        sta sf_size		;write word
+        ldy #5
+        lda [zp_ptr],y               ; u16 coltab addr, fetch word
+        sta sp_ctab		;write word
+
+        ldy #MAP_EXT_BANK            ; FARENA is runtime-only and stayed behind
+        sty zp_ptr+2
+
+        lda sp_fid                   ; FARENA entry = FARENA_EXT + id*3
+	and #$00ff
+	sta zp_ptr
+	asl
+	adc zp_ptr
+
+    .if [FARENA_EXT & $FF] > 0 || [[FARENA_EXT >> 8] & $03] > 0
+        ert 'FARENA_EXT moved: the ora below is no longer the 16-bit add'
+    .endif
+                                     ; + FARENA_EXT. It is PAGE-ALIGNED and id*3
+        ora #FARENA_EXT              ;   is at most 762 ($02FA), so its high byte
+        sta zp_ptr                   ;   only ever sets bits 0-1 -- which
+                                     ;   >FARENA_EXT ($FC) has clear. So the
+                                     ;   whole low half of the add is a no-op and
+                                     ;   the high half cannot carry: ora IS the
+                                     ;   add here, and the .if above fails the
+                                     ;   BUILD if that ever stops being true.
+                                     ;   (2026-08-25: this and the stz above pay
+                                     ;   for the 24-bit ceiling test below --
+                                     ;   $7900-$7C9D was full to the byte.)
+;       lda zp_ptr                   ; the flush path clobbers zp_ptr -- keep
+        sta sf_ent                   ;   the entry address for the store back
+        lda [zp_ptr]		;word fetch
+        sta sp_addr		;word write
+        ldy #2
+
+	sep #$20
+	.LONGA OFF
+ .else
         sta zp_ptr                   ; FTAB entry = FTAB_EXT + id*8
         stz zp_ptr+1
         asl zp_ptr
@@ -630,6 +926,7 @@ scrop_resume = *
         sta zp_ptr+1
         lda #SPRCOL_BANK             ; the FTAB rode out of bank $01 with the
         sta zp_ptr+2                 ;   coltab it indexes
+
         ldy #0                       ; u24 file offset
         lda [zp_ptr],y
         sta sf_off
@@ -651,6 +948,7 @@ scrop_resume = *
         iny
         lda [zp_ptr],y
         sta sp_ctab+1
+
         lda #MAP_EXT_BANK            ; FARENA is runtime-only and stayed behind
         sta zp_ptr+2
         lda sp_fid                   ; FARENA entry = FARENA_EXT + id*3
@@ -664,11 +962,11 @@ scrop_resume = *
         sta zp_ptr
         lda zp_ptr+1
         adc #0
-        sta zp_ptr+1
+;       sta zp_ptr+1
     .if [FARENA_EXT & $FF] > 0 || [[FARENA_EXT >> 8] & $03] > 0
         ert 'FARENA_EXT moved: the ora below is no longer the 16-bit add'
     .endif
-        lda zp_ptr+1                 ; + FARENA_EXT. It is PAGE-ALIGNED and id*3
+;       lda zp_ptr+1                 ; + FARENA_EXT. It is PAGE-ALIGNED and id*3
         ora #>FARENA_EXT             ;   is at most 762 ($02FA), so its high byte
         sta zp_ptr+1                 ;   only ever sets bits 0-1 -- which
                                      ;   >FARENA_EXT ($FC) has clear. So the
@@ -690,12 +988,14 @@ scrop_resume = *
         lda [zp_ptr],y
         sta sp_addr+1
         iny
+ .endif
         lda [zp_ptr],y
         sta sp_addr+2
         ora sp_addr+1
         ora sp_addr
         beq ?miss
         rts                          ; resident: nothing to copy
+
 ?miss   clc                          ; room? bump + size vs the sprite arena's
         lda ar_bump                  ;   ceiling, ARENA_SPR_TOP ($03D000)
         adc sf_size
@@ -726,29 +1026,79 @@ scrop_resume = *
                                      ;   which now pins eff ceiling == the equ.
                                      ;   (end-EXCLUSIVE: end == the top fits)
 ?flush  jsr blitter_wait             ; a queued blit may read the old frames
+
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda #FARENA_EXT
+	sta zp_ptr
+
+	ldx #3
+	ldy #0
+	tya			;16-bits from Y to A
+?clb    sta [zp_ptr],y		;14 cycles * 384 iterations = 5376+33 cycles
+        iny
+	iny
+        bne ?clb
+        inc zp_ptr+1		;zp_ptr=$01FC00, never exceeds $01FF00
+        dex
+        bne ?clb
+
+        lda ar_base                  ; bump back to the arena floor
+        sta ar_bump
+        ldy ar_base+2
+        sty ar_bump+2
+
+	sep #$20
+	.LONGA OFF
+ .else
         lda #<FARENA_EXT             ; FARENA[*] = 0 (3 pages cover 765 B)
         sta zp_ptr
         lda #>FARENA_EXT
         sta zp_ptr+1
+
         ldx #3
         lda #0
         tay
-?clb    sta [zp_ptr],y
+?clb    sta [zp_ptr],y		;11 cycles * 768 iterations = 8448+30 cycles
         iny
         bne ?clb
         inc zp_ptr+1
         dex
         bne ?clb
+
         lda ar_base                  ; bump back to the arena floor
         sta ar_bump
         lda ar_base+1
         sta ar_bump+1
         lda ar_base+2
         sta ar_bump+2
-?fits   lda sf_ent
+ .endif
+
+?fits
+ .if 0                               ; E=1 BLOCK (2026-09-09): arena_prefetch calls this at LEVEL LOAD
+                                     ;   with the ROM IN = emulation mode, where rep/sep cannot touch M/X:
+                                     ;   `and #$00ff` decodes as and #$FF + BRK at $7917 (tools/tests/
+                                     ;   _probe_draco_emu.py, _bench_frame.py). The .else side is what runs
+                                     ;   until the prefetch moves behind rom_out.
+	rep #$20		;branches here with 8-bit accumulator, so we have to do this switch, sadly
+	.LONGA ON
+	lda sf_ent
+        sta zp_ptr
+
+        lda ar_bump
+        sta sp_addr
+        sta [zp_ptr]
+	ldy #2
+
+	sep #$20
+	.LONGA OFF
+ .else
+	lda sf_ent
         sta zp_ptr
         lda sf_ent+1
         sta zp_ptr+1
+
         ldy #0                       ; FARENA[id] = sp_addr = the bump
         lda ar_bump
         sta sp_addr
@@ -758,9 +1108,33 @@ scrop_resume = *
         sta sp_addr+1
         sta [zp_ptr],y
         iny
+ .endif
         lda ar_bump+2
         sta sp_addr+2
         sta [zp_ptr],y
+ .if 0                               ; E=1 BLOCK (2026-09-09): arena_prefetch calls this at LEVEL LOAD
+                                     ;   with the ROM IN = emulation mode, where rep/sep cannot touch M/X:
+                                     ;   `and #$00ff` decodes as and #$FF + BRK at $7917 (tools/tests/
+                                     ;   _probe_draco_emu.py, _bench_frame.py). The .else side is what runs
+                                     ;   until the prefetch moves behind rom_out.
+	rep #$21
+	.LONGA ON
+        lda ar_bump
+        adc sf_size
+        sta ar_bump
+	bcc ?skip1
+	ldy ar_bump+2
+	iny
+	sty ar_bump+2
+	clc
+?skip1
+;       clc                          ; sf_src = spr_sdram + sf_off (tex_fget
+        lda spr_sdram                ;   hands spr_fcopy its own source)
+        adc sf_off
+        sta sf_src
+	sep #$20
+	.LONGA OFF
+ .else
         clc                          ; bump += size (the copy reads sp_addr)
         lda ar_bump
         adc sf_size
@@ -771,6 +1145,7 @@ scrop_resume = *
         lda ar_bump+2
         adc #0
         sta ar_bump+2
+
         clc                          ; sf_src = spr_sdram + sf_off (tex_fget
         lda spr_sdram                ;   hands spr_fcopy its own source)
         adc sf_off
@@ -778,6 +1153,7 @@ scrop_resume = *
         lda spr_sdram+1
         adc sf_off+1
         sta sf_src+1
+ .endif
         lda spr_sdram+2
         adc sf_off+2
         sta sf_src+2
@@ -794,12 +1170,14 @@ scrop_resume = *
         ora sf_size+1
         bne ?go
         rts
+
 ?go     lda sf_src                   ; zp_vptr walks the SDRAM source
         sta zp_vptr
         lda sf_src+1
         sta zp_vptr+1
         lda sf_src+2
         sta zp_vptr+2
+
         lda sp_addr+1                ; window bank = dst >> 12
         lsr
         lsr
@@ -821,9 +1199,22 @@ scrop_resume = *
         and #$0F
         ora #>MEMW
         sta zp_ptr+1
+ .if 0                               ; E=1 BLOCK (2026-09-09): arena_prefetch calls this at LEVEL LOAD
+                                     ;   with the ROM IN = emulation mode, where rep/sep cannot touch M/X:
+                                     ;   `and #$00ff` decodes as and #$FF + BRK at $7917 (tools/tests/
+                                     ;   _probe_draco_emu.py, _bench_frame.py). The .else side is what runs
+                                     ;   until the prefetch moves behind rom_out.
+	phx
+	rep #$10
+	.LONGI ON
+	ldx sf_size
+?byte   lda [zp_vptr]
+        sta (zp_ptr)
+ .else
         ldy #0
 ?byte   lda [zp_vptr],y
         sta (zp_ptr),y
+ .endif
         inc zp_vptr                  ; 24-bit source walk (SDRAM is linear)
         bne ?s1
         inc zp_vptr+1
@@ -841,13 +1232,28 @@ scrop_resume = *
         sta VBXE_BANK_SEL
         lda #>MEMW
         sta zp_ptr+1
-?d1     lda sf_size                  ; countdown
+?d1
+ .if 0                               ; E=1 BLOCK (2026-09-09): arena_prefetch calls this at LEVEL LOAD
+                                     ;   with the ROM IN = emulation mode, where rep/sep cannot touch M/X:
+                                     ;   `and #$00ff` decodes as and #$FF + BRK at $7917 (tools/tests/
+                                     ;   _probe_draco_emu.py, _bench_frame.py). The .else side is what runs
+                                     ;   until the prefetch moves behind rom_out.
+	dex
+        bne ?byte
+	sep #$10
+	.LONGI OFF
+	plx
+ .else
+	lda sf_size                  ; 16-bit countdown, 8-bit A: borrow first
         bne ?d2
         dec sf_size+1
-?d2     dec sf_size
-        lda sf_size
-        ora sf_size+1
-        bne ?byte
+?d2     dec sf_size                  ; dec sets Z -> no reload; lo != 0 loops,
+        bne ?byte                    ;   lo == 0 loops while hi != 0 (== the
+        lda sf_size+1                ;   old lda/ora). The .else side had lost
+        bne ?byte                    ;   its loop branch: 1 byte/frame copied
+                                     ;   (spr.png, 2026-09-09)
+ .endif
+
         lda #BANK_EN|BANK_OVERHEAD   ; park the window back on the BCB bank
         sta VBXE_BANK_SEL
         lda #MAP_EXT_BANK            ; ...and the borrowed pointer's bank byte
@@ -864,12 +1270,34 @@ scrop_resume = *
 ;   returns C=0 for it before anything reads pixels.
 ;--------------------------------------------------------------
 .proc spr_ctcol
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+;	clc
+	adc sp_ctab
+	sta zp_ptr
+        ldy #SPRCOL_BANK
+        sty zp_ptr+2
+
+        lda [zp_ptr]                 ; off, frame-relative
+        clc
+        adc sp_addr
+        sta rs_tsrc
+	ldy #1
+
+	sep #$20
+	.LONGA OFF
+ .else
         sta m_a                      ; entry = sp_ctab + x*4
         stz m_a+1
         asl m_a
         rol m_a+1
         asl m_a
         rol m_a+1
+
         clc
         lda m_a
         adc sp_ctab
@@ -879,6 +1307,7 @@ scrop_resume = *
         sta zp_ptr+1
         lda #SPRCOL_BANK
         sta zp_ptr+2
+
         ldy #0
         lda [zp_ptr],y               ; off, frame-relative
         clc
@@ -888,6 +1317,7 @@ scrop_resume = *
         lda [zp_ptr],y
         adc sp_addr+1
         sta rs_tsrc+1
+ .endif
         lda #0
         adc sp_addr+2
         sta rs_tsrc+2
@@ -896,8 +1326,9 @@ scrop_resume = *
         sta sp_ctop
         iny
         lda [zp_ptr],y               ; len
-        sta sp_clen
+        sta sp_clen		;clen address is ctop+1
         beq ?out                     ; fully transparent: nothing to expand
+
         lda sp_s
         cmp #2
         bcc ?out                     ; S = 1: blit straight from the sprite
@@ -930,7 +1361,27 @@ scrop_resume = *
         bne ?some
 ?none   clc                          ; empty column
         rts
-?some   lda sp_ctop                  ; sp_csmp = ctop * S, in samples
+?some
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda sp_ctop
+	and #$00ff
+	ldy sp_s
+	cpy #2
+	bcc ?cs
+	asl
+	asl
+	asl
+?cs	sta sp_csmp
+	lda sp_q
+	sta m_a
+	lda sp_spy
+	sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
+	lda sp_ctop                  ; sp_csmp = ctop * S, in samples
         sta sp_csmp
         stz sp_csmp+1
         lda sp_s
@@ -950,19 +1401,43 @@ scrop_resume = *
         sta m_b
         lda sp_spy+1
         sta m_b+1
+ .endif
         jsr umul16
+
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda m_prod                   ; already at/below the crop top?
+        cmp sp_csmp
+        bcs ?soff                    ; yes: no division, just subtract
+
+;	clc
+        lda sp_csmp                  ;   (csamp + spy - 1) by spy
+        adc sp_spy
+	dec
+        sta m_prod
+	ldy #0
+	sty m_prod+2
+        lda sp_spy
+        sta m_den
+
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_prod                   ; already at/below the crop top?
         cmp sp_csmp
         lda m_prod+1
         sbc sp_csmp+1
         bcs ?soff                    ; yes: no division, just subtract
-        clc                          ; qmin = ceil(csamp/spy): divide
+
+;       clc                          ; qmin = ceil(csamp/spy): divide
         lda sp_csmp                  ;   (csamp + spy - 1) by spy
         adc sp_spy
         sta m_prod
         lda sp_csmp+1
         adc sp_spy+1
         sta m_prod+1
+
         sec
         lda m_prod
         sbc #1
@@ -971,11 +1446,24 @@ scrop_resume = *
         sbc #0
         sta m_prod+1
         stz m_prod+2
+
         lda sp_spy
         sta m_den
         lda sp_spy+1
         sta m_den+1
+ .endif
         jsr udiv24
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda m_quot                   ; q = qmin, and redo q*spy with it
+        sta sp_q
+        sta m_a
+        lda sp_spy
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_quot                   ; q = qmin, and redo q*spy with it
         sta sp_q
         sta m_a
@@ -986,18 +1474,37 @@ scrop_resume = *
         sta m_b
         lda sp_spy+1
         sta m_b+1
+ .endif
         jsr umul16
-?soff   sec                          ; sp_soff = q*spy - csamp (>= 0 now)
+?soff
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec                          ; sp_soff = q*spy - csamp (>= 0 now)
+        lda m_prod
+        sbc sp_csmp
+        sta sp_soff
+
+        lda sp_q                     ; y0 = ytop + q, 16-BIT: the crop raise
+        sta m_a                      ;   can push it past the screen, where the
+                                     ;   old byte add silently wrapped. (q*z, and
+                                     ;   z is 1 -- the shift loop went with it)
+	sep #$20
+	.LONGA OFF
+ .else
+	sec                          ; sp_soff = q*spy - csamp (>= 0 now)
         lda m_prod
         sbc sp_csmp
         sta sp_soff
         lda m_prod+1
         sbc sp_csmp+1
         sta sp_soff+1
+
         lda sp_q                     ; y0 = ytop + q, 16-BIT: the crop raise
         sta m_a                      ;   can push it past the screen, where the
         lda sp_q+1                   ;   old byte add silently wrapped. (q*z, and
         sta m_a+1                    ;   z is 1 -- the shift loop went with it)
+ .endif
         clc
         lda m_a
         adc sp_ytop
@@ -1007,15 +1514,21 @@ scrop_resume = *
         beq ?rd
 ?off    clc                          ; y0 >= 256: below every window
         rts
+
 ?rd     sec                          ; reads = y1 - y0 + 1 (z is 1: no >> zsh)
         lda sp_y1
         sbc sp_y0
         bcc ?off
-        inc @
+ .if 1
+	; nothing
+ .else
+        inc
         sec
         sbc #1
         bcc ?off                     ; less than one source read fits
+ .endif
         sta sp_bh                    ; the clip half of the count
+
         lda sp_clen                  ; smax+1 = min(len, S=8 ? 128 : len) * S
         ldx sp_s
         cpx #2
@@ -1024,25 +1537,62 @@ scrop_resume = *
         bcc ?sm8
         lda #128                     ; the scratch holds 128 texels
 ?sm8    sta m_a
+ .if 1
+	stz m_a+1
+ .else
         lda #0
         sta m_a+1
+ .endif
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_a
+	asl
+	asl
+	asl
+	sta m_a
+	sep #$20
+	.LONGA OFF
+ .else
         asl m_a
         rol m_a+1
         asl m_a
         rol m_a+1
         asl m_a
         rol m_a+1
+ .endif
+ .if 1
+	bra ?room
+ .else
         jmp ?room
+ .endif
 ?sm1    sta m_a
+ .if 1
+	stz m_a+1
+ .else
         lda #0
         sta m_a+1
-?room   sec                          ; room = smax - soff
+ .endif
+?room
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_a
+	dec
+	sec
+	sbc sp_soff
+	sta m_prod
+	sep #$20
+	.LONGA OFF
+ .else
+        sec                          ; room = smax - soff
         lda m_a
         sbc #1
         sta m_a
         lda m_a+1
         sbc #0
         sta m_a+1
+
         sec
         lda m_a
         sbc sp_soff
@@ -1050,21 +1600,32 @@ scrop_resume = *
         lda m_a+1
         sbc sp_soff+1
         sta m_prod+1
+ .endif
         bcc ?off                     ; the whole span starts past the crop end
+
         stz m_prod+2
         lda sp_spy
         sta m_den
         lda sp_spy+1
         sta m_den+1
+
         jsr udiv24                   ; m_quot = cap-1 = floor(room/spy)
+
         lda m_quot+1
         bne ?ok                      ; cap >= 256 reads: the clip count stands
         lda m_quot
         cmp sp_bh
+ .if 1
+	bcs ?ox
+	sta sp_bh
+?ok	sec
+?ox	rts
+ .else
         bcs ?ok
         sta sp_bh                    ; the crop end is the tighter limit
 ?ok     sec
-        rts
+	rts
+ .endif
 .endp
     .if * > SPRCROP_END+1
         ert 'the T4 crop helpers outgrew SPRCROP_BASE..END (memory_map.inc)'

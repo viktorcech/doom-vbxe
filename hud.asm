@@ -549,7 +549,9 @@ mst_resume = *
 ?norm   tya
         clc
         adc #MSG_IDX0
-?arm    sta msg_i
+msg_arm                              ; A = a RAW strip index: door_keymsg's
+?arm    sta msg_i                    ;   entry (msg_set.msg_arm) for lines
+                                     ;   that are not bonus ids
         lda #MSG_VB
         sta msg_t
         rts
@@ -577,6 +579,78 @@ hud_split_resume = *
 .endp
 
 .proc hud_blit
+ .if 1
+        ; 2026-09-09 (drac030 style), 8-BIT ON PURPOSE: the boot menu calls
+        ; this with the ROM in (E=1), where rep/sep do nothing -- so no 16-bit
+        ; block here, only the idioms: (zp) without an index, dec A for the
+        ; -1s, stz, and the patch offsets subtracted straight from the
+        ; operand instead of through m_a. The row leaves in X, not hd_dig.
+        stx hd_x
+        sty hd_dig                   ; row (parked: Y indexes the entry below)
+        lda (zp_ptr)                 ; SRC = the graphic in VRAM
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        ldy #1
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        iny
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        iny                          ; width: SRC_STEPY = width, WIDTH = width-1
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ; draw_weapon shares this BCB and
+        lda #1                       ;   SCALES the source with the view window
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX     ;   (SRC_STEPX/STEPY > 1). The bar is
+        iny                          ;   always 1:1, so undo that here.
+        lda (zp_ptr),y               ; height
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        iny                          ; V_DrawPatch: the patch's own offsets shift it
+        lda hd_x                     ;   (STFST01 has left=-3 bytes, top=-2 --
+        sec                          ;   without this the face sits 3 bytes left
+        sbc (zp_ptr),y               ;   and 2 rows high of where DOOM puts it)
+        sta hd_x
+        iny
+        lda hd_dig
+        sec
+        sbc (zp_ptr),y
+        tax                          ; DST = row(y) + x -- ALWAYS bank 0: rows
+        lda row_lo,x                 ;   168+ are the SHARED bar (VRAM_HUDROWS,
+        clc                          ;   FRAME_A's own bar area) that the XDL's
+        adc hd_x                     ;   second entry shows under BOTH buffers,
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR    ; so the bar is painted ONCE
+        lda row_hi,x
+        adc #0
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+hb_dbnk                              ; ...and hb_dbnk+1 IS the bank byte (below)
+        lda #[VRAM_SCREEN>>16]       ; bank 0 for the BAR (rows 168+ are SHARED
+                                     ;   between the buffers, so the bar is painted
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2  ; once) -- but the BACK BUFFER's bank
+                                     ;   for anything drawn inside the VIEW.
+                                     ;   THE OPERAND ITSELF is hb_dbnk: a view-side
+                                     ;   caller pokes the immediate and puts it
+                                     ;   back; nothing else touches it.
+        lda hb_ctrl
+        sta MEMW+MEMW_HD_OFF+BCB_CTRL
+hud_fire                             ; menu.asm's mn_erase builds its own BCB
+                                     ;   (a background sub-rectangle, which the
+                                     ;   7-byte table format cannot express) and
+                                     ;   jumps in HERE to fire it -- the tail is
+                                     ;   the same wait-and-start either way
+        jsr blitter_wait
+        lda #<VRAM_BCB_HUD
+        sta VBXE_BL_ADR0
+        lda #>VRAM_BCB_HUD
+        sta VBXE_BL_ADR1
+        lda #[VRAM_BCB_HUD>>16]
+        sta VBXE_BL_ADR2
+        lda #1
+        sta VBXE_BL_START
+        ldx hd_x
+        rts
+ .else
         stx hd_x
         sty hd_dig                   ; row
         ldy #0                       ; SRC = the graphic in VRAM
@@ -656,10 +730,14 @@ hud_fire                             ; menu.asm's mn_erase builds its own BCB
         sta VBXE_BL_START
         ldx hd_x
         rts
+ .endif
 .endp
 
 hb_ctrl dta BLT_BSTENCIL             ; COPY for the bar, stencil for the glyphs
                                      ; (hb_dbnk is hud_blit's other parameter and
                                      ;  is the immediate operand above, not a
                                      ;  variable: this run had ONE byte left)
+    .if * > HUDBLIT_END+1
+        ert 'hud_blit outgrew HUDBLIT_BASE..END (memory_map.inc)'
+    .endif
         org hud_split_resume

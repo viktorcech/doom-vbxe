@@ -167,10 +167,16 @@ ll_stride dta a(0)
 ?go     cmp #8                       ; 8 sectors = the 1 KB staging buffer
         bcc ?part
         lda #8
+ .if 1
+?part   sta ll_pass
+        sta ll_cnt
+        stz ll_cnt+1
+ .else
 ?part   sta ll_pass
         sta ll_cnt
         lda #0
         sta ll_cnt+1
+ .endif
         lda #<TEX_STAGE
         sta DBUFLO
         lda #>TEX_STAGE
@@ -243,10 +249,16 @@ dio2_resume = *
 ?go     cmp #8                       ; 8 sectors = 1 KB, the staging buffer's size
         bcc ?part                    ;   (2 KB until 2026-07-28, when tw_setup --
         lda #8                       ;   CODE -- moved to $1500; see TEX_STAGE)
+ .if 1
+?part   sta ll_pass
+        sta ll_cnt
+        stz ll_cnt+1
+ .else
 ?part   sta ll_pass
         sta ll_cnt
         lda #0
         sta ll_cnt+1
+ .endif
         lda #<TEX_STAGE
         sta DBUFLO
         lda #>TEX_STAGE
@@ -264,10 +276,16 @@ dio2_resume = *
         ; $FFFA/$FFFE are RAM -- which urom_init has not necessarily filled yet on
         ; the very first load. IRQs are also ON here (SIO needs them). So mask both
         ; for the duration of the copy; SIO is idle by now, so nothing is missed.
+ .if 1
+        sei
+        stz NMIEN
+        jsr rom_out
+ .else
         sei
         lda #0
         sta NMIEN
         jsr rom_out
+ .endif
         ldx ll_pass                  ; copy ll_pass x 128 B (SECTORS, not pages: the
 ?sec    jsr cp128_ur                 ;   HIGH region is not a whole number of pages)
         clc                          ;   -- the 128 B loop itself is in fast win1
@@ -352,10 +370,16 @@ dio2_resume = *
         sta DCOMND
         lda #$40                     ; input direction (device -> memory)
         sta DSTATS
+ .if 1
+        lda #128
+        sta DBYTLO
+        stz DBYTHI
+ .else
         lda #128
         sta DBYTLO
         lda #0
         sta DBYTHI
+ .endif
         lda #$0F
         sta DTIMLO
         lda ll_sec
@@ -531,11 +555,18 @@ ld_half     dta 0                    ; load_vram: MEMW page offset of the curren
         sta DBUFLO
         lda #>TEX_STAGE
         sta DBUFHI
+ .if 1
+        lda #8
+        sta ll_cnt
+        stz ll_cnt+1
+        jsr read_sectors
+ .else
         lda #8
         sta ll_cnt
         lda #0
         sta ll_cnt+1
         jsr read_sectors
+ .endif
         sec
         lda ld_drain
         sbc #8
@@ -561,18 +592,30 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
         clc
         adc ld_bank0
         ora #BANK_EN
+ .if 1
+        sta VBXE_BANK_SEL
+        stz ld_half
+ .else
         sta VBXE_BANK_SEL
         lda #0
         sta ld_half
+ .endif
 ?half   lda #<TEX_STAGE             ; read 8 sectors (1KB) -> staging
         sta DBUFLO
         lda #>TEX_STAGE
         sta DBUFHI
+ .if 1
+        lda #8
+        sta ll_cnt
+        stz ll_cnt+1
+        jsr read_sectors
+ .else
         lda #8
         sta ll_cnt
         lda #0
         sta ll_cnt+1
-        jsr read_sectors            ; advances ll_sec by 8
+        jsr read_sectors
+ .endif            ; advances ll_sec by 8
         lda #<TEX_STAGE             ; copy 4 pages staging -> MEMW window quarter
         sta zp_tsrc
         lda #>TEX_STAGE
@@ -636,9 +679,14 @@ pld_resume = *
         ldx #0
 ?pal    stx pld_i                    ; one palette per pass: the staging buffer is
         lda #PAL_SECTORS             ;   1 KB and a palette is 768 B, so they cannot
+ .if 1
+        sta ll_cnt                   ;   all be read first and installed after
+        stz ll_cnt+1
+ .else
         sta ll_cnt                   ;   all be read first and installed after
         lda #0
         sta ll_cnt+1
+ .endif
         lda #<TEX_STAGE
         sta DBUFLO
         lda #>TEX_STAGE
@@ -790,7 +838,9 @@ scld_resume = *
         sta ll_stride+1
         jsr lvl_offset               ; + level index * SPRC_SECTORS
         stz ll_dst                   ; SPRCOL_EXT is $0000: the blob owns the
-        stz ll_dst+1                 ;   whole of bank $08 from the bottom
+        stz ll_dst+1                 ;   whole of bank SPRCOL_BANK from the bottom
+                                     ;   (NOT $08 any more -- that bank is the
+                                     ;   SDRAM level cache, memory_map.inc)
         lda #SPRCOL_BANK             ; ...and into ITS bank, not the map's;
         sta ll_bank                  ;   arena_init puts ll_bank back, this
         jsr sprcol_read              ;   block being 47 B with no room for it.
@@ -844,10 +894,16 @@ wld_resume = *
         lda #<WEAP_SEC1
         sta ll_sec
         lda #>WEAP_SEC1
+ .if 1
+        sta ll_sec+1
+        stz ll_dst                   ; WEAP_EXT = offset 0 of its bank
+        stz ll_dst+1
+ .else
         sta ll_sec+1
         lda #0
         sta ll_dst                   ; WEAP_EXT = offset 0 of its bank
         sta ll_dst+1
+ .endif
         lda #WEAP_EXT_BANK
         sta ll_bank
         lda #WEAP_CHUNKS
@@ -904,6 +960,12 @@ prld_resume = *
 ;   this level has already been streamed once, else the drive + the tee.
 ;--------------------------------------------------------------
 .proc load_level_c
+        stz pk_valid                 ; new records -> new pickup list: the next
+                                     ;   spr_pickup rebuilds it (pk_build).
+                                     ;   HERE because every level (re)load --
+                                     ;   boot, exit_level, pl_reload, the save
+                                     ;   loader's boot phase -- enters here,
+                                     ;   and en_init's own block is full
         ldx current_level
         lda lvl_res,x
         sta ld_src

@@ -199,6 +199,14 @@ MESSAGES = (
                                           # wide and the full sentence needs
                                           # 143 -- widening the stride doubles
                                           # every strip's VRAM for one line.
+    # ---- NOT a bonus id: the locked-door refusal (door_keymsg, doors.asm) ----
+    # EV_VerticalDoor's PD_BLUEK/YELLOWK/REDK (d_englsh.h:128-130), as ONE
+    # colour-blind line: the WI+FIN VRAM run ends FLUSH against WIPE_START
+    # (f_finale.asm's guard), so the strip array can grow to 64 rows and no
+    # further -- three colour lines are one row over. The door's own trim
+    # carries the colour on screen; a colour-correct set needs a chunk of
+    # the run evicted to a Rapidus bank first (AMOVL's precedent).
+    'You need a key for this door',       # 36 PD_*K, colour-blind
 )
 LEVEL_NAMES = ()                 # set_levels fills it; EPI_FIRST needs it
 MSG_IDX0 = len(TITLES) - 1       # strip index of bonus id 1 is MSG_IDX0+1, so
@@ -410,6 +418,16 @@ def _text_line(wt, img, w, h, text, y, scale):
         line = _epx2(line, lw, lh)
         lw, lh = 2 * lw, 2 * lh
         scale //= 2
+    # HALVE HORIZONTALLY, the way pack_hud halves every HUD glyph (keep every
+    # second column): our byte is two DOOM pixels, so a 1:1 STCFN line on this
+    # grid was twice as wide as the same font in the in-game messages. Scale 1
+    # is now exactly the "picked up a ..." look (2026-09-09).
+    hw = (lw + 1) // 2
+    half = bytearray(hw * lh)
+    for ry in range(lh):
+        for rx in range(0, lw, 2):
+            half[ry * hw + rx // 2] = line[ry * lw + rx]
+    line, lw = half, hw
     x0 = (w - lw) // 2
     for ry in range(lh):
         for rx in range(lw):
@@ -445,13 +463,13 @@ def _text_line(wt, img, w, h, text, y, scale):
 # kept so the second line reads as the rest of one list rather than a new
 # credit. The two halves sit 2 rows apart where every other gap is 4 or more,
 # which is what makes them read as one entry.
-CREDITS = (('DOOM VBXE',               30, 2),
-           ('AUTHOR: W1K',             58, 1),
-           ('CODE: OPUS 4.7, 4.8, 5,', 86, 1),
-           ('FABLE 5',                102, 1),
-           ('2026',                   122, 1),
-           ('V0.%s',                  138, 1),      # %s = VERSION
-           ('%s',                     162, 1))      # %s = the build stamp
+CREDITS = (('DOOM VBXE',               56, 2),     # the port, one size up
+           ('AUTHOR: W1K',             84, 1),     # ... and the rest in the
+           ('CODE: OPUS 4.7, 4.8, 5, FABLE 5', 96, 1),   # in-game message font
+           ('SPECIAL THANKS: DRAC030', 108, 1),    # (the 65816 review, 2026-09)
+           ('2026',                   120, 1),
+           ('V0.%s',                  132, 1),      # %s = VERSION
+           ('%s',                     144, 1))      # %s = the build stamp
 
 
 def _credits_page(wt, ver):

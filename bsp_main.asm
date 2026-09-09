@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -315,8 +315,31 @@ rc_bnk  dta d'XX'
     .if * <> rc_msg+80
         ert 'rc_msg is not 2 x 40 B -- each mode-2 line reads exactly 40'
     .endif
+;--------------------------------------------------------------
+; snd_vgo -- snd_play's stereo tail (X = voice*2): the trigger's pan into the
+;   voice, reset it to CENTRE, arm the voice. Lives HERE because the sound
+;   segment ends flush and this block still had the bytes (boot/infra hole).
+;--------------------------------------------------------------
+.proc snd_vgo
+        lda snd_side                 ; snd_setpan armed it; a trigger that did
+        sta sv_side,x                ;   not = the centre, which is also what a
+        stz snd_side                 ;   mono machine always hears
+        lda #1
+        sta sv_act,x                 ; 1 = phase 0 (hi nibble) next
+        rts
+.endp
+;--------------------------------------------------------------
+; snd_init2 -- the second (STEREO) POKEY out of init, from main at boot. On
+;   mono both writes mirror onto POKEY1 with the values it holds anyway.
+;--------------------------------------------------------------
+.proc snd_init2
+        lda #3
+        sta $D21F                    ; SKCTL2: out of the init state
+        stz $D218                    ; AUDCTL2: 64 kHz base, like AUDCTL
+        rts
+.endp
     .if * > RAMCHK_END+1
-        ert 'ram_check outgrew RAMCHK_BASE..END (memory_map.inc)'
+        ert 'ram_check/snd_vgo/snd_init2 outgrew RAMCHK_BASE..END (memory_map.inc)'
     .endif
 
 ;==============================================================
@@ -332,6 +355,8 @@ rc_bnk  dta d'XX'
         jsr ram_check                ; every linear-RAM bank answers, or halt
                                      ;   with a message (parked block above) --
                                      ;   BEFORE anything streams into them
+        jsr snd_init2                ; the STEREO POKEY out of init (harmless
+                                     ;   mirror writes on a mono machine)
 
         jsr detect_vbxe
         bcc ?ok
@@ -491,10 +516,16 @@ rc_bnk  dta d'XX'
         ; plain jsr now, which gives back the ~40 cycles each was paying -- seg_yoff
         ; alone ran ~140 times a frame.
         jsr rom_out
+ .if 1
+        jsr init_level               ; spawn point, doors, per-level state
+        stz key_prev
+        stz tex_flat                 ; boot with textures ON ('T' flips it;
+ .else
         jsr init_level               ; spawn point, doors, per-level state
         lda #0
         sta key_prev
         sta tex_flat                 ; boot with textures ON ('T' flips it;
+ .endif
                                      ;   the byte is random RAM otherwise)
         lda zp_ang                   ; force the first frame_setup to build the frac tables
         eor #$01                     ;   (frame_ang != zp_ang -> tips #4 cache misses once)
@@ -511,12 +542,23 @@ rc_bnk  dta d'XX'
                                      ;   to mn_key: '-'/'=' are the map's ZOOM
                                      ;   keys then (automap.asm)
 ?nokeys                              ; one KBCODE poll: SPACE = USE (door), 'T' = textures
+ .if 1
+        rep #$20                     ; remember where we were: the trigger test is
+        .LONGA ON                    ;   a line CROSSING (P_CrossSpecialLine). Two
+        lda zp_px                    ;   word moves (zp_px..zp_py and mv_ox..mv_oy
+        sta mv_ox                    ;   are both two adjacent words)
+        lda zp_py
+        sta mv_oy
+        sep #$20
+        .LONGA OFF
+ .else
         ldx #3                       ; remember where we were: the trigger test is
 ?olat   lda zp_px,x                  ; a line CROSSING (P_CrossSpecialLine).
         sta mv_ox,x                  ; zp_px..zp_py and mv_ox..mv_oy are both four
         dex                          ; consecutive bytes, so one loop does it in
         bpl ?olat                    ; 10 B instead of 20 -- the 10 pay for
                                      ; move_player's pk_x/pk_y latch.
+ .endif
         jsr move_player              ; walk forward/back (collision in stage 2)
         jsr frame_dt                 ; dt_vbl = VBLANKs this frame -> doors + lifts
         jsr check_triggers           ; crossed a lift line?
@@ -547,9 +589,14 @@ rc_bnk  dta d'XX'
                                      ;   only while
                                      ;   hud_dirty>0, else just face anim + FPS
         lda blk_dirty                ; a thing moved? then rebuild the blockmap
+ .if 1
+        beq ?noblk                   ;   for the next frame's move tests (the
+        stz blk_dirty                ;   player is not in the thing table, so his
+ .else
         beq ?noblk                   ;   for the next frame's move tests (the
         lda #0                       ;   player is not in the thing table, so his
         sta blk_dirty
+ .endif
         jsr blk_fill                 ;   own step never invalidates it)
                                      ;   65 stores and 255 pushes, ~6k cycles,
                                      ;   against the 30k a single monster step

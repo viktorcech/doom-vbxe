@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -154,6 +154,20 @@ vw_tab
 .proc vw_q34x
         lda vw_q34
         beq ?ret
+ .if 1
+        rep #$20                     ; ---- 16-bit A: v - (v >> 2) = v * 3/4, all
+        .LONGA ON                    ;   in the accumulator: the quarter is two
+        lda m_prod                   ;   shifts, the subtract is ~q + 1 + v (no
+        lsr @                        ;   vw_t round trip, no memory shifts)
+        lsr @
+        eor #$FFFF
+        sec
+        adc m_prod
+        sta m_prod
+        sep #$20
+        .LONGA OFF
+?ret    rts
+ .else
         lda m_prod+1                 ; vw_t = v >> 2
         lsr
         sta vw_t+1
@@ -170,6 +184,7 @@ vw_tab
         sbc vw_t+1
         sta m_prod+1
 ?ret    rts
+ .endif
 .endp
     .if * > VWQ34_END+1
         ert 'vw_q34x outgrew VWQ34_BASE..END (memory_map.inc)'

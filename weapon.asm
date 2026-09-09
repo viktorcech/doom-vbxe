@@ -279,6 +279,67 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
 ;   Converts this frame's VBLANKs into DOOM tics and runs the machine that often.
 ;--------------------------------------------------------------
 .proc wp_think
+ .if 1
+        lda dt_vbl
+        beq ?none                    ; same VBLANK as the last frame: no tic
+        sta m_a                      ; m_a = dt_vbl as a word
+        stz m_a+1
+    .if TIC_Q8 < 128 || TIC_Q8 > 255
+        ert 'wp_think unrolls TIC_Q8 as an 8-bit constant with bit 7 set'
+    .endif
+        rep #$20                     ; ---- 16-bit A: dt_vbl * TIC_Q8, the constant
+        .LONGA ON                    ;   unrolled bit by bit (Horner: shift, add
+        lda m_a                      ;   the multiplicand where TIC_Q8 has a 1).
+        asl @                        ;   The product is < 256*255, so no asl ever
+    .if TIC_Q8 & $40                 ;   carries out and no adc ever carries: no
+        adc m_a                      ;   clc anywhere. 8 loop passes of shift-add
+    .endif                           ;   in memory were ~160 cycles; this is 30.
+        asl @
+    .if TIC_Q8 & $20
+        adc m_a
+    .endif
+        asl @
+    .if TIC_Q8 & $10
+        adc m_a
+    .endif
+        asl @
+    .if TIC_Q8 & $08
+        adc m_a
+    .endif
+        asl @
+    .if TIC_Q8 & $04
+        adc m_a
+    .endif
+        asl @
+    .if TIC_Q8 & $02
+        adc m_a
+    .endif
+        asl @
+    .if TIC_Q8 & $01
+        adc m_a
+    .endif
+        sep #$20                     ; A = the Q8 fraction, B = the whole tics
+        .LONGA OFF
+        clc                          ; carry the Q8 fraction to the next frame
+        adc wp_tacc
+        sta wp_tacc
+        xba                          ; ...and the tics come down from B (xba keeps
+        adc #0                       ;   C: the fraction's carry-out is a tic)
+        cmp #TIC_MAX+1               ; a level-load hitch must not spin the machine
+        bcc ?ok
+        lda #TIC_MAX
+?ok     sta wp_tics
+        cmp #0                       ; (sta sets no flags: a frame that earned no
+        beq ?none                    ;  tic must not run the dec/bne 256 times)
+?tic    jsr wp_tic
+        jsr en_tick                  ; the same DOOM tic drives the death frames
+        jsr en_slide                 ;   (enemy.asm), P_XYMovement's friction on
+        jsr ai_tick                  ;   a corpse a blast pushed (enemy_ai.asm),
+        jsr pl_dthink                ;   the monsters' RUN states, and the dead
+        dec wp_tics                  ;   view falling -- one clock, one rate
+        bne ?tic
+?none   rts
+ .else
         lda dt_vbl
         beq ?none                    ; same VBLANK as the last frame: no tic
         sta m_a                      ; m_b:m_a = dt_vbl * TIC_Q8 -- the canonical
@@ -323,6 +384,7 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
         dec wp_tics                  ;   view falling -- one clock, one rate
         bne ?tic
 ?none   rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -411,6 +473,13 @@ wpf_resume = *
         sta wp_stic
         lda WS_ACT,y
         beq ?tics                    ; WA_NONE
+ .if 1
+        phx                          ; [hops]
+        phy                          ; [hops][state]
+        jsr wp_action                ; Y = the state entered; may re-enter
+        ply
+        plx
+ .else
         txa                          ; [hops]
         pha
         tya                          ; [hops][state]
@@ -420,6 +489,7 @@ wpf_resume = *
         tay
         pla
         tax
+ .endif
         cpy wp_state
         bne ?out                     ; the action moved on: it set the tics
 ?tics   lda wp_stic
@@ -479,6 +549,30 @@ wpf_resume = *
 ;   auto-firing: after the first shot the re-fire comes from A_ReFire.
 ;--------------------------------------------------------------
 .proc wp_ready
+ .if 1
+        jsr wp_sawidl                ; the saw's idle putter
+        lda wp_pending
+        cmp #WP_NONE
+        beq ?fire
+        ldx wp_cur                   ; put the current weapon away
+        lda wi_down,x
+        jmp wp_enter
+?fire   lda TRIG0
+        and #1
+        bne ?up
+        lda wp_down
+        bne ?bob                     ; still held from the last shot
+        lda #1
+        sta wp_down
+        jmp wp_firewep
+?up     stz wp_down
+?bob                                 ; psp->sx/sy: only A_WeaponReady writes them
+    .if WP_SWAY
+        jmp wp_bobapply
+    .else
+        rts                          ; the sway is off in this build (WP_SWAY)
+    .endif
+ .else
         jsr wp_sawidl                ; the saw's idle putter (the annex: this
         lda wp_pending               ;   run ends 9 B short of ENLFIND_BASE)
         cmp #WP_NONE
@@ -502,6 +596,7 @@ wpf_resume = *
     .else
         rts                          ; the sway is off in this build (WP_SWAY)
     .endif
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1356,6 +1451,153 @@ WE_AY   equ 6
 ; wp_one -- A = WEAP_TAB frame index: place it, scale it, clip it, blit it.
 ;--------------------------------------------------------------
 .proc wp_one
+ .if 1
+        sta m_a                      ; index*7 = *8 - *1 ...
+        asl
+        asl
+        asl
+        sec
+        sbc m_a                      ; ... which leaves C=1 (8i >= i), and that
+        adc #<[WEAP_TAB-1]           ;   is the +1 of a 16-bit add of WEAP_TAB-1
+        sta zp_ptr
+        lda #>[WEAP_TAB-1]
+        adc #0
+        sta zp_ptr+1
+        rep #$20                     ; ---- 16-bit A: the record (vram24, w, h,
+        .LONGA ON                    ;   ax, ay) as three words and a byte
+        lda (zp_ptr)
+        sta wp_ent
+        ldy #2
+        lda (zp_ptr),y
+        sta wp_ent+2
+        ldy #4
+        lda (zp_ptr),y
+        sta wp_ent+4
+        sep #$20
+        .LONGA OFF
+        ldy #6
+        lda (zp_ptr),y
+        sta wp_ent+6
+        ; ---- source steps: skip 2^k pixels across and 2^k rows down ---------
+        ldx vw_sh
+        lda wp_msk,x                 ; 1<<k IS wp_msk[k]+1 (0,1,3 -> 1,2,4): no
+        inc @                        ;   loop for SRC_STEPX
+        sta wp_stx
+        rep #$20                     ; SRC_STEPY = width << k, shifted in A
+        .LONGA ON
+        lda wp_ent+WE_W
+        and #$FF                     ; (the word read drags WE_H in above it)
+?ksh    dex
+        bmi ?nok
+        asl @
+        bra ?ksh
+?nok    sta wp_sty
+        sep #$20
+        .LONGA OFF
+        ; ---- X: every vw_tab window is centred on column 80 -----------------
+        clc
+        lda wp_ent+WE_AX
+        adc wp_bx                    ; psp->sx: the sway, 0 unless WP_SWAY
+        sec
+        sbc #SCREEN_HALF
+        jsr wp_asr                   ; (ax - 80 + bob) >> k, sign kept
+        clc
+        adc #SCREEN_HALF
+        sta wp_x
+        lda wp_ent+WE_W
+        jsr wp_ceil
+        sta wp_w
+        lda vw_x0                    ; left clip
+        sec
+        sbc wp_x
+        bcc ?xr
+        beq ?xr
+        cmp wp_w
+        jcs wp_no                    ; entirely left of the window
+        sta m_a                      ; the skipped columns (wp_srcadd's operand)
+        eor #$FF                     ; w -= skipped, with the count still in A:
+        sec                          ;   w + ~skip + 1
+        adc wp_w
+        sta wp_w
+        lda vw_x0
+        sta wp_x
+        stz m_a+1
+        lda m_a                      ; src += skipped columns * SRC_STEPX (a byte
+        ldx vw_sh                    ;   shift, as before: the blit clips the rest)
+        beq ?cs1
+?csh    asl
+        dex
+        bne ?csh
+?cs1    sta m_a
+        jsr wp_srcadd
+?xr     clc                          ; right clip
+        lda wp_x
+        adc wp_w
+        sbc #0                       ; C=1 unless the add wrapped: last column
+        cmp vw_x1
+        bcc ?yy
+        beq ?yy
+        lda vw_x1
+        sec
+        sbc wp_x
+        jcc wp_no
+        inc @
+        sta wp_w
+        ; ---- Y: hang the gun from the window's bottom row -------------------
+?yy     lda wp_sy                    ; the raise/lower slide, 0 when up,
+        sec                          ;   plus the vertical sway (also 0 unless
+        sbc #WEAPONTOP               ;   WP_SWAY) -- both move the gun DOWN
+        clc
+        adc wp_by
+        sta m_a
+        sec
+        lda #VIEW_HEIGHT             ; rows from the frame's top row to the
+        sbc wp_ent+WE_AY             ;   bottom of the FULL-SIZE view
+        sec
+        sbc m_a                      ;   ... minus the slide
+        jcc wp_no                    ; slid out of sight
+        jeq wp_no
+        jsr wp_shr
+        eor #$FF                     ; y = vw_y1 - that, in A: vw_y1 + ~A + 1,
+        sec                          ;   and C = "no borrow" exactly as the sbc's
+        adc vw_y1
+        jcc wp_no
+        inc @                        ; ... + 1
+        sta wp_y
+        lda wp_ent+WE_H
+        jsr wp_ceil
+        sta wp_h
+        lda vw_y0                    ; top clip
+        sec
+        sbc wp_y
+        bcc ?yb
+        beq ?yb
+        cmp wp_h
+        jcs wp_no                    ; entirely above the window
+        sta m_a                      ; the skipped rows (wp_rowskip's multiplier)
+        eor #$FF                     ; h -= skipped
+        sec
+        adc wp_h
+        sta wp_h
+        lda vw_y0
+        sta wp_y
+        jsr wp_rowskip               ; src += skipped rows * SRC_STEPY
+?yb     clc                          ; bottom clip -- the ceil above can overshoot
+        lda wp_y                     ;   by a row, and a LOWERED tall frame runs
+        adc wp_h                     ;   off the screen entirely, so the carry
+        bcs ?cut                     ;   counts
+        sbc #0                       ; last row
+        cmp vw_y1
+        bcc ?go
+        beq ?go
+?cut    lda vw_y1
+        sec
+        sbc wp_y
+        jcc wp_no
+        inc @
+        sta wp_h
+?go     jmp wp_blit
+ .else
         sta m_a                      ; index*7 = *8 - *1
         asl
         asl
@@ -1503,6 +1745,7 @@ WE_AY   equ 6
         adc #1
         sta wp_h
 ?go     jmp wp_blit
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1519,6 +1762,49 @@ WE_AY   equ 6
 ;   share the block and the status bar is always 1:1.
 ;--------------------------------------------------------------
 .proc wp_blit
+ .if 1
+        rep #$20                     ; ---- 16-bit A: SRC (low word), STEPY
+        .LONGA ON
+        lda wp_ent+WE_VRAM
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        lda wp_sty
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        sep #$20
+        .LONGA OFF
+        lda wp_ent+WE_VRAM+2
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        lda wp_stx
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        lda wp_w
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        lda wp_h
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        ldx wp_y                     ; DST = row(y) + x, into the back buffer
+        lda row_lo,x
+        clc
+        adc wp_x
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        lda row_hi,x
+        adc #0
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        lda zback_hi
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        lda #BLT_BSTENCIL            ; index 0 = transparent
+        sta MEMW+MEMW_HD_OFF+BCB_CTRL
+        jsr blitter_wait
+        lda #<VRAM_BCB_HUD
+        sta VBXE_BL_ADR0
+        lda #>VRAM_BCB_HUD
+        sta VBXE_BL_ADR1
+        lda #[VRAM_BCB_HUD>>16]
+        sta VBXE_BL_ADR2
+        lda #1
+        sta VBXE_BL_START
+        rts
+ .else
         lda wp_ent+WE_VRAM
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
         lda wp_ent+WE_VRAM+1
@@ -1563,6 +1849,7 @@ WE_AY   equ 6
         lda #1
         sta VBXE_BL_START
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1598,6 +1885,19 @@ WE_AY   equ 6
 wp_msk  dta 0,1,3
 
 .proc wp_srcadd                      ; wp_ent's 24-bit VRAM address += m_a (16b)
+ .if 1
+        rep #$21                     ; ---- 16-bit A, C=0: the low word in one add
+        .LONGA ON
+        lda wp_ent+WE_VRAM
+        adc m_a
+        sta wp_ent+WE_VRAM
+        sep #$20                     ; (C survives: the third byte takes it)
+        .LONGA OFF
+        lda wp_ent+WE_VRAM+2
+        adc #0
+        sta wp_ent+WE_VRAM+2
+        rts
+ .else
         clc
         lda wp_ent+WE_VRAM
         adc m_a
@@ -1609,9 +1909,27 @@ wp_msk  dta 0,1,3
         adc #0
         sta wp_ent+WE_VRAM+2
         rts
+ .endif
 .endp
 
 .proc wp_rowskip                     ; src += m_a (dest rows) * SRC_STEPY
+ .if 1
+        stz m_a+1                    ; m_a = the rows (a byte), m_b = SRC_STEPY:
+        rep #$20                     ;   umul16 does the 8x16 shift-add (~90
+        .LONGA ON                    ;   cycles against the 8-pass loop's ~200),
+        lda wp_sty                   ;   and its low word IS what the loop kept
+        sta m_b
+        sep #$20
+        .LONGA OFF
+        jsr umul16                   ; m_prod = rows * SRC_STEPY
+        rep #$20
+        .LONGA ON
+        lda m_prod
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jmp wp_srcadd
+ .else
         lda wp_sty                   ; shift a COPY: the blit still needs the step
         sta wp_t
         lda wp_sty+1
@@ -1638,6 +1956,7 @@ wp_msk  dta 0,1,3
         lda m_b+1
         sta m_a+1
         jmp wp_srcadd
+ .endif
 .endp
 
 wp_x    dta 0                        ; the blit's resolved screen column / row
@@ -1749,12 +2068,20 @@ wp_t    dta a(0)                     ; wp_rowskip's shifting copy of SRC_STEPY
 ;   (fl_shown = an impossible byte, so the normal palette is written once).
 ;--------------------------------------------------------------
 .proc fl_init
+ .if 1
+        stz fl_dmg
+        stz fl_bonus
+        lda #$FF
+        sta fl_shown
+        rts
+ .else
         lda #0
         sta fl_dmg
         sta fl_bonus
         lda #$FF
         sta fl_shown
         rts
+ .endif
 .endp
 
     .if * > FLASH_END+1

@@ -73,6 +73,152 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
 ;   the tested point into collide_blocked.
 ;--------------------------------------------------------------
 .proc move_player
+ .if 1
+        lda pl_dead                  ; a corpse does not walk (P_DeathThink runs
+        bne ?dead                    ;   instead of P_MovePlayer)
+        jsr pl_airmove               ; airborne? then the keys do nothing and the
+        bcs ?slide                   ;   momentum carries (P_MovePlayer/onground)
+        lda stick_save
+        and #$03                     ; up or down pressed? (both 1 = neither)
+        cmp #$03
+        bne ?go
+?dead   jmp pl_idle                  ; a shove may still be running
+?go     lda PLR_STEP                 ; dx = step*cos>>14 (step = SPD, fixed per
+        sta m_a                      ;   frame -- see plr_steps)
+        stz m_a+1
+        rep #$20                     ; ---- 16-bit A: the operand moves are words
+        .LONGA ON
+        lda zp_cos
+        sta m_b
+        sep #$20
+        .LONGA OFF
+        jsr smul_14
+        rep #$20
+        .LONGA ON
+        lda m_res
+        sta mv_dx
+        lda zp_sin                   ; dy = step*sin>>14
+        sta m_b
+        sep #$20
+        .LONGA OFF
+        lda PLR_STEP                 ; (smul_14 ate m_a; m_a+1 stayed 0)
+        sta m_a
+        jsr smul_14
+        rep #$20
+        .LONGA ON
+        lda m_res
+        sta mv_dy
+        sep #$20
+        .LONGA OFF
+        jsr locate_floor             ; cur_floor = floor under the player NOW --
+        rep #$20                     ;   BEFORE the fwd/back branch so BOTH paths
+        .LONGA ON                    ;   set it
+        lda loc_floor
+        sta cur_floor
+        sep #$20
+        .LONGA OFF
+        lda stick_save
+        and #$01                     ; forward? (bit0 clear = pressed)
+        beq ?slide
+        ; (no "back?" test: ?go is only reached when (stick & 3) != 3, so the
+        ;  forward bit SET means this is the backward path -- the .else side)
+?neg    rep #$20                     ; back: negate the move delta, both words
+        .LONGA ON
+        sec
+        lda #0
+        sbc mv_dx
+        sta mv_dx
+        lda #0
+        sbc mv_dy
+        sta mv_dy
+        sep #$20
+        .LONGA OFF
+        ; SPD (24) > PLAYER_R (16): test the HALFWAY point first, which caps the
+        ; largest untested gap at 12 < R (the .else side's note)
+mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
+?slide  jsr pl_kick                  ; the shove joins the walk, then pl_latch
+        rep #$21                     ; ---- 16-bit A, C=0. THE PICKUP IS TESTED AT
+        .LONGA ON                    ;   pk = pos + delta, the destination (see
+        lda zp_px                    ;   the .else side and spr_pickup)
+        adc mv_dx
+        sta pk_x
+        clc
+        lda zp_py
+        adc mv_dy
+        sta pk_y
+        lda mv_dx                    ; half = dx >> 1 (arithmetic, in A: the
+        cmp #$8000                   ;   cmp puts the sign in C for the ror)
+        ror @
+        clc
+        adc zp_px                    ; the X midpoint: (px + half, py)
+        sta coll_cx
+        lda zp_py
+        sta coll_cy
+        sep #$20
+        .LONGA OFF
+        jsr coll_plr                 ; midpoint blocked -> the whole X step is out
+        jne ?skipx
+        rep #$20                     ; --- X axis: candidate = (px+dx, py) -- px+dx
+        .LONGA ON                    ;   is pk_x, and coll_cy is still py
+        lda pk_x
+        sta coll_cx
+        sep #$20
+        .LONGA OFF
+        jsr coll_step_ok             ; step up > MAXSTEP? (must use stairs)
+        bne ?skipx
+        jsr coll_plr                 ; wall within radius?
+        bne ?skipx                   ; blocked -> don't commit X
+        lda #$FF                     ; ...and P_TryMove's other half: a monster or
+        sta sol_self                 ;   a barrel standing there blocks the player
+        jsr en_solid                 ;   just as a wall does (p_map.c PIT_CheckThing)
+        bne ?skipx
+        rep #$20
+        .LONGA ON
+        lda coll_cx
+        sta zp_px
+        sep #$20
+        .LONGA OFF
+?skipx  jsr skipx_ref                ; refresh cur_floor from the new stand point
+        rep #$20                     ; --- Y axis: halfway point first (see above)
+        .LONGA ON
+        lda mv_dy
+        cmp #$8000
+        ror @
+        clc
+        adc zp_py
+        sta coll_cy
+        lda zp_px
+        sta coll_cx
+        sep #$20
+        .LONGA OFF
+        jsr coll_plr
+        jne ?done
+        rep #$20                     ; --- Y axis: candidate = (px, py+dy) -- py+dy
+        .LONGA ON                    ;   is pk_y, and coll_cx is still px
+        lda pk_y
+        sta coll_cy
+        sep #$20
+        .LONGA OFF
+        jsr coll_step_ok
+        bne ?done
+        jsr coll_plr
+        bne ?done                    ; blocked -> don't commit Y
+        lda #$FF                     ; ...and the things, as on the X axis
+        sta sol_self
+        jsr en_solid
+        bne ?done
+        rep #$20
+        .LONGA ON
+        lda coll_cy
+        sta zp_py
+        sep #$20
+        .LONGA OFF
+?done   jmp mp_clamp                 ; a SHUT DOOR in the way? then pk collapses to
+                                     ;   where he STANDS (the .else side)
+mp_nomove                            ; pl_idle falls back here
+?nomove jmp mp_pkhere                ; NOT moving this frame: the only point to
+                                     ;   test is where he stands
+ .else
         lda pl_dead                  ; a corpse does not walk (P_DeathThink runs
         bne ?dead                    ;   instead of P_MovePlayer)
         jsr pl_airmove               ; airborne? then the keys do nothing and the
@@ -256,6 +402,7 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
                                      ;   point of the pk latch below.
 mp_nomove                            ; pl_idle falls back here
 ?nomove jmp mp_pkhere                ; NOT moving this frame: P_XYMovement never
+ .endif
 .endp                                ;   runs, so the only point to test is where
                                      ;   he stands. The loop that did it moved to
                                      ;   PKCLAMP_BASE beside mp_clamp -- those nine
@@ -277,6 +424,18 @@ coll_solid dta 0                     ; set by coll_seg on an opening of exactly 
         rts
 .endp
 .proc mp_pkhere
+ .if 1
+        stz coll_solid
+        rep #$20                     ; pk = where he stands: two word moves
+        .LONGA ON
+        lda zp_px
+        sta pk_x
+        lda zp_py
+        sta pk_y
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         stz coll_solid
         ldx #3
 ?l      lda zp_px,x
@@ -284,6 +443,7 @@ coll_solid dta 0                     ; set by coll_seg on an opening of exactly 
         dex
         bpl ?l
         rts
+ .endif
 .endp
     .if * > PKCLAMP_END+1
         ert 'mp_clamp/mp_pkhere outgrew PKCLAMP_BASE..END (memory_map.inc)'
@@ -381,6 +541,58 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
 ;   Clobbers A/X and m_a.
 ;--------------------------------------------------------------
 .proc pl_zmove
+ .if 1
+        lda pl_snap
+        beq ?fly
+        stz pl_snap                  ; a spawn or a teleport: stand him on it
+        bra ?land
+?fly    rep #$20                     ; ---- 16-bit A: d = pl_z - floor, signed --
+        .LONGA ON                    ;   the sbc's N and Z ARE the two tests
+        sec                          ;   (sep keeps them)
+        lda pl_z
+        sbc loc_floor
+        sep #$20
+        .LONGA OFF
+        bmi ?land                    ; below it -> he has arrived
+        beq ?land                    ; exactly on it -> still standing
+        lda pl_mz                    ; --- airborne
+        bne ?acc
+        lda #-FALL_G/2               ; momz == 0: the first frame off the edge is
+        bne ?put                     ;   a HALF step -- see the header (always
+                                     ;   taken: FALL_G/2 is not 0)
+?acc    sec
+        sbc #FALL_G
+        cmp #-FALL_TERM              ; terminal velocity -- and the guard that
+        bcs ?put                     ;   keeps a signed byte from wrapping
+        lda #-FALL_TERM              ;   positive on a very deep shaft
+?put    sta pl_mz
+        ldx #0                       ; pl_z += momz, sign-extended (the .else
+        cmp #$80                     ;   side says why this is a CMP)
+        bcc ?pos
+        dex
+?pos    clc
+        adc pl_z
+        sta pl_z
+        txa
+        adc pl_z+1
+        sta pl_z+1
+        lda #1
+        sta pl_air
+        rts
+?land   rep #$20                     ; z = floorz, and the momentum goes with it
+        .LONGA ON                    ;   (the .else side says why, every frame)
+        lda loc_floor
+        sta pl_z
+        stz pl_mz                    ; ...pl_mz AND pl_air: adjacent bytes, one
+        stz pl_adx                   ;   word stz (ert below)
+        stz pl_ady
+        sep #$20
+        .LONGA OFF
+        rts
+    .if pl_air != pl_mz+1
+        ert 'pl_zmove zeroes pl_mz/pl_air with one word stz -- keep them adjacent'
+    .endif
+ .else
         lda pl_snap
         beq ?fly
         lda #0                       ; a spawn or a teleport: stand him on it
@@ -431,6 +643,7 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         sta pl_ady                   ;   floor that sinks away under a motionless
         sta pl_ady+1                 ;   player drops him straight down instead of
         rts                          ;   sideways on whatever he last walked at.
+ .endif
 .endp                                ;   move_player latches the live delta again
                                      ;   BEFORE update_pz runs, so the frame he
                                      ;   actually steps off a ledge keeps its own.
@@ -442,6 +655,24 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
 ;   C=0 = on the ground, carry on reading the stick.
 ;--------------------------------------------------------------
 .proc pl_airmove
+ .if 1
+        lda pl_air
+        beq ?ground
+        rep #$20                     ; ---- 16-bit A: the momentum and the FEET as
+        .LONGA ON                    ;   the step-up reference, three word moves
+        lda pl_adx
+        sta mv_dx
+        lda pl_ady
+        sta mv_dy
+        lda pl_z                     ; (the .else side: P_TryMove measures
+        sta cur_floor                ;   tmfloorz - mo->z, 2026-08-10)
+        sep #$20
+        .LONGA OFF
+        sec
+        rts
+?ground clc
+        rts
+ .else
         lda pl_air
         beq ?ground
         lda pl_adx
@@ -460,6 +691,7 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         rts                          ;   (2026-08-10).
 ?ground clc
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -467,6 +699,17 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
 ;   the edge carries it into the air. Called with mv_dx/mv_dy final.
 ;--------------------------------------------------------------
 .proc pl_latch
+ .if 1
+        rep #$20
+        .LONGA ON
+        lda mv_dx
+        sta pl_adx
+        lda mv_dy
+        sta pl_ady
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         lda mv_dx
         sta pl_adx
         lda mv_dx+1
@@ -476,6 +719,7 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         lda mv_dy+1
         sta pl_ady+1
         rts
+ .endif
 .endp
 
 ; (skipx_ref used to sit here and pushed the block past FALL_END -- it is

@@ -26,9 +26,14 @@
         adc #MAP_VERTS               ; MAP_VERTS = offset $0100 in the EXT bank
         sta zp_vptr                  ;   zp_vptr+2 = MAP_EXT_BANK, set once by
                                      ;   init_level (nothing else writes it)
+ .if 1
+        sec
+        lda [zp_vptr]
+ .else
         ldy #0
         sec
         lda [zp_vptr],y
+ .endif
         sbc zp_px
         sta zp_rx
         ldy #2
@@ -70,6 +75,10 @@ vsh_resume = *
         rep #$20                     ; m_b = texH << 7 (fits: 255<<7 = 32640) --
         .LONGA ON                    ;   in the accumulator, not the old ldx #7
         and #$FF                     ;   loop of asl/rol ON m_b (~98 cycles of
+ .if 1
+	xba
+	lsr
+ .else
         asl @                        ;   memory RMW for what seven 2-cycle
         asl @                        ;   shifts do; _an_drac030 2026-08-31).
         asl @                        ;   `and #$FF`: rep exposes whatever the
@@ -77,9 +86,26 @@ vsh_resume = *
         asl @
         asl @
         asl @
-        sta m_b
+ .endif
+	sta m_b
+ .if 1
+	lda m_a
+
+	ldx #8
+?l	cmp m_b
+	bcc ?next
+	sbc m_b
+?next	lsr m_b
+	dex
+	bne ?l
+
+	sta m_a
+	sep #$20
+	.LONGA OFF
+ .else
         .LONGA OFF
         sep #$20
+
         ldx #8                       ; subtract texH<<7 .. texH<<0 where it fits
 ?l      sec
         lda m_a
@@ -94,6 +120,7 @@ vsh_resume = *
         ror m_b
         dex
         bne ?l
+ .endif
         lda m_a+1                    ; only reachable if world > texH*256 (no real
         bne ?giveup                  ;   geometry does that) -- a truncated hi byte
         lda m_a                      ;   would NOT be congruent, so shift by nothing
@@ -144,7 +171,11 @@ segy_resume = *
         lda m_a+1                    ; MAP_YBITS outgrew one page with the E2/E3
         beq ?pg0                     ;   seg cap (2438 -> 305 B): page-split
         lda MAP_YBITS+256,y
+ .if 1
+	bra ?bit
+ .else
         jmp ?bit
+ .endif
 ?pg0    lda MAP_YBITS,y
 ?bit    lsr
         dex
@@ -164,6 +195,7 @@ segy_resume = *
 ?nx     dey
         bpl ?scan
 ?nope   rts                          ; bitmap and table disagree -> leave the peg
+
 ?found  lda MAP_YVAL,y
         sta rs_yoffv
         lda rs_wtexid                ; wall / upper slot ($FF = untextured, or 'T'
@@ -225,6 +257,31 @@ segy_end = *
 ug_resume = *
         org UGUARD_BASE
 .proc u_guard
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_scL                   ; start from the real scales
+        sta rs_utL
+        lda rs_scR
+        sta rs_utR
+
+	lda rs_scL
+	cmp rs_scR
+	bcc ?r_is_max
+	sta m_b
+	lda rs_scR
+	sta rs_sscl
+	bra ?havesc
+?r_is_max
+	sta rs_sscl
+	lda rs_scR
+	sta m_b
+?havesc
+	lda rs_span		;rs_span = rs_sxR - rs_sxL
+	sta m_a
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_scL                   ; start from the real scales
         sta rs_utL
         lda rs_scL+1
@@ -233,6 +290,7 @@ ug_resume = *
         sta rs_utR
         lda rs_scR+1
         sta rs_utR+1
+
         lda rs_scL                   ; m_b = max(scL, scR)
         ldx rs_scL+1
         cpx rs_scR+1
@@ -253,9 +311,22 @@ ug_resume = *
         lda rs_sxR+1
         sbc rs_sxL+1
         sta m_a+1
+ .endif
         jsr umul16                   ; m_prod(32) = max_scale * span
+
 ?sh     lda m_prod+3                 ; top byte set -> >= 2^24: halve and retry
         beq ?done
+ .if 1
+	rep #$20
+	.LONGA ON
+	lsr m_prod+2
+	ror m_prod
+        lsr rs_utR
+        lsr rs_utL
+	sep #$20
+	.LONGA OFF
+	bra ?sh
+ .else
         lsr m_prod+3
         ror m_prod+2
         ror m_prod+1
@@ -265,6 +336,7 @@ ug_resume = *
         lsr rs_utL+1
         ror rs_utL
         jmp ?sh
+ .endif
 ?done   rts
 .endp
 
@@ -313,8 +385,23 @@ ug_resume = *
 ; would draw, and it still clips every case where the whole seg is in front --
 ; which is the one this exists for.
 ;--------------------------------------------------------------
+ .if 1
+	;nothing
+ .else
 .proc seg_scl
         ldy #0                       ; y = 0 -> scL is the nearer end
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_scL
+        cmp rs_scR
+	bcc ?have
+	ldy #2
+?have	lda rs_scL,y
+        sta rs_sscl
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_scL
         cmp rs_scR
         lda rs_scL+1
@@ -325,11 +412,13 @@ ug_resume = *
         sta rs_sscl
         lda rs_scL+1,y
         sta rs_sscl+1
+ .endif
         rts
 .endp
     .if * > SEGSCL_END+1
         ert 'seg_scl outgrew SEGSCL_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org SPRNCUT_BASE
 .proc spr_ncut
@@ -408,6 +497,15 @@ cm_sscl2
         jsr track_calc
         rep #$20
         .LONGA ON
+ .if 1
+        lda m_prod+1                 ; keep R: it is the RIGHT-hand anchor below,
+        sta rs_acctmp+1              ;   and rs_acctmp is free until we write the
+        lda m_prod                   ;   answer into it
+        sta rs_acctmp
+        sec                          ; step = (R - L) / span
+        sbc rs_Ltmp
+        sta m_prod
+ .else
         lda m_prod                   ; keep R: it is the RIGHT-hand anchor below,
         sta rs_acctmp                ;   and rs_acctmp is free until we write the
         lda m_prod+1                 ;   answer into it
@@ -416,6 +514,7 @@ cm_sscl2
         lda rs_acctmp
         sbc rs_Ltmp
         sta m_prod
+ .endif
         .LONGA OFF
         sep #$20
         lda rs_acctmp+2              ; ...and the 24-bit borrow's top byte
@@ -442,6 +541,20 @@ cm_sscl2
         lda rs_sxR+1
         sbc #0
         sta rs_mag+1
+ .if 1
+	lda zp_xa
+	rep #$20
+	.LONGA ON
+        sec                          ; dL = xa - sxL
+	and #$00ff
+	sbc rs_sxL
+	sta m_a
+	cmp rs_mag
+	bmi ?fromL
+
+	lda rs_mag
+	sta m_a
+ .else
         sec                          ; dL = xa - sxL
         lda zp_xa
         sbc rs_sxL
@@ -449,17 +562,22 @@ cm_sscl2
         lda #0
         sbc rs_sxL+1
         sta m_a+1
+
         sec                          ; dL < dR -> the left end is nearer
         lda m_a
         sbc rs_mag
         lda m_a+1
         sbc rs_mag+1
         bmi ?fromL
+
         lda rs_mag                   ; --- from the RIGHT: acc = R - dR*step ---
         sta m_a
         lda rs_mag+1
         sta m_a+1
-        jsr ?mulstep
+ .endif
+        jsr ?mulstep		;this switches off 16-bit accumulator
+	.LONGA OFF
+
         sec
         lda rs_acctmp                ; (rs_acctmp still holds R)
         sbc m_prod
@@ -470,8 +588,19 @@ cm_sscl2
         lda rs_acctmp+2
         sbc m_prod+2
         sta rs_acctmp+2
+
         rts
+
 ?fromL  jsr ?mulstep                 ; --- from the LEFT: acc = L + dL*step ---
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda rs_Ltmp
+        adc m_prod
+        sta rs_acctmp
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda rs_Ltmp
         adc m_prod
@@ -479,14 +608,26 @@ cm_sscl2
         lda rs_Ltmp+1
         adc m_prod+1
         sta rs_acctmp+1
+ .endif
         lda rs_Ltmp+2
         adc m_prod+2
         sta rs_acctmp+2
+
         rts
+
+ .if 1
+	.LONGA ON
+?mulstep
+	lda rs_Stmp
+	sta m_b
+	sep #$20
+	.LONGA OFF
+ .else 
 ?mulstep lda rs_Stmp                 ; m_prod = m_a * step (signed)
         sta m_b
         lda rs_Stmp+1
         sta m_b+1
+ .endif
         jmp smul32
 .endp
 
@@ -575,8 +716,12 @@ ds_resume = *
         ;     goes back before every call.
         rep #$20                     ; ---- 16-bit A
         .LONGA ON                    ;   (and TELL MADS: an immediate is 3 B now)
+ .if 1
+        lda [zp_sptr]
+ .else
         ldy #0                       ; v1
         lda [zp_sptr],y
+ .endif
         sta zp_vidx
         .LONGA OFF
         sep #$20
@@ -699,15 +844,21 @@ ds_resume = *
         sta zp_X2
         lda zp_Z
         sta zp_Z2
+ .if 1
+	stz zp_tmp
         .LONGA OFF
         sep #$20                     ; ---- 8-bit again
-?front
+ .else
+        .LONGA OFF
+        sep #$20                     ; ---- 8-bit again
+;?front
         ; --- near-plane clip (match render_view): clip a behind-near endpoint
         ;     to Z=ZNEAR (keep the seg); drop ONLY if both endpoints are behind.
         ;     near1/near2 flags in zp_tmp/zp_tmp+1 (free until draw_vspan). ---
         lda #0
         sta zp_tmp
         sta zp_tmp+1
+ .endif
         lda zp_Z1+1                  ; Z1 < ZNEAR ?
         bmi ?n1
         bne ?c1
@@ -738,8 +889,12 @@ ds_resume = *
         lda zp_tmp
         bne ?clip1                   ; only Z1 behind -> clip endpoint 1
         ; --- clip endpoint 2 toward endpoint 1: X2 += (X1-X2)*t ; Z2=ZNEAR ---
+ .if 1
+	stz m_prod
+ .else
         lda #0                       ; m_prod byte 0 -- 8-bit, it is one byte
         sta m_prod
+ .endif
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
         sec                          ; t8 = (ZNEAR - Z2)<<8 / (Z1 - Z2)
@@ -776,8 +931,12 @@ ds_resume = *
         sep #$20
         jmp ?z2ok
 ?clip1  ; --- clip endpoint 1 toward endpoint 2: X1 += (X2-X1)*t ; Z1=ZNEAR ---
+ .if 1
+	stz m_prod
+ .else
         lda #0                       ; m_prod byte 0 -- 8-bit, it is one byte
         sta m_prod
+ .endif
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
         sec                          ; t8 = (ZNEAR - Z1)<<8 / (Z2 - Z1)
@@ -802,9 +961,14 @@ ds_resume = *
         .LONGA OFF
         sep #$20
         jsr smul32                   ; m_prod = dX * t8
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+ .else
         rep #$20
         .LONGA ON
         clc                          ; X1 += m_prod>>8
+ .endif
         lda zp_X1
         adc m_prod+1
         sta zp_X1
@@ -831,18 +995,26 @@ ds_resume = *
         ; every one of them is 16 bits, so the halves, the m_a scratch and the
         ; `ora` that re-joined them all go -- a 16-bit lda sets N from bit 15
         ; and Z from all sixteen, which is exactly what the tests ask.
+ .if 1
+	rep #$21		;absorb CLC
+        .LONGA ON
+        lda zp_X1                    ; both endpoints left of the screen?
+        bpl ?fr_nl                   ; X1 + Z1 < 0 ?
+ .else
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
         lda zp_X1                    ; both endpoints left of the screen?
         bpl ?fr_nl
         clc                          ; X1 + Z1 < 0 ?
-        lda zp_X1
+ .endif
+;       lda zp_X1
         adc zp_Z1
         bpl ?fr_nl
+
         lda zp_X2
         bpl ?fr_nl
         clc                          ; X2 + Z2 < 0 ?
-        lda zp_X2
+;       lda zp_X2
         adc zp_Z2
         bmi ?fr_out
         bpl ?fr_nl                   ; (always: the sign was just tested clear)
@@ -853,15 +1025,16 @@ ds_resume = *
         .LONGA ON                    ; (?fr_nl is reached in 16-bit, always)
 ?fr_nl  lda zp_X1                    ; both endpoints right of the screen?
         bmi ?fr_nr
-        sec                          ; X1 - Z1 > 0 ?
-        lda zp_X1
+	sec                          ; X1 - Z1 > 0 ?
+;       lda zp_X1
         sbc zp_Z1
         bmi ?fr_nr
         beq ?fr_nr                   ; X1 == Z1 is the edge column: keep
+
         lda zp_X2
         bmi ?fr_nr
         sec                          ; X2 - Z2 > 0 ?
-        lda zp_X2
+;       lda zp_X2
         sbc zp_Z2
         bmi ?fr_nr
         bne ?fr_out
@@ -910,9 +1083,14 @@ ds_resume = *
         lda m_xs
         sta rs_sx2
         ; --- order left<=right by signed sx (d = sx1 - sx2) ---
+ .if 1
+        lda rs_sx1
+        cmp rs_sx2
+ .else
         sec
         lda rs_sx1
         sbc rs_sx2
+ .endif
         .LONGA OFF
         sep #$20                     ; (sep touches M only -- N and Z survive it)
         bmi ?one_l                   ; d<0 -> sx1 is left
@@ -932,9 +1110,18 @@ ds_resume = *
         sta rs_scR
         .LONGA OFF
         sep #$20
+ .if 1
+	bra ?ordered
+ .else
         jmp ?ordered
-?one_l  lda #0                       ; v1 is the LEFT endpoint -> u runs 0..L
+ .endif
+?one_l
+ .if 1
+        stz rs_uflip
+ .else
+	lda #0                       ; v1 is the LEFT endpoint -> u runs 0..L
         sta rs_uflip
+ .endif
         rep #$20
         .LONGA ON
         lda rs_sx1
@@ -955,7 +1142,11 @@ ds_resume = *
         beq ?xalo                    ; hi==0 -> use low
         lda #SCREEN_WIDTH            ; sxL >= 256 -> off right (force skip)
         sta zp_xa
+ .if 1
+	bra ?xadone
+ .else
         jmp ?xadone
+ .endif
 ?xalo   lda rs_sxL
         cmp vw_x0
         bcs ?xas
@@ -998,6 +1189,18 @@ ds_resume = *
 ?go
         ; --- span = sxR - sxL (>=1) ---
         sec
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_sxR
+        sbc rs_sxL
+	bne ?spok
+	inc
+?spok	sta rs_span
+	sta rc_m
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_sxR
         sbc rs_sxL
         sta rs_span
@@ -1015,7 +1218,9 @@ ds_resume = *
         sta rc_m
         lda rs_span+1
         sta rc_m+1
+ .endif
         jsr recip_norm               ; X = mantissa idx, rc_e = e
+
         lda.l RCX_INV_LO,x           ; bank $01 (memory_map.inc RECIP_EXT)
         sta rs_invm
         lda.l RCX_INV_HI,x
@@ -1046,6 +1251,33 @@ ds_resume = *
         ;     EXT bank (pack_map.py). zp_ptr+2 already holds MAP_EXT_BANK, and
         ;     the sector reads further down use plain (zp_ptr),y, which ignores
         ;     the bank byte. Loaded BEFORE the uflip branch so both paths get it.
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda rs_segi
+	asl
+	sta m_a
+;	clc
+	adc #MAP_SEGOFF
+	sta zp_ptr
+
+        lda [zp_ptr]
+        sta rs_segoff
+
+        ldy rs_uflip
+	beq ?u01
+
+        sec                          ; left end carries u = L, right end u = 0
+        lda #0
+        sbc rs_seglen
+        sta m_prod+1
+        bra ?ustep
+
+?u01    lda rs_seglen                ; left end u = 0, right end u = L
+        sta m_prod+1
+?ustep	sep #$20
+	.LONGA OFF
+ .else
         lda rs_segi
         asl
         sta m_a
@@ -1059,14 +1291,17 @@ ds_resume = *
         lda m_a+1
         adc #>MAP_SEGOFF
         sta zp_ptr+1
+
         ldy #0
         lda [zp_ptr],y
         sta rs_segoff
         iny
         lda [zp_ptr],y
         sta rs_segoff+1
+
         lda rs_uflip
         beq ?u01
+
         sec                          ; left end carries u = L, right end u = 0
         lda #0
         sbc rs_seglen
@@ -1075,13 +1310,28 @@ ds_resume = *
         sbc rs_seglen+1
         sta m_prod+2
         jmp ?ustep
+
 ?u01    lda rs_seglen                ; left end u = 0, right end u = L
         sta m_prod+1
         lda rs_seglen+1
         sta m_prod+2
-?ustep  jsr u_guard                  ; rs_utL/utR = rs_scL/scR, halved until
+?ustep
+ .endif
+	jsr u_guard                  ; rs_utL/utR = rs_scL/scR, halved until
                                      ;   max(scale)*span fits the 24-bit tracks
         sec                          ; t1 = scaleR * (xa - sxL)
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_xa
+	and #$00ff
+        sbc rs_sxL
+        sta m_a
+        lda rs_utR
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_xa
         sbc rs_sxL
         sta m_a
@@ -1092,13 +1342,16 @@ ds_resume = *
         sta m_b
         lda rs_utR+1
         sta m_b+1
+ .endif
         jsr umul16
+
         lda m_prod
         sta rs_t1
         lda m_prod+1
         sta rs_t1+1
         lda m_prod+2
         sta rs_t1+2
+
         sec                          ; t2 = scaleL * (sxR - xa)
         lda rs_sxR
         sbc zp_xa
@@ -1106,11 +1359,14 @@ ds_resume = *
         lda rs_sxR+1
         sbc #0
         sta m_a+1
+
         lda rs_utL
         sta m_b
         lda rs_utL+1
         sta m_b+1
+
         jsr umul16
+
         lda m_prod
         sta rs_t2
         lda m_prod+1
@@ -1133,7 +1389,7 @@ ds_resume = *
         asl @
         asl @
         asl @                        ; front_sec*8 (8-byte sector records)
-        clc
+;       clc
         adc #MAP_SECTORS
         sta zp_ptr
         ; worldtop = ceil_h(@2) - pz ; worldbot = floor_h(@0) - pz
@@ -1142,9 +1398,14 @@ ds_resume = *
         lda (zp_ptr),y
         sbc zp_pz
         sta rs_wtop
+ .if 1
+        sec
+        lda (zp_ptr)
+ .else
         ldy #0
         sec
         lda (zp_ptr),y
+ .endif
         sbc zp_pz
         sta rs_wbot
         sec                          ; worldH = f_ceil-f_floor = wtop-wbot (texel span)
@@ -1169,6 +1430,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         iny                          ; low_tex @ seg+7: texid + bit6 ML_DONTPEGBOTTOM
         lda [zp_sptr],y              ;   + bit7 EXIT line. Read for EVERY seg: a
         sta rs_pegl                  ;   one-sided wall has no lower step but DOES
+
         jsr mtx_pegf                 ;   use the peg bit (door tracks).
                                      ; = lda rs_pegf, except in the MASKED pass,
                                      ;   which draws the two-sided MIDDLE texture
@@ -1194,7 +1456,9 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_wtexad+2
         lda MAP_TEXWMASK,x
         sta rs_wtexwm
+
         jsr tex_setix                ; -> wall_src.wix: this texture's column index
+
         lda wt_ixl                   ;   array (pack_textures.dedup_columns)
         sta wall_src.wix+1
         lda wt_ixh
@@ -1211,7 +1475,15 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         bne ?wflat                   ;   flat mode -- no fetch, no arena spend).
                                      ;   = lda tex_flat, except for a two-sided
                                      ;   MIDDLE texture, which 'T' does not
-                                     ;   flatten: see midtex.asm
+ .if 1                               ;   flatten: see midtex.asm
+	rep #$21
+	.LONGA ON
+	lda rs_wtexad
+	adc tex_sdram
+	sta rs_wtexad
+	sep #$20
+	.LONGA OFF
+ .else
         clc                          ; PAINTED: the runs are read by the CPU out
         lda rs_wtexad                ;   of SDRAM, so the address is simply
         adc tex_sdram                ;   tex_sdram + the file offset. No arena,
@@ -1219,17 +1491,26 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_wtexad+1              ;   all -- which is the whole point of the
         adc tex_sdram+1              ;   run format (paint.asm). (The B2 arena
         sta rs_wtexad+1              ;   branch that used to sit here under
+ .endif
         lda rs_wtexad+2              ;   .else was deleted with tex_fget,
         adc tex_sdram+2              ;   2026-08-14.)
         sta rs_wtexad+2
+ .if 1
+	bra ?whave
+ .else
         jmp ?whave
+ .endif
 ?wflat  lda #$FF                     ; keep rs_wallcol, drop the handle: a flat
         sta rs_wtexid                ;   wall in its dominant colour, so the draw
         bne ?whave                   ;   sites take the flat path. (A = $FF)
 ?wnone  lda #$FF
         sta rs_wtexid
+ .if 1
+        stz rs_wallcol
+ .else
         lda #0
         sta rs_wallcol
+ .endif
 ?whave
         ; --- front planes (ceil + floor) via plane_setup. In the MASKED pass
         ;     mtx_pegf above has already swapped rs_wtop/rs_wbot for the mid
@@ -1239,19 +1520,49 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_wtmp
         lda rs_wtop+1
         sta rs_wtmp+1
+
         jsr plane_setup
+
         lda rs_Stmp
         sta rs_ycS
         lda rs_Stmp+1
         sta rs_ycS+1
         bpl ?ycpos                   ; patch ?cnext's 24-bit carry step for THIS
+
+ .if 1
+        ldx #$B0                     ;   step's sign (see the block at ?ycadd):
+        ldy #$88                     ;   negative -> BCS + DEY  (acc+2 += $FF + C)
+	bra ?ycput
+?ycpos  ldx #$90                     ;   positive -> BCC + INY  (acc+2 += $00 + C)
+        ldy #$C8
+?ycput  stx ?ycadd
+        sty ?ycinc
+ .else
         ldx #$B0                     ;   step's sign (see the block at ?ycadd):
         ldy #$CE                     ;   negative -> BCS + DEC  (acc+2 += $FF + C)
+  .if 1
+	bra ?ycput
+  .else
         bne ?ycput                   ;   ($CE != 0, so this is always taken)
+  .endif
 ?ycpos  ldx #$90                     ;   positive -> BCC + INC  (acc+2 += $00 + C)
         ldy #$EE
 ?ycput  stx ?ycadd
-        sty ?ycadd+2
+        sty ?ycinc
+ .endif
+
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_acctmp
+        sta rs_ycacc
+        ldy rs_acctmp+2
+        sty rs_ycacc+2
+        lda rs_wbot
+        sta rs_wtmp
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_acctmp
         sta rs_ycacc
         lda rs_acctmp+1
@@ -1262,23 +1573,50 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_wtmp
         lda rs_wbot+1
         sta rs_wtmp+1
+ .endif
         jsr plane_setup
+
         lda rs_Stmp
         sta rs_yfS
         lda rs_Stmp+1
         sta rs_yfS+1
         bpl ?yfpos                   ; same patch for the front-floor track
+
+ .if 1
+        ldx #$B0
+        ldy #$88
+        bra ?yfput
+?yfpos  ldx #$90
+        ldy #$c8
+?yfput  stx ?yfadd
+        sty ?yfinc
+ .else
         ldx #$B0
         ldy #$CE
+  .if 1
+        bra ?yfput
+  .else
         bne ?yfput
+  .endif
 ?yfpos  ldx #$90
         ldy #$EE
 ?yfput  stx ?yfadd
-        sty ?yfadd+2
+        sty ?yfinc
+ .endif
+
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_acctmp
+        sta rs_yfacc
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_acctmp
         sta rs_yfacc
         lda rs_acctmp+1
         sta rs_yfacc+1
+ .endif
         lda rs_acctmp+2
         sta rs_yfacc+2
         ; --- portal? back_sec (@seg+SEG_BACK) != NO_SECTOR ---
@@ -1292,10 +1630,16 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
                                      ;   ML_DONTPEGBOTTOM rule below happens to
                                      ;   BE the mid texture's peg (midtex.asm)
         bne ?two_sided
+ .if 1
+        stz rs_isport
+        stz rs_vshl                  ; no lower step on a solid seg
+        stz rs_vshw                  ; default: top-pegged at the front ceiling
+ .else
         lda #0
         sta rs_isport
         sta rs_vshl                  ; no lower step on a solid seg
         sta rs_vshw                  ; default: top-pegged at the front ceiling
+ .endif
         lda #$FF                     ; no lower step on a solid seg (stale id would
         sta rs_ltexid                ; defeat the "nothing textured" test per column)
         ; --- DOOM r_segs.c: a one-sided line with ML_DONTPEGBOTTOM puts the
@@ -1314,15 +1658,21 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         jsr vsh_neg
         sta rs_vshw
 ?soldone jmp ?have_planes
+
 ?two_sided
         lda #1
         sta rs_isport
         lda rs_pegl                  ; lower-step texid (bits 0-5; bit7 EXIT used to
         and #$3F                     ;   push the byte past TEX_COUNT and silently
         cmp MAP_HNTEX               ;   blank an exit line's lower step)
+ .if 1
+	jcs ?lnone
+ .else
         bcc ?lok
         jmp ?lnone                   ; (the B2 fetch block pushed it out of range)
-?lok    tax
+?lok
+ .endif
+	tax
         stx rs_ltexid                ; B2: lower-step texture handle
         ldy MAP_TEXDOM,x             ; ... same shade for the lower step's flat
         lda [zp_cm],y                ;     fallback colour (lt_seg set zp_cm)
@@ -1349,8 +1699,25 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_ltexh                 ;   in its dominant colour (see ?wflat above)
         bne ?lgo
 ?lfj    jmp ?lflat                   ; (the fetch block pushed ?lflat out of
+
 ?lgo    lda tex_flat                 ;   branch range)
         bne ?lfj                     ; 'T': runtime flat mode, lower step too
+
+ .if 1
+        rep #$21                     ; PAINTED: SDRAM address, no arena (see the
+        .LONGA ON                    ;   wall slot above). Nothing can be evicted
+	                             ;   any more, so the flush handshake and the
+                                     ;   re-fetch that used to sit here under
+        lda rs_ltexad                ;   .else went with tex_fget (2026-08-14).
+        adc tex_sdram
+        sta rs_ltexad
+	sep #$20
+	.LONGA OFF
+        lda rs_ltexad+2
+        adc tex_sdram+2
+        sta rs_ltexad+2
+        bra ?lhave
+ .else
         clc                          ; PAINTED: SDRAM address, no arena (see the
         lda rs_ltexad                ;   wall slot above). Nothing can be evicted
         adc tex_sdram                ;   any more, so the flush handshake and the
@@ -1362,14 +1729,46 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         adc tex_sdram+2
         sta rs_ltexad+2
         jmp ?lhave
+ .endif
+
 ?lflat  lda #$FF
         sta rs_ltexid
+ .if 1
+	bra ?lhave
+ .else
         bne ?lhave                   ; (A = $FF)
+ .endif
 ?lnone  lda #$FF
         sta rs_ltexid
+ .if 1
+        stz rs_lowcol
+ .else
         lda #0
         sta rs_lowcol
+ .endif
 ?lhave
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_a
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc #MAP_SECTORS
+	sta zp_ptr
+        ldy #2                       ; back ceil plane: b_ceil(@2) - pz
+        sec
+        lda (zp_ptr),y
+        sbc zp_pz
+        sta rs_wtmp
+	sep #$20
+	.LONGA OFF
+        stz rs_vshw
+        bit rs_pegf
+	bvs ?uppeg
+ .else
         lda m_a                      ; m_prod = back_sec*8 via shifts (tips #3)
         sta m_prod
         lda #0
@@ -1406,6 +1805,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_pegf
         and #$40
         bne ?uppeg                   ; ML_DONTPEGTOP -> top-pegged, nothing to add
+ .endif
         sec                          ; D = front_ceil - back_ceil (world units)
         lda rs_wtop
         sbc rs_wtmp
@@ -1414,28 +1814,63 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sbc rs_wtmp+1
         sta m_a+1
         bmi ?uppeg                   ; back ceiling above front -> no upper span
+
         lda rs_wtexh
         jsr vsh_neg
         sta rs_vshw
+
 ?uppeg  jsr plane_setup
+
         lda rs_Stmp
         sta rs_ybcS
         lda rs_Stmp+1
         sta rs_ybcS+1
         bpl ?bcpos                   ; ... and for the back-ceiling track (portals
+
+ .if 1
+        ldx #$B0                     ;   only -- ?cnext skips it when rs_isport = 0,
+        ldy #$88                     ;   so a stale patch here is never executed)
+	bra ?bcput
+?bcpos  ldx #$90
+        ldy #$C8
+?bcput  stx ?bcadd
+        sty ?bcinc
+ .else
         ldx #$B0                     ;   only -- ?cnext skips it when rs_isport = 0,
         ldy #$CE                     ;   so a stale patch here is never executed)
+  .if 1
+	bra ?bcput
+  .else
         bne ?bcput
+  .endif
 ?bcpos  ldx #$90
         ldy #$EE
 ?bcput  stx ?bcadd
-        sty ?bcadd+2
+        sty ?bcinc
+ .endif
+
         lda rs_acctmp
         sta rs_ybcacc
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_acctmp+1
+        sta rs_ybcacc+1
+        sec
+        lda (zp_ptr)
+        sbc zp_pz
+        sta rs_wtmp
+	sep #$20
+	.LONGA OFF
+        stz rs_vshl
+        bit rs_pegl
+        bvc ?lowpeg
+ .else
         lda rs_acctmp+1
         sta rs_ybcacc+1
         lda rs_acctmp+2
         sta rs_ybcacc+2
+
         ldy #0                       ; back floor plane: b_floor(@0) - pz
         sec
         lda (zp_ptr),y
@@ -1453,6 +1888,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_pegl
         and #$40
         beq ?lowpeg
+ .endif
         sec                          ; L = front_ceil - back_floor (world units)
         lda rs_wtop
         sbc rs_wtmp
@@ -1461,26 +1897,53 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sbc rs_wtmp+1
         sta m_a+1
         bmi ?lowpeg                  ; back floor above front ceiling -> no step
+
         lda rs_ltexh
         jsr vsh_mod
         sta rs_vshl
+
 ?lowpeg jsr plane_setup
+
         lda rs_Stmp
         sta rs_ybfS
         lda rs_Stmp+1
         sta rs_ybfS+1
         bpl ?bfpos                   ; ... and the back-floor track (portals only)
+
+ .if 1
+        ldx #$B0
+        ldy #$88
+	bra ?bfput
+?bfpos  ldx #$90
+        ldy #$C8
+?bfput  stx ?bfadd
+        sty ?bfinc
+ .else
         ldx #$B0
         ldy #$CE
+  .if 1
+	bra ?bfput
+  .else
         bne ?bfput
+  .endif
 ?bfpos  ldx #$90
         ldy #$EE
 ?bfput  stx ?bfadd
-        sty ?bfadd+2
+        sty ?bfinc
+ .endif
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_acctmp
+        sta rs_ybfacc
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_acctmp
         sta rs_ybfacc
         lda rs_acctmp+1
         sta rs_ybfacc+1
+ .endif
         lda rs_acctmp+2
         sta rs_ybfacc+2
 ?have_planes
@@ -1502,9 +1965,14 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
     .endif
         ldx zp_xa
 ?col    lda solid_arr,x
+ .if 1
+	bne ?cskip
+ .else
         beq ?open
         jmp ?cskip                   ; column already closed
-?open   lda ytopc_arr,x              ; window [top,bot]
+?open
+ .endif
+	lda ytopc_arr,x              ; window [top,bot]
         sta rs_top
         lda ybotc_arr,x
         sta rs_bot
@@ -1512,6 +1980,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         bcs ?winok
 ?cskip  jsr cm_flush                 ; a skipped column breaks the run: copy now
         jmp ?cnext
+
 ?winok  lda rs_ycacc+1               ; raw front rows (signed16 = acc>>8)
         sta rs_pyc16
         lda rs_ycacc+2
@@ -1542,12 +2011,29 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         bcc ?cmdraw
         jsr cm_defer                 ; yes: skip it, one blit copies it later
         jmp ?cnext
+
 ?cmdraw jsr cm_flush                 ; no: close the previous run, then draw
         ; ceiling: top .. pyc-1
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda rs_top
+	and #$00ff
+	sta rs_ra
+        lda rs_pyc16
+	dec
+        sta rs_rb
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_top
         sta rs_ra
+  .if 1
+        stz rs_ra+1
+  .else
         lda #0
         sta rs_ra+1
+  .endif
         sec
         lda rs_pyc16
         sbc #1
@@ -1555,13 +2041,39 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_pyc16+1
         sbc #0
         sta rs_rb+1
+ .endif
         lda rs_ceilcol
         sta zp_color
         jsr draw_clip
+
         lda rs_isport
+ .if 1
+	jne ?portalw
+ .else
         beq ?solidw
         jmp ?portalw
-?solidw ; --- SOLID: wall pyc..pyf, floor pyf+1..bot ---
+?solidw
+ .endif
+	; --- SOLID: wall pyc..pyf, floor pyf+1..bot ---
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_pyc16
+        sta rs_ra
+        lda rs_pyf16
+        sta rs_rb
+
+        ldy rs_wtexid                ; B2: textured wall if a texture is set
+        cpy #$FF
+        beq ?txw_solid
+
+        lda rs_pyc16                 ; top-peg at the ceiling
+        sta rs_pegrow
+	sep #$20
+	.LONGA OFF
+        lda rs_vshw                  ; + DOOM's peg shift for this seg
+        sta rs_vsh
+ .else
         lda rs_pyc16
         sta rs_ra
         lda rs_pyc16+1
@@ -1570,23 +2082,48 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_rb
         lda rs_pyf16+1
         sta rs_rb+1
+
         lda rs_wtexid                ; B2: textured wall if a texture is set
         cmp #$FF
         beq ?txw_solid
+
         lda rs_pyc16                 ; top-peg at the ceiling
         sta rs_pegrow
         lda rs_pyc16+1
         sta rs_pegrow+1
         lda rs_vshw                  ; + DOOM's peg shift for this seg
         sta rs_vsh
+ .endif
         jsr wall_src
         jsr draw_twall_clip
+ .if 1
+	bra ?txw_done
+ .else
         jmp ?txw_done
+ .endif
 ?txw_solid
+ .if 1
+	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
         lda rs_wallcol
         sta zp_color
         jsr draw_clip
 ?txw_done
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_pyf16
+	inc
+        sta rs_ra
+	lda rs_bot
+	and #$00ff
+	sta rs_rb
+	sep #$20
+	.LONGA OFF
+ .else
         clc                          ; floor: pyf+1 .. bot
         lda rs_pyf16
         adc #1
@@ -1598,9 +2135,11 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_rb
         lda #0
         sta rs_rb+1
+ .endif
         lda rs_floorcol
         sta zp_color
         jsr draw_clip
+
         lda #1
         sta solid_arr,x
         dec cols_open
@@ -1609,7 +2148,21 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
 ?sclo   jsr cm_sscl.cm_sscl2         ; the scale for spr_ncut, then cm_save (this
                                      ;   column is now the run's source)
         jmp ?cnext
+
 ?portalw ; --- PORTAL: see-through window + upper/lower steps ---
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_ybcacc+1             ; raw back rows
+        sta rs_pybc16
+        lda rs_ybfacc+1
+        sta rs_pybf16
+        lda rs_pyc16
+        sta rs_nt16
+	sep #$20
+	.LONGA OFF
+	xba			;set NZ acc. to MSB (rs_pyc16+1)
+ .else
         lda rs_ybcacc+1             ; raw back rows
         sta rs_pybc16
         lda rs_ybcacc+2
@@ -1624,6 +2177,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_pyc16+1
         sta rs_nt16+1
         lda rs_pyc16+1
+ .endif
         bmi ?nttop
         bne ?ntk1
         lda rs_pyc16
@@ -1631,9 +2185,36 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         bcs ?ntk1
 ?nttop  lda rs_top
         sta rs_nt16
+ .if 1
+        stz rs_nt16+1
+ .else
         lda #0
         sta rs_nt16+1
+ .endif
 ?ntk1   ; upper step if pybc16 > pyc16
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_pybc16
+        cmp rs_pyc16
+	bmi ?noup
+	beq ?noup
+
+        lda rs_pyc16                 ; draw upper: pyc16 .. pybc16-1
+        sta rs_ra
+        lda rs_pybc16
+        dec
+        sta rs_rb
+
+        ldy rs_wtexid                ; B2: upper step uses the wall texture
+        cpy #$FF
+        beq ?txu_solid
+
+        lda rs_pyc16                 ; upper step measured from the ceiling row
+        sta rs_pegrow                ; (rs_dscr/rs_tpr stay the column's -- the texel
+	sep #$20
+	.LONGA OFF
+ .else
         sec
         lda rs_pybc16
         sbc rs_pyc16
@@ -1643,6 +2224,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         bmi ?noup
         ora m_a
         beq ?noup
+
         lda rs_pyc16                 ; draw upper: pyc16 .. pybc16-1
         sta rs_ra
         lda rs_pyc16+1
@@ -1654,23 +2236,56 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_pybc16+1
         sbc #0
         sta rs_rb+1
+
         lda rs_wtexid                ; B2: upper step uses the wall texture
         cmp #$FF
         beq ?txu_solid
+
         lda rs_pyc16                 ; upper step measured from the ceiling row
         sta rs_pegrow                ; (rs_dscr/rs_tpr stay the column's -- the texel
         lda rs_pyc16+1               ;  rate does not depend on the span); rs_vshw
         sta rs_pegrow+1              ;  then re-anchors it to the BACK ceiling when
+ .endif
         lda rs_vshw                  ;  the linedef is not ML_DONTPEGTOP -- that is
         sta rs_vsh                   ;  the door face riding up with the door
         jsr wall_src
         jsr draw_twall_clip
+ .if 1
+	bra ?txu_done
+ .else
         jmp ?txu_done
+ .endif
 ?txu_solid
+ .if 1
+	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
         lda rs_wallcol
         sta zp_color
         jsr draw_clip
 ?txu_done
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_pybc16
+        cmp rs_nt16
+	bmi ?noup
+	beq ?noup
+
+        lda rs_pybc16
+        sta rs_nt16
+
+?noup	lda rs_pyf16
+        inc
+        sta rs_ra
+        lda rs_bot
+	and #$00ff
+        sta rs_rb
+	sep #$20
+	.LONGA OFF
+ .else
         sec                          ; nt16 = max(nt16, pybc16)
         lda rs_pybc16
         sbc rs_nt16
@@ -1680,10 +2295,12 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         bmi ?noup
         ora m_a
         beq ?noup
+
         lda rs_pybc16
         sta rs_nt16
         lda rs_pybc16+1
         sta rs_nt16+1
+
 ?noup   clc                          ; floor: pyf+1 .. bot
         lda rs_pyf16
         adc #1
@@ -1695,9 +2312,11 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_rb
         lda #0
         sta rs_rb+1
+ .endif
         lda rs_floorcol
         sta zp_color
         jsr draw_clip
+
         ; nb16 = min(bot, pyf16)
         lda rs_pyf16
         sta rs_nb16
@@ -1712,15 +2331,42 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         beq ?nbk1
 ?nbbot  lda rs_bot
         sta rs_nb16
+ .if 1
+        stz rs_nb16+1
+ .else
         lda #0
         sta rs_nb16+1
+ .endif
 ?nbk1   ; lower step if pybf16 < pyf16
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_pybf16
+        cmp rs_pyf16
+	bpl ?nolo
+
+        lda rs_pybf16
+	inc
+        sta rs_ra
+        lda rs_pyf16
+        sta rs_rb
+
+        ldy rs_ltexid                ; B2: textured lower step if a texture is set
+        cpy #$FF
+        beq ?txl_solid
+
+        lda rs_pybf16                ; lower step top-pegged at the back floor row
+        sta rs_pegrow                ; (rs_dscr/rs_tpr stay the column's); rs_vshl
+	sep #$20
+	.LONGA OFF
+ .else
         sec
         lda rs_pybf16
         sbc rs_pyf16
         lda rs_pybf16+1
         sbc rs_pyf16+1
         bpl ?nolo
+
         clc                          ; draw lower: pybf16+1 .. pyf16
         lda rs_pybf16
         adc #1
@@ -1732,37 +2378,66 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta rs_rb
         lda rs_pyf16+1
         sta rs_rb+1
+
         lda rs_ltexid                ; B2: textured lower step if a texture is set
         cmp #$FF
         beq ?txl_solid
+
         lda rs_pybf16                ; lower step top-pegged at the back floor row
         sta rs_pegrow                ; (rs_dscr/rs_tpr stay the column's); rs_vshl
         lda rs_pybf16+1              ; moves it to the front ceiling for a
         sta rs_pegrow+1              ; ML_DONTPEGBOTTOM linedef
+ .endif
         lda rs_vshl
         sta rs_vsh
         jsr low_src
         jsr draw_twall_clip
+ .if 1
+	bra ?txl_done
+ .else
         jmp ?txl_done
+ .endif
 ?txl_solid
+ .if 1
+	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
         lda rs_lowcol
         sta zp_color
         jsr draw_clip
 ?txl_done
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_pybf16
+        cmp rs_nb16
+	bpl ?nolo
+
+        lda rs_pybf16
+        sta rs_nb16
+?nolo	sep #$20
+	.LONGA OFF
+ .else
         sec                          ; nb16 = min(nb16, pybf16)
         lda rs_pybf16
         sbc rs_nb16
         lda rs_pybf16+1
         sbc rs_nb16+1
         bpl ?nolo
+
         lda rs_pybf16
         sta rs_nb16
         lda rs_pybf16+1
         sta rs_nb16+1
-?nolo   lda rs_nt16                 ; store window (low byte) + close if nt16>nb16
+?nolo
+ .endif
+	lda rs_nt16                 ; store window (low byte) + close if nt16>nb16
         sta ytopc_arr,x
         lda rs_nb16
         sta ybotc_arr,x
+
         clc                          ; nb16 - nt16 - 1 < 0  <=>  nb16 <= nt16 ->
         lda rs_nb16                  ;   close. NOT `sec` (i.e. nb16 < nt16): a
         sbc rs_nt16                  ;   portal whose opening is EXACTLY zero --
@@ -1786,7 +2461,8 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         sta frame_done
 ?pdone  jsr cm_sscl                  ; the scale IF this column just closed, then
                                      ;   cm_save (the run's source column)
-?cnext  clc                          ; perspective weights: t1 += scaleR, t2 -= scaleL
+?cnext
+	clc                          ; perspective weights: t1 += scaleR, t2 -= scaleL
         lda rs_t1
         adc rs_utR
         sta rs_t1
@@ -1796,6 +2472,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_t1+2
         adc #0
         sta rs_t1+2
+
         sec
         lda rs_t2
         sbc rs_utL
@@ -1806,7 +2483,55 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         lda rs_t2+2
         sbc #0
         sta rs_t2+2
+
         ; advance front accumulators (24-bit += signed16 step)
+;
+; WARNING: self-modifying code
+;
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda rs_ycacc
+        adc rs_ycS
+        sta rs_ycacc
+?ycadd	bcc ?ycdone                  ; opcodes patched per seg -- see ?ycadd
+	ldy rs_ycacc+2
+?ycinc	iny			;ditto
+	sty rs_ycacc+2
+?ycdone
+	clc
+        lda rs_yfacc
+        adc rs_yfS
+        sta rs_yfacc
+?yfadd	bcc ?yfdone                  ; opcodes patched per seg -- see ?ycadd
+	ldy rs_yfacc+2
+?yfinc	iny 			;ditto
+	sty rs_yfacc+2
+?yfdone
+	ldy rs_isport               ; back accumulators only for portals
+        beq ?adv_done
+        clc
+        lda rs_ybcacc
+        adc rs_ybcS
+        sta rs_ybcacc
+?bcadd  bcc ?bcdone                  ; opcodes patched per seg -- see ?ycadd
+	ldy rs_ybcacc+2
+?bcinc	iny			;ditto
+	sty rs_ybcacc+2
+?bcdone
+        clc
+        lda rs_ybfacc
+        adc rs_ybfS
+        sta rs_ybfacc
+?bfadd  bcc ?bfdone                  ; opcodes patched per seg -- see ?ycadd
+	ldy rs_ybfacc+2
+?bfinc	iny			;ditto
+	sty rs_ybfacc+2
+?bfdone
+?adv_done
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda rs_ycacc
         adc rs_ycS
@@ -1822,8 +2547,8 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         ; Exactly equivalent, and the taken branch is the common case (acc+1 is a
         ; screen row, so a carry out of it is rare going up and near-certain going
         ; down) -- 3 cycles instead of 17-19.
-?ycadd  bcc ?ycdone
-        inc rs_ycacc+2
+?ycadd  bcc ?ycdone		;self-mod code
+?ycinc	inc rs_ycacc+2		;ditto
 ?ycdone
         clc
         lda rs_yfacc
@@ -1833,7 +2558,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         adc rs_yfS+1
         sta rs_yfacc+1
 ?yfadd  bcc ?yfdone                  ; opcodes patched per seg -- see ?ycadd
-        inc rs_yfacc+2
+?yfinc	inc rs_yfacc+2		;ditto
 ?yfdone
         lda rs_isport               ; back accumulators only for portals
         beq ?adv_done
@@ -1845,7 +2570,7 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         adc rs_ybcS+1
         sta rs_ybcacc+1
 ?bcadd  bcc ?bcdone                  ; opcodes patched per seg -- see ?ycadd
-        inc rs_ybcacc+2
+?bcinc	inc rs_ybcacc+2		;ditto
 ?bcdone
         clc
         lda rs_ybfacc
@@ -1855,9 +2580,10 @@ ltsj    jsr lt_seg                   ; floor_base @5 / ceil_base @6 -> rs_*col,
         adc rs_ybfS+1
         sta rs_ybfacc+1
 ?bfadd  bcc ?bfdone                  ; opcodes patched per seg -- see ?ycadd
-        inc rs_ybfacc+2
+?bfinc	inc rs_ybfacc+2		;ditto
 ?bfdone
 ?adv_done
+ .endif
     .if TEX_RUNS
         jsr pt_step                  ; rpt += drpt -- for EVERY column, drawn or
                                      ;   skipped: it tracks the plane

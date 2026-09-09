@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -79,8 +79,12 @@ ZNEAR     equ 4
 wki_resume = *
         org WALKINIT_BASE
 .proc walk_init
+ .if 1
+        stz rs_mpass
+ .else
         lda #0
         sta rs_mpass
+ .endif
     .if TEX_RUNS
         jmp ptc_frame                ; the call this routine displaced
     .else
@@ -101,8 +105,13 @@ wki_resume = *
         ; cheaper -- the walk, the column loops, bg_fill and the sprite clip
         ; snapshots all skip a solid column for free.
         ldx vw_x0
-?cl     lda #0
+?cl
+ .if 1
+        stz solid_arr,x
+ .else
+	lda #0
         sta solid_arr,x
+ .endif
         lda vw_y0
         sta ytopc_arr,x              ; open window top
         lda vw_y1
@@ -110,14 +119,20 @@ wki_resume = *
         inx
         cpx vw_xend
         bne ?cl
+
         lda vw_ncol                  ; early-out: columns still open
         sta cols_open
+ .if 1
+        stz frame_done
+        stz bsp_sp
+	stz ms_n
+ .else
         lda #0
         sta frame_done
         lda #0                       ; iterative-walk stack empty
         sta bsp_sp
         sta ms_n                     ; ... and no deferred struts yet (midtex.asm;
-                                     ;   the clip pool they share with the
+ .endif                              ;   the clip pool they share with the
                                      ;   sprites is reset by spr_reset, and
                                      ;   rs_mpass by mseg_draw's own early-out
                                      ;   -- this segment ends ONE byte below
@@ -190,8 +205,12 @@ wki_resume = *
         asl @                        ; nid*32
         sec
         sbc m_ma                     ; nid*28 = NODE_SIZE
+ .if 1
+	adc #MAP_NODES-1	;C=1 here
+ .else
         clc
         adc #MAP_NODES               ; MAP_NODES = offset inside the EXT bank; the
+ .endif
         sta zp_nodeptr               ;   readers go [zp_nodeptr],y (long indirect)
         .LONGA OFF                   ;   with zp_nodeptr+2 = MAP_EXT_BANK, set ONCE
         sep #$20                     ;   by init_level -- nothing else writes +2
@@ -205,6 +224,29 @@ wki_resume = *
 ;--------------------------------------------------------------
 .proc point_on_side
         sec                          ; dxp = px - node.x  -> cx_b
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_px
+        sbc [zp_nodeptr]
+        sta cx_b
+
+        sec                          ; dyp = py - node.y  -> cx_c
+	ldy #2
+        lda zp_py
+        sbc [zp_nodeptr],y
+        sta cx_c
+
+        ldy #6                       ; cx_a = node.dy
+        lda [zp_nodeptr],y
+        sta cx_a
+
+        ldy #4                       ; cx_d = node.dx
+        lda [zp_nodeptr],y
+        sta cx_d
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda zp_px
         sbc [zp_nodeptr],y
@@ -213,8 +255,13 @@ wki_resume = *
         lda zp_px+1
         sbc [zp_nodeptr],y
         sta cx_b+1
+
         sec                          ; dyp = py - node.y  -> cx_c
+  .if 1
+	iny
+  .else
         ldy #2
+  .endif
         lda zp_py
         sbc [zp_nodeptr],y
         sta cx_c
@@ -222,12 +269,14 @@ wki_resume = *
         lda zp_py+1
         sbc [zp_nodeptr],y
         sta cx_c+1
+
         ldy #6                       ; cx_a = node.dy
         lda [zp_nodeptr],y
         sta cx_a
         iny
         lda [zp_nodeptr],y
         sta cx_a+1
+
         ldy #4                       ; cx_d = node.dx
         lda [zp_nodeptr],y
         sta cx_d
@@ -240,6 +289,7 @@ wki_resume = *
         ;   cross_pos over 35200 cases). cross==0 -> side1 (matches cross_pos).
         lda cx_d                     ; node.dx == 0 ? -> vertical split: cross = ndy*dxp
         ora cx_d+1
+ .endif
         bne ?nv
         lda cx_b                     ; dxp == 0 -> cross 0 -> side1
         ora cx_b+1
@@ -276,16 +326,36 @@ wki_resume = *
 .proc render_node
 ?walk   lda frame_done               ; early-out: whole screen already solid
         beq ?live
+ .if 1
+	rts
+ .else
         jmp ?done
+ .endif
 ?live   lda zp_nid+1
         and #$80
+ .if 1
+	jne ?leaf
+ .else
         beq ?node
         jmp ?leaf
 ?node
+ .endif
         jsr calc_nodeptr
         jsr point_on_side            ; A = side
+
         pha
         ldy #8                       ; zp_near = child_r
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda [zp_nodeptr],y
+        sta zp_near
+        ldy #10                      ; zp_far = child_l
+        lda [zp_nodeptr],y
+        sta zp_far
+	sep #$20
+	.LONGA OFF
+ .else
         lda [zp_nodeptr],y
         sta zp_near
         iny
@@ -297,8 +367,10 @@ wki_resume = *
         iny
         lda [zp_nodeptr],y
         sta zp_far+1
+ .endif
         pla
         beq ?side0                   ; side0: near=R(bbox@12), far=L(bbox@20)
+
         lda zp_near                  ; side1: swap near/far + their bbox offsets
         ldx zp_far
         sta zp_far
@@ -309,7 +381,11 @@ wki_resume = *
         stx zp_near+1
         lda #12                      ; near=child_l -> bbox@20, far=child_r -> bbox@12
         sta cb_fbb                   ;   (only the FAR offset is ever read: the near
+ .if 1
+	bra ?have
+ .else
         jmp ?have                    ;    child is always walked, so the cb_nbb this
+ .endif
 ?side0  lda #20                      ;    used to store beside it was written twice a
         sta cb_fbb                   ;    node and never read -- 10 B + ~8 cyc/node)
 ?have; R_CheckBBox on the FAR child only, exactly like DOOM's R_RenderBSPNode:
@@ -328,6 +404,22 @@ wki_resume = *
         lda cb_fbb
         sta cb_off
         jsr check_bbox               ; A=1 -> subtree wholly invisible
+ .if 1
+	rep #$20
+	.LONGA ON
+        bne ?skipfar
+        ldx bsp_sp                   ; push far child onto the walk stack
+        lda zp_far
+        sta bsp_stack,x
+        inx
+        inx
+        stx bsp_sp
+?skipfar
+        lda zp_near                  ; descend near side first
+        sta zp_nid
+	sep #$20
+	.LONGA OFF
+ .else
         bne ?skipfar
         ldx bsp_sp                   ; push far child onto the walk stack
         lda zp_far
@@ -342,8 +434,11 @@ wki_resume = *
         sta zp_nid
         lda zp_near+1
         sta zp_nid+1
+ .endif
         jmp ?walk
+
 ?leaf   jsr render_subsector
+
 ?pop    ldx bsp_sp                   ; pop next far child (LIFO)
         beq ?done                    ; stack empty -> whole tree walked
         dex
@@ -354,6 +449,7 @@ wki_resume = *
         lda bsp_stack+1,x
         sta zp_nid+1
         jmp ?walk
+
 ?done   rts
 .endp
 
@@ -407,6 +503,20 @@ cu_resume = *
         org CALCU_BASE
 .proc calc_u
         stx cu_savex                 ; X is the column loop's index -- umul16/udiv24
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda rs_t1+1
+        adc rs_t2+1
+	bne ?ok
+	inc
+?ok	sta m_den
+	stz m_prod
+        lda rs_t1+1
+        sta m_prod+1
+	sep #$20
+	.LONGA OFF
+ .else
         clc                          ; clobber it (this cost one pink screen)
                                      ; den = (t1 + t2) >> 8
         lda rs_t1+1
@@ -424,8 +534,26 @@ cu_resume = *
         sta m_prod+1
         lda rs_t1+2
         sta m_prod+2
+ .endif
         jsr udiv24                   ; m_quot = 256 * t1/(t1+t2)  (Q8 ratio 0..256)
+
         lda rs_uflip
+ .if 1
+	rep #$20
+	.LONGA ON
+	beq ?nofl
+	sec
+	lda #256
+        sbc m_quot
+        sta m_quot
+?nofl
+	lda rs_seglen                ; u = (L * ratio) >> 8
+        sta m_a
+        lda m_quot
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         beq ?nofl
         sec                          ; flipped seg: u runs L .. 0
         lda #0
@@ -434,7 +562,8 @@ cu_resume = *
         lda #1
         sbc m_quot+1
         sta m_quot+1
-?nofl   lda rs_seglen                ; u = (L * ratio) >> 8
+?nofl
+	lda rs_seglen                ; u = (L * ratio) >> 8
         sta m_a
         lda rs_seglen+1
         sta m_a+1
@@ -442,7 +571,21 @@ cu_resume = *
         sta m_b
         lda m_quot+1
         sta m_b+1
+ .endif
         jsr umul16
+ .if 1
+	                       ; u = seg_offset + L*ratio. rs_segoff is
+        stz rs_uacc                  ;   DOOM's seg->offset: how far along the
+        rep #$21                     ;   LINEDEF this seg starts, so a wall the
+        .LONGA ON                    ;   BSP cut in half keeps one continuous
+                                     ;   texture instead of restarting at 0 on
+                                     ;   each piece (9 % of E1's segs had a
+        lda m_prod+1                 ;   visible seam). u is Q8, the offset is
+        adc rs_segoff                ;   whole world units -> it lands in bytes
+        sta rs_uacc+1                ;   1-2, same as the product.
+	sep #$20
+	.LONGA OFF
+ .else
         lda #0                       ; u = seg_offset + L*ratio. rs_segoff is
         sta rs_uacc                  ;   DOOM's seg->offset: how far along the
         clc                          ;   LINEDEF this seg starts, so a wall the
@@ -452,6 +595,7 @@ cu_resume = *
         lda m_prod+2                 ;   visible seam). u is Q8, the offset is
         adc rs_segoff+1              ;   whole world units -> it lands in bytes
         sta rs_uacc+2                ;   1-2, same as the product.
+ .endif
         ldx cu_savex
         rts
 .endp
@@ -476,25 +620,43 @@ cu_resume = *
         lda zp_nid
         asl @
         asl @                        ; ssid*4 (the leaf bit just fell out)
-        clc
+;       clc
         adc #MAP_SSECT
         sta zp_ptr
         ldy #2                       ; count -> zp_segcnt, one 16-bit read
         lda [zp_ptr],y
+	beq ?done
         sta zp_segcnt
+ .if 1
+	lda [zp_ptr]
+ .else
         ldy #0                       ; first seg index (16-bit) -> rs_segi
         lda [zp_ptr],y               ;   (seg_yoff keys MAP_YBITS by INDEX; the
+ .endif
         sta rs_segi                  ;   seg loop below only tracks the pointer)
         asl @
         asl @
         asl @                        ; *8 = SEG_SIZE
-        clc
+;       clc
         adc #MAP_SEGS
         sta zp_sptr
+ .if 1
+?sloop	jsr process_seg		;process_seg (in seg_draw.asm) begins with rep #$20
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda zp_sptr
+        adc #SEG_SIZE
+        sta zp_sptr
+        inc rs_segi                  ; the seg index walks with the pointer
+	dec zp_segcnt
+	bne ?sloop
+?done	sep #$20
+	.LONGA OFF
+	rts
+ .else
         .LONGA OFF
         sep #$20
-?sloop
-        lda zp_segcnt
+?sloop	lda zp_segcnt
         ora zp_segcnt+1
         beq ?done
         jsr process_seg
@@ -514,6 +676,7 @@ cu_resume = *
 ?declo  dec zp_segcnt
         jmp ?sloop
 ?done   rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -532,48 +695,71 @@ lf_resume = *
         lda MAP_HROOT+1
         sta zp_nid+1
 ?walk   lda zp_nid+1
+ .if 1
+	bmi ?leaf
+ .else
         and #$80
         bne ?leaf
+ .endif
         jsr calc_nodeptr             ; zp_nodeptr = node record
         jsr point_on_side            ; A=0 -> side0 (child_r), A=1 -> side1 (child_l)
         bne ?left
+
         ldy #8                       ; side0 -> child_r @ node+8
+ .if 1
+	bra ?desc
+ .else
         bne ?desc
+ .endif
+
 ?left   ldy #10                      ; side1 -> child_l @ node+10
 ?desc   lda [zp_nodeptr],y
         sta zp_nid
         iny
         lda [zp_nodeptr],y
         sta zp_nid+1
+ .if 1
+	bra ?walk
+ .else
         jmp ?walk
+ .endif
 ?leaf   ; ssid = zp_nid & $7FFF ; zp_ptr = MAP_SSECT + ssid*4
         rep #$20                     ; ONE 16-bit accumulator (same rewrite as
         .LONGA ON                    ;   calc_nodeptr; m_a is overwritten below)
         lda zp_nid
         asl @                        ; ssid*4 -- NO and #$7FFF: the two shifts
         asl @                        ;   push the leaf bit out (drac030)
-        clc
+;       clc
         adc #MAP_SSECT
         sta zp_ptr
+ .if 1
+	lda [zp_ptr]
+ .else
         ldy #0                        ; first seg index @ ssect+0, one 16-bit
         lda [zp_ptr],y                ;   read; *8 and both adds stay in the
+ .endif
         asl @                         ;   accumulator -- the m_a staging, the
         asl @                         ;   jsr m_x8 and the byte-halved adds are
         asl @                         ;   gone (drac030's fused form)
-        clc
+;       clc
         adc #MAP_SEGS
         sta zp_sptr
+
         ldy #SEG_FRONT                ; front_sec (u8) @ seg+4 (@5 rides the
         lda [zp_sptr],y               ;   16-bit load, the mask drops it)
         and #$FF
         asl @
         asl @
         asl @                         ; front_sec*8
-        clc
+;       clc
         adc #MAP_SECTORS
         sta zp_ptr
+ .if 1
+        lda (zp_ptr)
+ .else
         ldy #0                        ; floor_h (i16) @ sector+0
         lda (zp_ptr),y
+ .endif
         sta loc_floor
         .LONGA OFF
         sep #$20

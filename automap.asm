@@ -383,7 +383,18 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
                                      ;   blitter's control blocks live there,
                                      ;   clear_screen is about to poke them, and
                                      ;   this store is what GUARANTEES it
+ .if 1
+        lda zback_hi                 ; am_plot's bank byte, less the vaddr
+        asl                          ;   nibble: (zback_hi << 4) | BANK_EN, once
+        asl                          ;   a frame instead of once a pixel
+        asl
+        asl
+        ora #BANK_EN
+        sta am_bnk
         jsr am_keys                  ; AM_Ticker: the zoom keys
+ .else
+        jsr am_keys                  ; AM_Ticker: the zoom keys
+ .endif
         lda #AM_BG
         jsr clear_screen             ; AM_clearFB (resident: rows 0..167 only)
         jsr am_walls                 ; AM_drawWalls
@@ -463,6 +474,28 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ;   in DOOM -- they are not baked at pack time.
 ;--------------------------------------------------------------
 .proc am_walls
+ .if 1
+        rep #$20                     ; ---- 16-bit A: the three counters and the
+        .LONGA ON                    ;   bound are words
+        stz am_i2                    ; the loop variable is the AMSEG STRIDE (i*2)
+        stz am_i8                    ;   rather than i, and x8 (the seg record)
+        stz am_iskip                 ;   and >>3 (the AMSKIP byte) walk with it
+        lda MAP_HNSEG                ; bound = this level's seg count x2
+        asl @
+        sta am_nseg2
+        sep #$20
+        .LONGA OFF
+        lda #1
+        sta am_smask
+?loop   rep #$20                     ; one word compare, not a byte chain
+        .LONGA ON
+        lda am_i2
+        cmp am_nseg2
+        sep #$20                     ; (C survives)
+        .LONGA OFF
+        bcc ?go
+?dn     rts                          ; every seg walked -- the exit is HERE and
+ .else
         lda #0                       ; the loop variable is the AMSEG STRIDE (i*2)
         sta am_i2                    ;   rather than i: it is the one index that
         sta am_i2+1                  ;   is needed on every pass, and dropping a
@@ -486,6 +519,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         cmp am_nseg2
         bcc ?go
 ?dn     rts                          ; every seg walked -- the exit is HERE and
+ .endif
                                      ;   not at the bottom, so the test that
                                      ;   reaches it stays a short branch
 ?go
@@ -569,6 +603,20 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ?cd     lda #AM_CDWALL               ;   in DOOM (only the IDDT cheat shows it)
 ?col    sta am_col
         jsr am_draw
+ .if 1
+?next   rep #$21                     ; ---- 16-bit A, C=0: i2 += 2, i8 += 8
+        .LONGA ON
+        lda am_i2
+        inc @
+        inc @
+        sta am_i2
+        lda am_i8
+        adc #8
+        sta am_i8
+        sep #$20
+        .LONGA OFF
+        asl am_smask                 ; ... and the AMSKIP bit walks with it
+ .else
 ?next   clc                          ; i2 += 2
         lda am_i2
         adc #2
@@ -582,6 +630,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         bcc ?n3
         inc am_i8+1
 ?n3     asl am_smask                 ; ... and the AMSKIP bit walks with it
+ .endif
         bne ?lp
         lda #1
         sta am_smask
@@ -600,6 +649,24 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         ert 'am_secptr indexes zp_ptr by 3 to reach zp_tsrc -- the zero page block in bsp_main.asm moved'
     .endif
 .proc am_secptr
+ .if 1
+        lda am_front
+        ldx #0
+        jsr ?one
+        lda am_back
+        ldx #3
+?one    rep #$20                     ; ---- 16-bit A: id*8 + MAP_SECTORS, in A
+        .LONGA ON
+        and #$FF                     ; (the byte load left junk in B)
+        asl @
+        asl @
+        asl @                        ; a sector id is < 8192: the shifts carry 0,
+        adc #MAP_SECTORS             ;   so no clc
+        sta zp_ptr,x                 ; x=0 -> zp_ptr, x=3 -> zp_tsrc (the .if above
+        sep #$20                     ;   guards the adjacency); +2, the bank
+        .LONGA OFF                   ;   byte, is not touched
+        rts
+ .else
         lda am_front
         ldx #0
         jsr ?one
@@ -622,6 +689,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         adc #>MAP_SECTORS            ;   what the automap is standing in for
         sta zp_ptr+1,x               ;   this frame (the .if above guards the
         rts                          ;   adjacency the index relies on)
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -629,6 +697,15 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ;   back sectors agree on it. Clobbers A/Y.
 ;--------------------------------------------------------------
 .proc am_cmp
+ .if 1
+        rep #$20                     ; ---- 16-bit A: one compare (Z survives the sep)
+        .LONGA ON
+        lda (zp_ptr),y
+        cmp (zp_tsrc),y
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         lda (zp_ptr),y
         cmp (zp_tsrc),y
         bne ?out
@@ -636,6 +713,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda (zp_ptr),y
         cmp (zp_tsrc),y
 ?out    rts
+ .endif
 .endp
 
 
@@ -680,6 +758,33 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ;   the sign bit into C and the ror feeds it back into bit 7.
 ;--------------------------------------------------------------
 .proc am_proj
+ .if 1
+        rep #$20                     ; ---- 16-bit A: the arithmetic shifts in the
+        .LONGA ON                    ;   accumulator (cmp #$8000 puts the sign in
+        lda zp_rx                    ;   C, ror brings it back in on top)
+        ldy am_sh
+        iny                          ; sx = 80 + (rx >> (sh+1)) -- the aspect
+?xs     cmp #$8000
+        ror @
+        dey
+        bne ?xs
+        clc
+        adc #AM_CX
+        sta am_x1,x
+        lda zp_ry                    ; sy = 84 - (ry >> sh)
+        ldy am_sh
+?ys     cmp #$8000
+        ror @
+        dey
+        bne ?ys
+        eor #$FFFF                   ; AM_CY - t, as ~t + 1 + AM_CY
+        sec
+        adc #AM_CY
+        sta am_y1,x
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         lda zp_rx
         sta am_t
         lda zp_rx+1
@@ -718,6 +823,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         sbc am_t+1
         sta am_y1+1,x
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -737,6 +843,105 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ;   bytes more, and this overlay has 1280 in total.
 ;--------------------------------------------------------------
 .proc am_line
+ .if 1
+        rep #$20                     ; ---- 16-bit A for the whole line, am_plot
+        .LONGA ON                    ;   included
+        lda am_x1
+        and am_x2
+        bmi ?rej                     ; both x < 0
+        lda am_y1
+        and am_y2
+        bmi ?rej                     ; both y < 0
+        sec
+        lda am_x1
+        sbc #SCREEN_WIDTH
+        sta am_t
+        sec
+        lda am_x2
+        sbc #SCREEN_WIDTH
+        ora am_t
+        bpl ?rej                     ; both x >= 160
+        sec
+        lda am_y1
+        sbc #VIEW_HEIGHT
+        sta am_t
+        sec
+        lda am_y2
+        sbc #VIEW_HEIGHT
+        ora am_t
+        bmi ?ok                      ; at least one is above the bottom edge
+?rej    sep #$20
+        .LONGA OFF
+        rts
+?ok     .LONGA ON                    ; (still 16-bit on this path)
+        sec                          ; dx = |x2-x1|, am_stx = its direction as a
+        lda am_x2                    ;   WORD (+1 / -1): the step below is one add
+        sbc am_x1
+        sta am_dx
+        bpl ?dxp
+        eor #$FFFF
+        inc @
+        sta am_dx
+        lda #$FFFF
+        bra ?dxs
+?dxp    lda #1
+?dxs    sta am_stx
+        sec                          ; dy = |y2-y1|, am_sty likewise
+        lda am_y2
+        sbc am_y1
+        sta am_dy
+        bpl ?dyp
+        eor #$FFFF
+        inc @
+        sta am_dy
+        lda #$FFFF
+        bra ?dys
+?dyp    lda #1
+?dys    sta am_sty
+        ldx #0                       ; X = the MAJOR axis' offset into the (x,y)
+        ldy #2                       ;   and (stx,sty) word pairs, Y = the MINOR's
+        lda am_dx
+        cmp am_dy
+        bcs ?run                     ; dx >= dy: x is major
+        pha                          ; y is major: exchange the two deltas...
+        lda am_dy
+        sta am_dx
+        pla
+        sta am_dy
+        ldx #2                       ; ...and the axes
+        ldy #0
+?run    stx am_ma
+        sty am_mi
+        lda am_dx                    ; n = major ; err = major >> 1
+        sta am_n
+        lsr @
+        sta am_err
+?l      jsr am_plot                  ; (X survives it, Y does not)
+        sec                          ; err -= minor
+        lda am_err
+        sbc am_dy
+        sta am_err
+        bpl ?ns
+        adc am_dx                    ; err += major -- C=0 without a clc: the sbc
+        sta am_err                   ;   went negative, so it borrowed. And step
+        ldy am_mi                    ;   the MINOR axis
+        lda am_x1,y
+        clc
+        adc am_stx,y
+        sta am_x1,y
+?ns     lda am_x1,x                  ; ... and always the MAJOR one
+        clc
+        adc am_stx,x
+        sta am_x1,x
+        lda am_n                     ; n counts the major axis: a line is n+1
+        beq ?done                    ;   pixels, so the test is AFTER the plot
+        dec @
+        sta am_n
+        bra ?l
+?done   sep #$20
+        .LONGA OFF
+        rts
+ .else
         lda am_x1+1
         and am_x2+1
         bmi ?rej                     ; both x < 0
@@ -866,12 +1071,15 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ?cnt    jsr am_dec
         bne ?l
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
 ; am_dec -- the loop tail. n counts the MAJOR axis and a line is n+1 pixels
 ;   long, so the test comes AFTER the plot. Returns Z=1 when done.
 ;--------------------------------------------------------------
+ .if 1
+ .else
 .proc am_dec
         lda am_n
         ora am_n+1
@@ -883,7 +1091,10 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda #1                       ; Z=0: keep going
 ?out    rts
 .endp
+ .endif
 
+ .if 1
+ .else
 .proc am_stepx
         lda am_stx
         bmi ?dn
@@ -897,7 +1108,10 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ?d      dec am_x1
 ?r      rts
 .endp
+ .endif
 
+ .if 1
+ .else
 .proc am_stepy
         lda am_sty
         bmi ?dn
@@ -911,6 +1125,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ?d      dec am_y1
 ?r      rts
 .endp
+ .endif
 
 ;--------------------------------------------------------------
 ; am_plot -- one pixel of am_col at (am_x1,am_y1) into the BACK buffer, through
@@ -921,6 +1136,47 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ;   a 4 KB boundary about once every 25 rows.
 ;--------------------------------------------------------------
 .proc am_plot
+ .if 1
+        ; ENTERED AND LEFT IN 16-BIT A (am_line's loop). One unsigned compare
+        ; per axis rejects negatives for free. X is am_line's axis index and is
+        ; not touched; the row goes through Y.
+        .LONGA ON                    ; (the caller's mode: 16-bit immediates)
+        lda am_x1
+        cmp #SCREEN_WIDTH
+        bcs ?out
+        lda am_y1
+        cmp #VIEW_HEIGHT
+        bcs ?out
+        tay                          ; vaddr = row*160 + col
+        sep #$20
+        .LONGA OFF
+        clc
+        lda row_lo,y
+        adc am_x1
+        sta zp_ptr
+        lda row_hi,y
+        adc #0
+        sta am_t
+        lsr                          ; bank = (zback_hi<<4) | (vaddr>>12): the
+        lsr                          ;   zback half is am_bnk, built once a
+        lsr                          ;   frame by am_head
+        lsr
+        ora am_bnk
+        cmp am_lastbk
+        beq ?same
+        sta am_lastbk
+        sta VBXE_BANK_SEL
+?same   lda am_t
+        and #$0F
+        ora #>MEMW
+        sta zp_ptr+1
+        lda am_col
+        sta (zp_ptr)
+        rep #$20
+        .LONGA ON
+?out    rts
+        .LONGA OFF
+ .else
         lda am_x1+1
         bne ?out
         lda am_x1
@@ -963,6 +1219,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda am_col
         sta (zp_ptr),y
 ?out    rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1071,9 +1328,18 @@ am_dx    dta a(0)                    ; Bresenham: MAJOR delta after the swap ...
 am_dy    dta a(0)                    ;   ... and MINOR
 am_err   dta a(0)
 am_n     dta a(0)
+ .if 1
+am_stx   dta a(0)                    ; the two axes' directions as WORDS (+1/-1),
+am_sty   dta a(0)                    ;   ADJACENT: am_line steps `am_x1,x` by
+                                     ;   `am_stx,x` with x = 0 (x) or 2 (y)
+am_ma    dta 0                       ; the MAJOR axis' offset (0 or 2) ...
+am_mi    dta 0                       ; ... and the minor's
+am_bnk dta 0                       ; (zback_hi << 4) | BANK_EN for am_plot
+ .else
 am_stx   dta 0                       ; the two axes' directions, never swapped:
 am_sty   dta 0                       ;   each step routine reads its own
 am_ymaj  dta 0                       ; 1 = y is the major axis
+ .endif
 am_t     dta a(0)
 am_t2    dta 0
 am_lastbk dta $FF                    ; the MEMAC bank last selected ($FF = none,

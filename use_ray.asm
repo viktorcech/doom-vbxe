@@ -48,6 +48,30 @@
 us_resume = *
         org USESIDE_BASE
 .proc use_side
+ .if 1
+        rep #$20                     ; ---- 16-bit A: four word subtractions
+        .LONGA ON                    ;   (X/Y are byte offsets into USE_PT)
+        sec                          ; cx_a = PTx[j] - PTx[i]
+        lda USE_PT,y
+        sbc USE_PT,x
+        sta cx_a
+        sec                          ; cx_c = PTy[j] - PTy[i]
+        lda USE_PT+2,y
+        sbc USE_PT+2,x
+        sta cx_c
+        ldy USE_K
+        sec                          ; cx_b = PTy[k] - PTy[i]
+        lda USE_PT+2,y
+        sbc USE_PT+2,x
+        sta cx_b
+        sec                          ; cx_d = PTx[k] - PTx[i]
+        lda USE_PT,y
+        sbc USE_PT,x
+        sta cx_d
+        sep #$20
+        .LONGA OFF
+        jmp cross_pos                ; A = 1 if cx_a*cx_b - cx_c*cx_d > 0
+ .else
         sec                          ; cx_a = PTx[j] - PTx[i]
         lda USE_PT,y
         sbc USE_PT,x
@@ -78,6 +102,7 @@ us_resume = *
         sbc USE_PT+1,x
         sta cx_d+1
         jmp cross_pos                ; A = 1 if cx_a*cx_b - cx_c*cx_d > 0
+ .endif
 .endp
     .if * > PJGO_BASE
         ert 'use_side overran its $5432 slot (pj_go at $5480; memory_map.inc)'
@@ -91,6 +116,65 @@ us_resume = *
 ;   which needs no intersection point (so no divide).
 ;--------------------------------------------------------------
 .proc use_seg_hit
+ .if 1
+        rep #$20                     ; ---- 16-bit A: v1 -> USE_PT_P, v2 -> USE_PT_Q,
+        .LONGA ON                    ;   each a word index and two word reads
+        lda [zp_sptr]
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jsr coll_vptr                ; zp_ptr = &MAP_VERTS[idx] (EXT bank)
+        rep #$20
+        .LONGA ON
+        lda [zp_ptr]
+        sta USE_PT_P
+        ldy #2
+        lda [zp_ptr],y
+        sta USE_PT_P+2
+        lda [zp_sptr],y              ; (Y = 2: v2)
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jsr coll_vptr
+        rep #$20
+        .LONGA ON
+        lda [zp_ptr]
+        sta USE_PT_Q
+        ldy #2
+        lda [zp_ptr],y
+        sta USE_PT_Q+2
+        sep #$20
+        .LONGA OFF
+        stz USE_K                    ; do the ray's ENDS straddle the seg's line?
+        ldx #8                       ;   (rejects most segs on the first two signs)
+        ldy #12
+        jsr use_side
+        sta m_ma                     ; side(P->Q, A)
+        lda #4
+        sta USE_K
+        ldx #8
+        ldy #12
+        jsr use_side
+        cmp m_ma
+        beq ?miss                    ; same side -> no crossing
+        lda #8                       ; ... and do the seg's ENDS straddle the ray?
+        sta USE_K
+        ldx #0
+        ldy #4
+        jsr use_side
+        sta m_ma
+        lda #12
+        sta USE_K
+        ldx #0
+        ldy #4
+        jsr use_side
+        cmp m_ma
+        beq ?miss
+        lda #1
+        rts
+?miss   lda #0
+        rts
+ .else
         ldy #0                       ; v1 -> USE_PT_P
         lda [zp_sptr],y
         sta m_a
@@ -145,6 +229,7 @@ us_resume = *
         rts
 ?miss   lda #0
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -170,6 +255,40 @@ us_resume = *
 ;   -1 comes free from starting the last subtraction with CLC instead of SEC.
 ;--------------------------------------------------------------
 .proc use_shut
+ .if 1
+        ldy #SEG_FRONT               ; front sector -> coll_ax = floor, coll_ay = ceil
+        lda [zp_sptr],y
+        sta m_a
+        stz m_a+1
+        jsr coll_secheights
+        rep #$20                     ; ---- 16-bit A: keep the front pair as words
+        .LONGA ON                    ;   (coll_secheights reuses coll_ax/ay)
+        lda coll_ax
+        sta coll_bx
+        lda coll_ay
+        sta coll_by
+        ldy #SEG_BACK                ; back sector -> coll_ax/coll_ay
+        lda [zp_sptr],y
+        and #$FF
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jsr coll_secheights
+        rep #$20                     ; fceil - ffloor - 1 < 0 <=> fceil <= ffloor:
+        .LONGA ON                    ;   the FRONT sector is collapsed (the .else
+        clc                          ;   side says why this one lives here)
+        lda coll_by
+        sbc coll_bx
+        bvc ?f3
+        eor #$8000
+?f3     bmi ?shut
+        jmp us_open                  ; the other three (16-bit on entry: us_open
+                                     ;   starts with its own rep)
+?shut   sep #$20
+        .LONGA OFF
+        lda #1
+        rts
+ .else
         ldy #SEG_FRONT               ; front sector -> coll_ax = floor, coll_ay = ceil
         lda [zp_sptr],y
         sta m_a
@@ -205,6 +324,7 @@ us_resume = *
                                      ;   straight to use_shut's caller, A set.
 ?shut   lda #1
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -220,6 +340,36 @@ us_resume = *
 usop_resume = *
         org USSHUT_BASE
 .proc us_open
+ .if 1
+        rep #$20                     ; ---- 16-bit A (idempotent: use_shut arrives
+        .LONGA ON                    ;   in it). Three signed "<=" compares, each
+        clc                          ;   one word subtract with the -1 riding on
+        lda coll_ay                  ;   the clc; V fixes the sign
+        sbc coll_ax                  ; bceil - bfloor - 1 < 0: the BACK sector is
+        bvc ?f0                      ;   collapsed, i.e. a shut door (E1M4's
+        eor #$8000                   ;   tag-1 doors, 26 lines in episode 1)
+?f0     bmi ?shut
+        clc                          ; fceil - bfloor - 1 < 0  <=>  fceil <= bfloor
+        lda coll_by
+        sbc coll_ax
+        bvc ?f1
+        eor #$8000
+?f1     bmi ?shut
+        clc                          ; bceil - ffloor - 1 < 0  <=>  bceil <= ffloor
+        lda coll_ay
+        sbc coll_bx
+        bvc ?f2
+        eor #$8000
+?f2     bmi ?shut
+        sep #$20
+        .LONGA OFF
+        lda #0
+        rts
+?shut   sep #$20
+        .LONGA OFF
+        lda #1
+        rts
+ .else
         clc                          ; bceil - bfloor - 1 < 0 <=> bceil <= bfloor:
         lda coll_ay                  ;   the BACK sector is collapsed, i.e. this
         sbc coll_ax                  ;   IS a shut door. Without it a door whose
@@ -248,6 +398,7 @@ usop_resume = *
         rts
 ?shut   lda #1
         rts
+ .endif
 .endp
     .if * > USSHUT_END+1
         ert 'us_open outgrew USSHUT_BASE..USSHUT_END (memory_map.inc)'

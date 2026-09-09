@@ -188,10 +188,16 @@ sg_cnt  dta 0
         sta DCOMND
         lda sg_dir
         sta DSTATS
+ .if 1
+        lda #128
+        sta DBYTLO
+        stz DBYTHI
+ .else
         lda #128
         sta DBYTLO
         lda #0
         sta DBYTHI
+ .endif
         lda #$0F
         sta DTIMLO
         lda ll_sec
@@ -330,10 +336,16 @@ sg_vo   dta 0                        ; write cursor in SG_BUF
 sg_vx   dta 0
 
 .proc sg_vsetup
+ .if 1
+        stz sg_vi
+        stz sg_vo
+        rts
+ .else
         lda #0
         sta sg_vi
         sta sg_vo
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -505,10 +517,16 @@ sg_kind dta 0
 .endp
 
 .proc sg_rom_out
+ .if 1
+        sei
+        stz NMIEN
+        jmp rom_out                  ; tail
+ .else
         sei
         lda #0
         sta NMIEN
         jmp rom_out                  ; tail
+ .endif
 .endp
 
 .proc sg_rom_in
@@ -563,10 +581,16 @@ sg_kind dta 0
 ;--------------------------------------------------------------
 .proc sg_scan
         jsr sg_begin
+ .if 1
+        jsr sg_read
+        stz sg_si
+?s      lda sg_si
+ .else
         jsr sg_read
         lda #0
         sta sg_si
 ?s      lda sg_si
+ .endif
         sta sg_slot
         jsr sg_slot_sec
         jsr sg_dbuf
@@ -925,10 +949,16 @@ BOOT_RUN equ $0700                   ; the ATR boot loader's home (boot.asm: the
         ; Rapidus MCR down), and reading three sectors is something this overlay
         ; already knows how to do. Nothing but SIOV is borrowed.
         lda #1                       ; the ATR's own boot sectors, 1..3
+ .if 1
+        sta ll_sec
+        stz ll_sec+1
+        lda #<BOOT_RUN
+ .else
         sta ll_sec
         lda #0
         sta ll_sec+1
         lda #<BOOT_RUN
+ .endif
         sta DBUFLO
         lda #>BOOT_RUN
         sta DBUFHI

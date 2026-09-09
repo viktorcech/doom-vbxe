@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 948 B free, biggest contiguous block 128 B.
+; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -63,7 +63,11 @@
         sbc :2
         bcs ?dok
         eor #$FF                   ; the carry is ALREADY clear -- that is what
+ .if 1
+	inc
+ .else
         adc #1                     ;   the bcs above just tested -- so the `clc`
+ .endif
 ?dok    tay                        ;   that stood here was dead (2 cyc, 83 %)
         sec                        ; :3 -= QSqr[|x-y|]
         lda :3
@@ -104,17 +108,31 @@
         lda m_a+1
         ora m_b+1
         bne ?more
-        rts                        ; both high bytes 0 -> p00 IS the product (44 %)
+        rts
+ .if 0                             ; both high bytes 0 -> p00 IS the product (44 %)
 ?far10  jmp ?p10                   ; TRAMPOLINE (2026-08-30). ?p10 sits past two
-                                   ;   qsmul expansions, out of branch reach, so
+ .endif                            ;   qsmul expansions, out of branch reach, so
                                    ;   the test used to be `bne ?p01 / jmp ?p10`
                                    ;   -- a TAKEN branch on the 99 % path. Now
                                    ;   that path falls through and the 1 % path
                                    ;   pays the hop. Unreachable by fallthrough:
                                    ;   the rts above ends the block.
 ?more   lda m_b+1
+ .if 1
+	jeq ?p10
+ .else
         beq ?far10                 ; bH = 0, aH != 0 -> only p10 is left (1 %)
+ .endif
 ?p01    qsmul m_a, m_b+1, qs_p     ; p01 = aL*bH -> add at byte 1
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda m_prod+1
+        adc qs_p
+        sta m_prod+1
+	sep #$20
+	.LONGA OFF	
+ .else
         clc
         lda m_prod+1
         adc qs_p
@@ -122,12 +140,23 @@
         lda m_prod+2
         adc qs_p+1
         sta m_prod+2
+ .endif
         bcc ?p11
         inc m_prod+3
 ?p11    lda m_a+1
         bne ?p11go
         rts                        ; aH = 0 -> p10 = p11 = 0 (another 32 %)
+
 ?p11go  qsmul m_a+1, m_b+1, qs_p         ; p11 = aH*bH -> add at byte 2
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda m_prod+2
+        adc qs_p
+        sta m_prod+2
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda m_prod+2
         adc qs_p
@@ -135,7 +164,17 @@
         lda m_prod+3
         adc qs_p+1
         sta m_prod+3
+ .endif
 ?p10    qsmul m_a+1, m_b, qs_p           ; p10 = aH*bL -> add at byte 1
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda m_prod+1
+        adc qs_p
+        sta m_prod+1
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda m_prod+1
         adc qs_p
@@ -143,6 +182,7 @@
         lda m_prod+2
         adc qs_p+1
         sta m_prod+2
+ .endif
         bcc ?done
         inc m_prod+3
 ?done   rts
@@ -158,8 +198,36 @@
 sm14_resume = *
         org SMUL14_BASE
 .proc smul_14
+ .if 1
+        lda m_a+1
+	eor m_b+1
+	sta m_sign
+
+	rep #$20
+	.LONGA ON
+        ; abs(m_a)
+        lda m_a
+        bpl ?a_pos
+        eor #$ffff
+	inc
+	sta m_a
+?a_pos
+        ; abs(m_b)
+        lda m_b
+        bpl ?b_pos
+        eor #$ffff
+	inc
+	sta m_b
+?b_pos
+	sep #$20
+	.LONGA OFF
+ .else
+  .if 1
+	stz m_sign
+  .else
         lda #0
         sta m_sign
+  .endif
         ; abs(m_a)
         lda m_a+1
         bpl ?a_pos
@@ -174,10 +242,43 @@ sm14_resume = *
         sta m_sign
         jsr m_negb
 ?b_pos
+ .endif
         jsr umul16
+
         ; m_prod >>= 14 via (m_prod << 2) >> 16: shift the 32-bit product LEFT
         ; twice, then the result is bytes [2],[3]. 8 shifts instead of the
         ; 14-iteration (56-shift) loop. Bit-identical (Gemini tip, tips #4b).
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_prod
+	asl
+	rol m_prod+2
+	asl
+	rol m_prod+2
+	sta m_prod
+
+        ldy m_prod+1                 ; C = the dropped fraction's MSB: ROUND the
+	cpy #$80
+        lda m_prod+2                 ;   >>14 instead of truncating. Truncation
+        adc #0                       ;   lost up to a whole unit per frame per
+		                     ;   axis in move_player, bending the walk
+                                     ;   heading up to 2 deg toward the nearest
+                                     ;   axis ("pulls sideways", 2026-07-28 --
+                                     ;   DOOM's fixed_t positions lose nothing)
+        ; apply sign
+        ldy m_sign
+	bpl ?done
+
+	eor #$ffff
+	inc
+
+?done   sta m_res
+
+	sep #$20
+	.LONGA OFF
+	rts
+ .else
         asl m_prod
         rol m_prod+1
         rol m_prod+2
@@ -186,6 +287,7 @@ sm14_resume = *
         rol m_prod+1
         rol m_prod+2
         rol m_prod+3
+
         asl m_prod+1                 ; C = the dropped fraction's MSB: ROUND the
         lda m_prod+2                 ;   >>14 instead of truncating. Truncation
         adc #0                       ;   lost up to a whole unit per frame per
@@ -204,6 +306,8 @@ sm14_resume = *
         sbc m_res+1
         sta m_res+1
 ?done   rts
+ .endif
+
 .endp
     .if * > SMUL14_END+1
         ert 'smul_14 outgrew SMUL14_BASE..END (memory_map.inc)'
@@ -248,21 +352,67 @@ sm14_resume = *
 
 ;--------------------------------------------------------------
 .proc smul32
+ .if 1
+	lda m_a+1
+	eor m_b+1
+	sta m_sign
+
+	rep #$20
+	.LONGA ON
+	lda m_a
+	bpl ?ap
+	eor #$ffff
+	inc
+	sta m_a
+?ap
+	lda m_b
+	bpl ?bp
+	eor #$ffff
+	inc
+	sta m_b
+?bp
+	sep #$20
+	.LONGA OFF
+ .else
+  .if 1
+	stz m_sign
+  .else
         lda #0
         sta m_sign
+  .endif
         lda m_a+1
         bpl ?ap
         inc m_sign
         jsr m_neg
+
 ?ap     lda m_b+1
         bpl ?bp
         lda m_sign
         eor #1
         sta m_sign
         jsr m_negb
-?bp     jsr umul16
+?bp
+ .endif
+	jsr umul16
+
+        lda m_sign
+        bpl ?done
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+        lda #0
+        sbc m_prod
+        sta m_prod
+        lda #0
+        sbc m_prod+2
+        sta m_prod+2
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_sign
         beq ?done
+
         sec                          ; negate m_prod (4 bytes)
         lda #0
         sbc m_prod
@@ -276,6 +426,7 @@ sm14_resume = *
         lda #0
         sbc m_prod+3
         sta m_prod+3
+ .endif
 ?done   rts
 .endp
 
@@ -283,6 +434,16 @@ sm14_resume = *
 ; cross_pos -- A = 1 if (cx_a*cx_b - cx_c*cx_d) > 0, else 0  (all signed16).
 ;--------------------------------------------------------------
 .proc cross_pos
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda cx_a
+        sta m_a
+        lda cx_b
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         lda cx_a
         sta m_a
         lda cx_a+1
@@ -291,12 +452,29 @@ sm14_resume = *
         sta m_b
         lda cx_b+1
         sta m_b+1
+ .endif
         jsr smul32                   ; m_prod = a*b
-        ldx #3
+ .if 1
+	rep #$20		;20 bytes
+	.LONGA ON
+	lda m_prod
+	sta cx_p1
+	lda m_prod+2
+	sta cx_p1+2
+
+        lda cx_c
+        sta m_a
+        lda cx_d
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
+        ldx #3			;25 bytes
 ?s1     lda m_prod,x
         sta cx_p1,x
         dex
         bpl ?s1
+
         lda cx_c
         sta m_a
         lda cx_c+1
@@ -305,7 +483,32 @@ sm14_resume = *
         sta m_b
         lda cx_d+1
         sta m_b+1
+ .endif
         jsr smul32                   ; m_prod = c*d
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+        lda cx_p1
+        sbc m_prod
+        sta cx_p1
+        lda cx_p1+2
+        sbc m_prod+2
+        sta cx_p1+2
+	bmi ?zero
+	ora cx_p1
+	beq ?zero
+	
+	sep #$20
+	.LONGA OFF
+	lda #1
+	rts
+
+?zero	sep #$20
+	.LONGA OFF
+	lda #0
+	rts
+ .else
         sec                          ; cx_p1 -= m_prod  (P1 - P2)
         lda cx_p1
         sbc m_prod
@@ -320,15 +523,18 @@ sm14_resume = *
         sbc m_prod+3
         sta cx_p1+3                  ; sign test (sta leaves sbc's N alone)
         bmi ?zero                    ; negative -> not > 0
+
         lda cx_p1
         ora cx_p1+1
         ora cx_p1+2
         ora cx_p1+3
         beq ?zero                    ; zero -> not > 0
+
         lda #1
         rts
 ?zero   lda #0
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -488,9 +694,14 @@ bft_resume = *
         .LONGA OFF
         sep #$20
         jsr fmul_sin
+ .if 1
+        rep #$21		;absorb CLC
+        .LONGA ON	
+ .else
         rep #$20
         .LONGA ON
         clc
+ .endif
         lda zp_Z
         adc m_res
         sta zp_Z
@@ -541,10 +752,22 @@ udiv_resume = *
         lda m_prod+2
         cmp m_den
         bcs ?full                    ; ... and den = 0 falls here, as before
-?pre8   lda m_prod+2                 ; ---- 16 steps: remainder = the top byte ----
+?pre8
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_prod+2		;put m_rem into accumulator
+	and #$00ff
+ .else
+	lda m_prod+2                 ; ---- 16 steps: remainder = the top byte ----
         sta m_rem
+  .if 1
+	stz m_rem+1
+  .else
         lda #0
         sta m_rem+1
+  .endif
+ .endif
         ; ---- 65816 NATIVE, 16-BIT ACCUMULATOR (2026-08-11 pm) ---------------
         ; This is the path tw_setup takes on EVERY column, so it is where the
         ; port's first 16-bit block goes. Each step was four 8-bit shifts + a
@@ -574,7 +797,22 @@ udiv_resume = *
         ; exactly the corner of the map it drew -- tools/tests/_verify_automap.py).
         ; Dropping the pair is also what the invariant was FOR: 4 bytes and ~10
         ; cycles a call, and udiv24 is called ~13 times per seg.
+ .if 1
+	ldx #16			;16-bit Acc. continued
+?l16    asl m_prod                   ; dividend MSB -> carry (16-bit)
+        rol                          ; ... into the remainder (16-bit)
+	cmp m_den
+	bcc ?s16
+	sbc m_den
+	inc m_prod
+?s16	dex
+	bne ?l16
+	sta m_rem
+	lda m_prod
+	sta m_quot
+ .else
         rep #$20                     ; 16-bit A (native: the frame loop's mode)
+	.LONGA ON
         ldx #16
 ?l16    asl m_prod                   ; dividend MSB -> carry (16-bit)
         rol m_rem                    ; ... into the remainder (16-bit)
@@ -588,13 +826,45 @@ udiv_resume = *
         bne ?l16
         lda m_prod                   ; the dividend register IS the quotient now
         sta m_quot                   ;   (16-bit: both bytes in one move)
+ .endif
         sep #$20                     ; back to 8-bit A -- and STAY native, see
+	.LONGA OFF
         rts                          ;   the block comment above
 
-?pre16  lda m_prod+1                 ; ---- 8 steps: remainder = the top 16 bits,
+?pre16
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_prod+1
+	pha
+	lda m_prod
+	and #$00ff
+	xba
+	sta m_prod
+	pla
+
+	ldx #8
+?l8	asl m_prod
+	rol
+	cmp m_den
+	bcc ?s8
+	sbc m_den
+	inc m_prod
+?s8	dex
+	bne ?l8
+
+	sta m_rem
+	lda m_prod
+	and #$00ff
+	sta m_quot
+	sep #$20
+	.LONGA OFF
+ .else
+	lda m_prod+1                 ; ---- 8 steps: remainder = the top 16 bits,
         sta m_rem                    ;      so the quotient cannot exceed 255 ----
         lda m_prod+2
         sta m_rem+1
+
         ldx #8
 ?l8     asl m_prod
         rol m_rem
@@ -611,14 +881,27 @@ udiv_resume = *
         inc m_prod
 ?s8     dex
         bne ?l8
+
         lda m_prod
         sta m_quot
+  .if 1
+        stz m_quot+1
+  .else
         lda #0
         sta m_quot+1
+  .endif
+ .endif
         rts
-?full   lda #0                       ; ---- the original 24 steps ----
+
+?full
+   .if 1
+        stz m_rem
+        stz m_rem+1
+   .else
+        lda #0                       ; ---- the original 24 steps ----
         sta m_rem
         sta m_rem+1
+   .endif
         ldx #24
 ?l24    asl m_prod                   ; shift dividend MSB into remainder
         rol m_prod+1
@@ -637,6 +920,7 @@ udiv_resume = *
         inc m_prod
 ?s24    dex
         bne ?l24
+
         lda m_prod                   ; the 24-step tail, still 8-bit: this path
         sta m_quot                   ;   FALLS THROUGH into it instead of the
         lda m_prod+1                 ;   old `jmp ?q16` -- the 16-step path took
@@ -656,11 +940,37 @@ udiv_resume = *
 ;   Caller guarantees m_prod[0..1] holds the dividend (m_prod+2 ignored).
 ;--------------------------------------------------------------
 .proc udiv16
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda #$0000	;m_rem in acc.
+	stz m_quot
+
+	ldx #16
+?l	asl m_prod
+	rol
+	cmp m_den
+	bcc ?skip
+	sbc m_den
+?skip	rol m_quot
+	dex
+	bne ?l
+	sta m_rem
+	sep #$20
+	.LONGA OFF
+ .else
+  .if 1
+        stz m_rem
+        stz m_rem+1
+        stz m_quot
+        stz m_quot+1
+  .else
         lda #0
         sta m_rem
         sta m_rem+1
         sta m_quot
         sta m_quot+1
+  .endif
         ldx #16
 ?l      asl m_prod                 ; shift 16-bit dividend MSB into remainder
         rol m_prod+1
@@ -679,6 +989,7 @@ udiv_resume = *
         rol m_quot+1
         dex
         bne ?l
+ .endif
         rts
 .endp
 
@@ -690,23 +1001,58 @@ udiv_resume = *
 ;--------------------------------------------------------------
 .proc recip_norm
         ; caller preloads rc_m (16-bit value to normalize: Z or span).
+ .if 1
+	ldx #0		;rc_e
+	rep #$20
+	.LONGA ON
+	lda rc_m
+?up	cmp #2*256
+	bcc ?dn
+	lsr
+	inx
+	bra ?up
+?dn	cmp #256
+	bcs ?done
+	asl
+	dex
+	bra ?dn
+?done	stx rc_e
+;	sta rc_m	;not necessary?
+	sep #$20
+	.LONGA OFF
+	tax		;copy LSB to X
+	rts
+ .else
+  .if 1
+        stz rc_e
+  .else
         lda #0
         sta rc_e
+  .endif
 ?up     lda rc_m+1                 ; while m >= 512 (hi >= 2): m >>= 1, e++
         cmp #2
         bcc ?dn
         lsr rc_m+1
         ror rc_m
         inc rc_e
+  .if 1
+	bra ?up
+  .else	
         jmp ?up
+  .endif
 ?dn     lda rc_m+1                 ; while m < 256 (hi == 0): m <<= 1, e--
         bne ?done
         asl rc_m
         rol rc_m+1
         dec rc_e
+  .if 1
+	bra ?dn
+  .else
         jmp ?dn
-?done   ldx rc_m                   ; index = mantissa low byte (hi == 1)
+  .endif
+?done	ldx rc_m                   ; index = mantissa low byte (hi == 1)
         rts                        ; X, not Y: the tables live in Rapidus bank
+ .endif
 .endp                              ;   $01 now and `lda.l tab,y` does not exist
                                    ;   on the 65816 -- only absolute-long,X.
                                    ;   No caller had X live across this call.
@@ -723,26 +1069,55 @@ udiv_resume = *
         lsr                        ; whole bytes to drop (X>>3)
         beq ?bits
         tay
+ .if 1
+	rep #$20
+	.LONGA ON
+?byte	lda m_prod+1
+	sta m_prod
+	lda m_prod+3
+	and #$00ff
+	sta m_prod+2
+	dey
+	bne ?byte
+	sep #$20
+	.LONGA OFF
+ .else
 ?byte   lda m_prod+1               ; prod >>= 8
         sta m_prod
         lda m_prod+2
         sta m_prod+1
         lda m_prod+3
         sta m_prod+2
+  .if 1
+        stz m_prod+3
+  .else
         lda #0
         sta m_prod+3
+  .endif
         dey
         bne ?byte
+ .endif
 ?bits   txa
         and #7
         beq ?done
         tax
+ .if 1
+	rep #$20
+	.LONGA ON
+?bit	lsr m_prod+2
+	ror m_prod
+	dex
+	bne ?bit
+	sep #$20
+	.LONGA OFF
+ .else
 ?bit    lsr m_prod+3
         ror m_prod+2
         ror m_prod+1
         ror m_prod
         dex
         bne ?bit
+ .endif
 ?done   rts
 .endp
 
@@ -757,6 +1132,22 @@ udiv_resume = *
         lsr                        ; whole bytes to drop
         beq ?bits
         tay
+ .if 1
+	phx
+	ldx #$00
+	rep #$20
+	.LONGA ON
+?byte   lda rs_acc+1               ; rs_acc >>= 8
+	sta rs_acc
+	lda rs_acc+3
+	sta rs_acc+2
+	stx rs_acc+4
+	dey
+	bne ?byte
+	sep #$20
+	.LONGA OFF
+	plx
+ .else
 ?byte   lda rs_acc+1               ; rs_acc >>= 8
         sta rs_acc
         lda rs_acc+2
@@ -765,14 +1156,33 @@ udiv_resume = *
         sta rs_acc+2
         lda rs_acc+4
         sta rs_acc+3
+  .if 1
+        stz rs_acc+4
+  .else
         lda #0
         sta rs_acc+4
+  .endif
         dey
         bne ?byte
+ .endif
 ?bits   txa
         and #7
         beq ?done
         tax
+ .if 1
+	lda rs_acc+4
+	rep #$20
+	.LONGA ON
+	and #$00ff
+?bit	lsr
+	ror rs_acc+2
+	ror rs_acc
+	dex
+	bne ?bit
+	sep #$20
+	.LONGA OFF
+	sta rs_acc+4
+ .else
 ?bit    lsr rs_acc+4
         ror rs_acc+3
         ror rs_acc+2
@@ -780,6 +1190,7 @@ udiv_resume = *
         ror rs_acc
         dex
         bne ?bit
+ .endif
 ?done   rts
 .endp
 
@@ -791,32 +1202,59 @@ udiv_resume = *
 ;   (tools/_verify_invspan.py). Computes inv_span once/seg; this is per plane.
 ;--------------------------------------------------------------
 .proc step_recip
+  .if 1
+        stz m_sign
+  .else
         lda #0
         sta m_sign
+  .endif
         lda m_prod+2               ; sign + |R-L| -> rs_mag
         bpl ?pos
+
         inc m_sign
+
         sec
         lda #0
         sbc m_prod
         sta rs_mag
-        lda #0
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda #0
+        sbc m_prod+1
+        sta rs_mag+1
+ .else
+	lda #0
         sbc m_prod+1
         sta rs_mag+1
         lda #0
         sbc m_prod+2
         sta rs_mag+2
+ .endif
+ .if 1
+	bra ?mul
+ .else
         jmp ?mul
+ .endif
 ?pos    rep #$20                   ; ---- 16-bit A: a 24-bit copy is two OVERLAPPING
         .LONGA ON                  ;   16-bit moves (bytes 0-1 then 1-2), which
         lda m_prod                 ;   never touches byte 3 and costs four
         sta rs_mag                 ;   instructions instead of six
         lda m_prod+1
         sta rs_mag+1
+ .if 1
+	;nothing
+ .else
         .LONGA OFF
         sep #$20
-?mul    rep #$20                   ; lo16 * invm -> rs_acc[0..3], acc[4]=0
+ .endif
+?mul
+ .if 1
+	;nothing
+ .else
+	rep #$20                   ; lo16 * invm -> rs_acc[0..3], acc[4]=0
         .LONGA ON
+ .endif
         lda rs_mag
         sta m_a
         lda rs_invm
@@ -830,19 +1268,46 @@ udiv_resume = *
         sta rs_acc
         lda m_prod+2
         sta rs_acc+2
+  .if 1
+	lda rs_invm
+        sta m_b
+  .else
+	; nothing
+  .endif
         .LONGA OFF
         sep #$20
+  .if 1
+        stz rs_acc+4
+  .else
         lda #0
         sta rs_acc+4
+  .endif
         lda rs_mag+2               ; hi8 * invm -> add at byte offset 2
         sta m_a
+  .if 1
+        stz m_a+1
+  .else
         lda #0
         sta m_a+1
-        lda rs_invm
+  .endif
+ .if 1
+	;nothing, inss below moved up to 16-bit section
+ .else
+	lda rs_invm
         sta m_b
         lda rs_invm+1
         sta m_b+1
+ .endif
         jsr umul16                 ; m_prod[0..2] = hi8*invm (m_prod+3=0)
+ .if 1
+	rep #$21	;absorb CLC
+	.LONGA ON
+        lda rs_acc+2
+        adc m_prod
+        sta rs_acc+2
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda rs_acc+2
         adc m_prod
@@ -850,11 +1315,14 @@ udiv_resume = *
         lda rs_acc+3
         adc m_prod+1
         sta rs_acc+3
+ .endif
         lda rs_acc+4
         adc m_prod+2
         sta rs_acc+4
+
         ldx rs_invsh               ; >> rs_invsh (15..27)
         jsr shr_acc40
+
         ; --- SATURATE |step| at 32767 -----------------------------------------
         ; m_quot is 16 bits and the caller adds it to a 24-bit plane accumulator
         ; once per column, so a step that does not fit used to WRAP -- and a wrap
@@ -873,6 +1341,29 @@ udiv_resume = *
         ; sides of the crossing whichever of the two slopes it uses. Verified
         ; pixel-identical to unlimited-precision math over all 256 angles at that
         ; spot (63772 wrong pixels -> 0).
+
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda rs_acc+2
+	ora rs_acc+3		;overlaps, but doesn't exceed the range
+	bne ?sat
+
+	lda rs_acc
+	bpl ?ok
+
+?sat	lda #$7fff
+
+?ok	ldy m_sign
+	beq ?sav
+
+	eor #$ffff
+	inc
+
+?sav	sta m_quot
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_acc+2               ; any bit above 15 set -> saturate
         ora rs_acc+3
         ora rs_acc+4
@@ -883,13 +1374,19 @@ udiv_resume = *
         sta m_quot
         lda rs_acc+1
         sta m_quot+1
+  .if 1
+	bra ?sgn
+  .else
         jmp ?sgn
+  .endif
 ?sat    lda #$FF
         sta m_quot
         lda #$7F
         sta m_quot+1
+
 ?sgn    lda m_sign
         beq ?done
+
         sec
         lda #0
         sbc m_quot
@@ -897,7 +1394,9 @@ udiv_resume = *
         lda #0
         sbc m_quot+1
         sta m_quot+1
-?done   rts
+?done
+ .endif
+	rts
 .endp
 
 ;--------------------------------------------------------------
@@ -911,13 +1410,19 @@ udiv_resume = *
         lda zp_Z+1
         sta rc_m+1
         jsr recip_norm             ; X = mantissa idx, rc_e = e
+
         lda.l RCX_SCALE_LO,x       ; the table is in bank $01 (memory_map.inc
         sta m_prod                 ;   RECIP_EXT): +1 cycle per read, and the
         lda.l RCX_SCALE_HI,x       ;   1536 B it vacated at $8700 is where the
         sta m_prod+1               ;   monster AI lives
+  .if 1
+        stz m_prod+2
+        stz m_prod+3
+  .else
         lda #0
         sta m_prod+2
         sta m_prod+3
+  .endif
         clc                        ; shift = RECIP_SCALE_K + e (signed e; = 2..13)
         lda #RECIP_SCALE_K
         adc rc_e
@@ -926,6 +1431,7 @@ udiv_resume = *
         tax                        ;   hence the second clc)
         jsr shr_prod32
         jsr vw_q34x                ; ... and *3/4 for the in-between sizes
+
         lda m_prod
         sta m_quot
         lda m_prod+1
@@ -939,25 +1445,51 @@ udiv_resume = *
 ;   anchors (the clamped 0..W-1 column range is derived separately).
 ;--------------------------------------------------------------
 .proc screenx_signed
+  .if 1
+        stz m_sign
+  .else
         lda #0
         sta m_sign
+  .endif
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_X
+	bpl ?xp
+
+	ldy #$01
+        sty m_sign                 ; m_a = |X| (16-bit inc, but LSB=0, so no carry to MSB and this is harmless)
+	eor #$ffff
+	inc
+
+?xp	sta m_a
+        lda zp_Z
+        sta rc_m
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_X
         sta m_a
         lda zp_X+1
         sta m_a+1
         bpl ?xp
+
         inc m_sign                 ; m_a = |X|
         jsr m_neg
+
 ?xp     lda zp_Z                   ; normalize Z
         sta rc_m
         lda zp_Z+1
         sta rc_m+1
+ .endif
         jsr recip_norm             ; X = mantissa idx, rc_e = e
+
         lda.l RCX_SX_LO,x          ; m_b = SX_TAB[m] (FOCAL baked in), bank $01
         sta m_b
         lda.l RCX_SX_HI,x
         sta m_b+1
         jsr umul16                 ; m_prod(4) = |X| * SX_TAB[m]
+
         clc                        ; shift = RECIP_SX_K + e (signed e; = 11..22)
         lda #RECIP_SX_K
         adc rc_e
@@ -965,6 +1497,7 @@ udiv_resume = *
         adc vw_sh                  ;   the SAME factor, or the picture stops
         tax                        ;   being square)
         jsr shr_prod32             ; m_prod[0..1] = |offset| px
+
         ; --- saturate |offset| at 16384. The true offset reaches 80*32767/4 =
         ; ~655k px on a long wall walked past at close range; reading only
         ; m_prod[0..1] wrapped it mod 65536, and the wrapped m_xs mis-ordered /
@@ -972,20 +1505,36 @@ udiv_resume = *
         ; every still-open column: the transient "brown wall in the window"
         ; (1..4.png, tools/_verify_segdrop.py). Any real |sx| >= 256 behaves
         ; identically downstream, so clamping at 16384 changes no visible frame.
+
         lda m_prod+2
         ora m_prod+3
         bne ?sat                   ; bits 16+ set -> way past the clamp
         lda m_prod+1
         cmp #$40                   ; |offset| >= $4000?
         bcc ?off_ok
-?sat    lda #0
+?sat
+  .if 1
+        stz m_prod
+  .else
+	lda #0
         sta m_prod
+  .endif
         lda #$40
         sta m_prod+1
+
 ?off_ok jsr vw_q34x                ; view size: *3/4 (AFTER the clamp -- the
                                    ;   saturated value stays far off-screen)
         lda m_sign
         bne ?neg
+ .if 1
+	rep #$21	;absorb CLC
+	.LONGA ON
+        lda #SCREEN_HALF
+        adc m_prod
+        sta m_xs
+	sep #$20
+	.LONGA OFF
+ .else
         clc                        ; +X: SCREEN_HALF + offset
         lda #SCREEN_HALF
         adc m_prod
@@ -993,7 +1542,9 @@ udiv_resume = *
         lda #0
         adc m_prod+1
         sta m_xs+1
+ .endif
         rts
+
 ?neg    sec                        ; -X: SCREEN_HALF - offset
         lda #SCREEN_HALF
         sbc m_prod

@@ -71,9 +71,15 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
         inc RTCLOK3
         lda XDLA_PEND                ; deferred triple-buffer flip (2026-08-11):
         beq ?done                    ;   publish the XDL INSIDE the blank -- the
+ .if 1
+        sta VBXE_XDLA1               ;   real FX core switches mid-frame if the
+        stz XDLA_PEND                ;   store lands mid-picture (the flicker),
+                                     ;   Altirra latches at frame start; this is
+ .else
         sta VBXE_XDLA1               ;   real FX core switches mid-frame if the
         lda #0                       ;   store lands mid-picture (the flicker),
         sta XDLA_PEND                ;   Altirra latches at frame start; this is
+ .endif
 ?done   pla                          ;   correct on both. $00 = nothing pending.
         rti
 .endp
@@ -83,9 +89,14 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
 ;   after snd_init and before the first bank-out. Clobbers A.
 ;--------------------------------------------------------------
 .proc urom_init
+ .if 1
+        sei
+        stz NMIEN                    ; VBI off for the same reason boot.asm turns
+ .else
         sei
         lda #0
         sta NMIEN                    ; VBI off for the same reason boot.asm turns
+ .endif
                                      ;   it off around its stores: THIS bank-out
                                      ;   is the one window where the RAM vectors
                                      ;   are not installed yet, so an NMI here

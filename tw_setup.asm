@@ -24,6 +24,20 @@ twclip_resume = *
         sec                          ; m_a = |dx|
         lda zp_rx2
         sbc zp_rx1
+ .if 1
+	bpl ?dxp
+	eor #$ffff
+	inc
+?dxp	sta m_a
+
+        sec                          ; m_b = |dy|
+        lda zp_ry2
+        sbc zp_ry1
+	bpl ?dyp
+	eor #$ffff
+	inc
+?dyp	sta m_b
+ .else
         sta m_a
         .LONGA OFF
         sep #$20
@@ -41,28 +55,60 @@ twclip_resume = *
         jsr m_negb
 ?dyp    rep #$20
         .LONGA ON
+ .endif
         lda m_a                      ; order so m_a = max, m_b = min -- one
         cmp m_b                      ;   unsigned 16-bit compare, not the
         bcs ?omax                    ;   hi/lo pair it was
+ .if 1
+	pha			;A is already loaded, contains m_a
+	lda m_b
+	sta m_a
+	pla
+	sta m_b
+ .else
         lda m_b                      ; (Y is 8-bit, so the swap goes through the
         pha                          ;   STACK, which IS 16 bits wide here)
         lda m_a
         sta m_b
         pla
         sta m_a
+ .endif
 ?omax   lsr m_b                      ; min/2
         lda m_a                      ; max/8 -> m_res
+ .if 1
+	lsr
+	lsr
+	lsr
+	sta m_res
+ .else
         sta m_res
         lsr m_res
         lsr m_res
         lsr m_res
+ .endif
         clc                          ; L = max + min/2 - max/8
         lda m_a
         adc m_b
-        sta rs_seglen
+;       sta rs_seglen
         sec
-        lda rs_seglen
+;       lda rs_seglen
         sbc m_res
+ .if 1
+    .if TEX_HALFW
+        ; 2:1 HORIZONTAL DOWNSAMPLE (pack_textures.py HALF_W). The stored texture
+        ; is half as wide, so one texel spans TWO world units along the wall. u is
+        ; a world-unit track, so halving it here -- once per seg -- is the entire
+        ; runtime cost of the change: wall_src/low_src and the per-column loop are
+        ; untouched, and the AND wrap still works because w/2 stays a power of two.
+    	lsr
+    .endif
+	bne ?ok
+	inc
+?ok	sta rs_seglen
+	sep #$20
+	.LONGA OFF
+	rts
+ .else
         sta rs_seglen
         .LONGA OFF
         sep #$20
@@ -80,6 +126,7 @@ twclip_resume = *
         bne ?ok
         inc rs_seglen
 ?ok     rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -99,8 +146,12 @@ twmask_resume = *
         lda #$FF
         sta rs_texmask
         lda rs_texh_cur
+ .if 1
+	dec
+ .else
         sec
         sbc #1
+ .endif
         sta rs_texmask+1
         and rs_texh_cur
         sta rs_texpow2
@@ -122,10 +173,18 @@ twmask_resume = *
         lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texels)
         and rs_wtexwm
     .if TEX_RUNS
+ .if 1
+	phx			;eliminate pc_sx variable (used only twice)
+ .else
         stx pc_sx                    ; the index array is in SDRAM now (texcol.asm)
+ .endif
         tax                          ;   and absolute long is X-indexed only
 wix     lda.l $000000,x
+ .if 1
+	plx
+ .else
         ldx pc_sx                    ;   ... X is the caller's column counter
+ .endif
     .else
         tay                          ; ...and then which STORED column that is:
 wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one copy
@@ -150,13 +209,19 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         .LONGA ON
         lda rs_txx
         and #$FF                     ; the 16-bit load drags rs_txx+1 along
+ .if 1
+	xba
+	lsr
+	lsr
+ .else
         asl @
         asl @
         asl @
         asl @
         asl @
         asl @                        ; tex_x * 64 = the stored column's offset
-        clc
+ .endif
+;       clc
         adc rs_wtexad                ; rs_tsrc = wtexad + (txx<<6)
         sta rs_tsrc
         .LONGA OFF
@@ -168,6 +233,15 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         rts
     .else
         qsmul rs_txx, rs_wtexh, qs_p       ; qs_p = tex_x * texH  (<=127*128, fits 16b)
+ .if 1
+	rep #$21
+	.LONGA ON
+        lda rs_wtexad
+        adc qs_p
+        sta rs_tsrc
+	sep #$20
+	.LONGA OFF
+ .else
         clc                          ; rs_tsrc = wtexad + qs_p
         lda rs_wtexad
         adc qs_p
@@ -175,6 +249,7 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         lda rs_wtexad+1
         adc qs_p+1
         sta rs_tsrc+1
+ .endif
         lda rs_wtexad+2
         adc #0
         sta rs_tsrc+2
@@ -186,10 +261,18 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         lda rs_uacc+1                ; world u, same track as wall_src
         and rs_ltexwm
     .if TEX_RUNS
+ .if 1
+	phx			;eliminate pc_sx variable (used only twice)
+ .else
         stx pc_sx
+ .endif
         tax
 lix     lda.l $000000,x              ; the LOWER step's own index array, in SDRAM
+ .if 1
+	plx
+ .else
         ldx pc_sx
+ .endif
     .else
         tay
 lix     lda $FFFF,y                  ; the LOWER step's own column index array
@@ -206,13 +289,19 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         .LONGA ON
         lda rs_txx
         and #$FF
+ .if 1
+	xba
+	lsr
+	lsr
+ .else
         asl @
         asl @
         asl @
         asl @
         asl @
         asl @
-        clc
+ .endif
+;       clc
         adc rs_ltexad                ; rs_tsrc = ltexad + (txx<<6)
         sta rs_tsrc
         .LONGA OFF
@@ -253,7 +342,11 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         cmp rs_bot
         bcc ?aset                    ; cmp does not touch A, so A IS rs_ra here:
         bne ?out                     ;   the old ?ara reloaded what it had, and
+ .if 1
+        bra ?aset                    ;   the jmp round it went away with it
+ .else
         beq ?aset                    ;   the jmp round it went away with it
+ .endif
 ?atop   lda rs_top
 ?aset   sta rs_spa
         lda rs_rb+1                  ; b = min(rs_rb, bot); <top -> nothing
@@ -264,7 +357,7 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         bcc ?out
         cmp rs_bot
         bcc ?bset                    ; same as above -- A is still rs_rb, and
-        beq ?bset                    ;   ?bbot now FALLS THROUGH to ?bset
+;       beq ?bset                    ;   ?bbot now FALLS THROUGH to ?bset
 ?bbot   lda rs_bot
 ?bset   sta rs_spb
         cmp rs_spa                   ; draw only if spb >= spa; A is the value
@@ -277,10 +370,14 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         ; sec/sbc/clc/adc/tay/lda that built them cost 20 cycles a column.
         jmp paint_col                ; tail-call (preserves X) -- paint.asm
     .else
-        sec                          ; draw_twall_col DOES take A=top, Y=height
+;       sec                          ; draw_twall_col DOES take A=top, Y=height
         sbc rs_spa
+ .if 1
+	inc
+ .else
         clc
         adc #1
+ .endif
         tay                          ; height = spb-spa+1
         lda rs_spa                   ; top row
         jmp draw_twall_col           ; tail-call (preserves X)

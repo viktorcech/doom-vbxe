@@ -92,17 +92,40 @@ pts_resume = *
         org PTSEG_BASE               ; the fast block tw_setup vacated -- pt_seg grew
                                      ;   past PAINT2 when it started rounding
 .proc pt_seg
+ .if 1
+        stz rs_rptf
+        stz rs_drpt
+        stz rs_drpt+1
+        stz rs_drpt+2
+ .else
         lda #0
         sta rs_rptf
         sta rs_drpt
         sta rs_drpt+1
         sta rs_drpt+2
+ .endif
         lda rs_worldh+1              ; worldH <= 0 (degenerate / closed door) ->
         bmi ?fj                      ;   one texel per row, like tw_setup's ?flat
         ora rs_worldh
         bne ?wok
 ?fj     jmp ?flat
-?wok    lda rs_worldh
+?wok
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda rs_worldh
+        sta m_den
+        sec                          ; D = yfacc - ycacc, the wall's screen height
+        lda rs_yfacc                 ;     in Q8 rows
+        sbc rs_ycacc
+        sta m_prod
+	sep #$20
+	.LONGA OFF
+        lda rs_yfacc+2
+        sbc rs_ycacc+2
+        sta m_prod+2
+ .else
+	lda rs_worldh
         sta m_den
         lda rs_worldh+1
         sta m_den+1
@@ -116,9 +139,14 @@ pts_resume = *
         lda rs_yfacc+2
         sbc rs_ycacc+2
         sta m_prod+2
+ .endif
+ .if 1
+	jmi ?flat
+ .else
         bpl ?dpos0
         jmp ?flat                    ; ceiling below floor
 ?dpos0
+ .endif
         ; ROUND (2026-08-27): dividend += worldH/2 before the divide. udiv24
         ; truncates, and now that paint_col takes the RECIPROCAL of rpt for
         ; rs_tpr (pt_recip), half an LSB low here is amplified into whole texels
@@ -126,6 +154,17 @@ pts_resume = *
         ; |tpr error| from 32 to 18 and the mean from 2.54 to 1.41.
         ; The overflow guard moved BELOW it, so it sees the dividend actually
         ; divided -- rounding can push a quotient that was exactly 65535 over.
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda rs_worldh
+        lsr
+        clc
+        adc m_prod
+        sta m_prod
+	sep #$20
+	.LONGA OFF
+ .else
         lda rs_worldh+1
         lsr
         sta m_a+1
@@ -139,20 +178,44 @@ pts_resume = *
         lda m_prod+1
         adc m_a+1
         sta m_prod+1
+ .endif
         lda m_prod+2
         adc #0
         sta m_prod+2
         bcs ?sat
+
         lda rs_worldh+1              ; D/worldH >= 65536 would wrap the quotient:
         bne ?nov                     ;   worldH >= 256 cannot (D is 24-bit)
         lda m_prod+2
         cmp rs_worldh
         bcc ?nov
+
 ?sat    lda #$FF                     ; saturate -- a sliver of wall stretched over
         sta rs_rpt                   ;   the whole screen
         sta rs_rpt+1
         rts
+
 ?nov    jsr udiv24                   ; rpt_q8 = (D + worldH/2) / worldH
+
+ .if 1
+	stz m_prod
+	rep #$20
+	.LONGA ON
+        lda m_quot
+        sta rs_rpt
+        sec
+        lda rs_yfS
+        sbc rs_ycS
+;       sta m_prod+1                 ; the << 8 is the byte placement
+	bpl ?dpos
+
+;	lda m_prod+1
+	eor #$ffff
+	inc
+	sta m_prod+1
+	sep #$20
+	.LONGA OFF
+ .else
         lda m_quot
         sta rs_rpt
         lda m_quot+1
@@ -165,10 +228,13 @@ pts_resume = *
         lda rs_yfS+1
         sbc rs_ycS+1
         sta m_prod+2
+
         lda #0
         sta m_prod
+
         lda m_prod+2
         bpl ?dpos
+
         sec                          ; |dS| << 8
         lda #0
         sbc m_prod+1
@@ -176,7 +242,9 @@ pts_resume = *
         lda #0
         sbc m_prod+2
         sta m_prod+2
+ .endif
         jsr udiv24
+
         sec                          ; ... and negate the quotient back
         lda #0
         sbc m_quot
@@ -187,17 +255,39 @@ pts_resume = *
         lda #0
         sbc #0
         sta rs_drpt+2
+
         rts
-?dpos   jsr udiv24
+
+?dpos
+ .if 1
+	.LONGA ON
+	sta m_prod+1
+	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
+	jsr udiv24
+
         lda m_quot
         sta rs_drpt
         lda m_quot+1
         sta rs_drpt+1
+ .if 1
+        stz rs_drpt+2
+ .else
         lda #0
         sta rs_drpt+2
+ .endif
         rts
-?flat   lda #0                       ; 1.0 screen row per texel
+
+?flat
+ .if 1
+        stz rs_rpt
+ .else
+	lda #0                       ; 1.0 screen row per texel
         sta rs_rpt
+ .endif
         lda #1
         sta rs_rpt+1
         rts
@@ -271,6 +361,7 @@ pt2_resume = *
         ora rc_m
         beq ?sat                     ; rpt = 0 -> tpr is off the top
         jsr recip_norm               ; X = mantissa index, rc_e = exponent
+
         lda.l RCX_INV_LO,x           ; INV_TAB[m] = round(2^23/m), bank $01
         sta m_prod
         lda.l RCX_INV_HI,x
@@ -285,8 +376,12 @@ pt2_resume = *
         bcc ?bits                    ;   leave at most 7 single shifts (shifting
         lda m_prod+1                 ;   14 times by ones would cost more than
         sta m_prod                   ;   the divide this replaces)
+ .if 1
+        stz m_prod+1
+ .else
         lda #0
         sta m_prod+1
+ .endif
         txa
         sec
         sbc #8
@@ -344,8 +439,12 @@ m1d     sbc SQ2H+$FF,y               ;   paint_col is consistent before the
                                      ;   is already 0 on this path: rs_rpt is a
                                      ;   per-COLUMN constant, so pt_mul zeroes it
                                      ;   once instead of every run doing it.
+ .if 1
+        stz pc_dy+2
+ .else
         lda #0
         sta pc_dy+2
+ .endif
         sec
 m2a     lda SQ1L,y                   ; + (w * rpt_hi) << 8
 m2b     sbc SQ2L+$FF,y
@@ -412,8 +511,13 @@ m3d     sbc SQ2H+$FF,y
 ptm_resume = *
         org PTMUL_BASE
 .proc pt_mul
+ .if 1
+                                     ; pt_dy's third byte: only the rpt_hi branch
+        stz pc_dy+2                  ;   ever sets it, and rpt is per column
+ .else
         lda #0                       ; pt_dy's third byte: only the rpt_hi branch
         sta pc_dy+2                  ;   ever sets it, and rpt is per column
+ .endif
         lda rs_rpt                   ; rpt_lo -> the first product
         sta pt_dy.m1a+1
         sta pt_dy.m1c+1
@@ -526,7 +630,20 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         lda rs_texh_cur              ; texH 0 would divide by zero (and a flat
         bne ?texok                   ;   row has no runs at all)
         rts
-?texok  lda rs_tsrc                  ; point both run readers at this column
+
+?texok
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+	lda rs_tsrc                  ; point both run readers at this column
+        sta ?rlen+1
+        sta ?rlen2+1
+        adc #1
+        sta ?rcol+1
+	sep #$20
+	.LONGA OFF
+ .else
+	lda rs_tsrc                  ; point both run readers at this column
         sta ?rlen+1
         sta ?rlen2+1
         clc
@@ -537,11 +654,18 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         sta ?rlen2+2
         adc #0
         sta ?rcol+2
+ .endif
         lda rs_tsrc+2
         sta ?rlen+3
         sta ?rlen2+3
         adc #0
         sta ?rcol+3
+
+ .if 1
+        lda zp_col                   ; the column as a word, for the emit's one
+        sta pc_colw                  ;   16-bit DST add (2026-09-09; ~5.6k runs a
+        stz pc_colw+1                ;   frame read it, one column writes it)
+ .endif
         lda rs_rpt                   ; rs_rpt baked into pt_dy's table addresses,
         cmp ptm_last                 ;   before the FIRST run uses them -- but
         bne ?bake                    ;   ONLY when it CHANGED since the last bake
@@ -571,22 +695,46 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         sbc rs_pegrow+1
         sta m_a+1
         bpl ?apos
+ .if 1
+        stz m_a
+        stz m_a+1
+ .else
         lda #0                       ; spa above the peg (clip slack) -> texel 0
         sta m_a
         sta m_a+1
+ .endif
 ?apos   lda m_a+1                    ; (spa-peg) is a BYTE unless the peg row is far
+ .if 1
+	jne ?wide
+ .else
         beq ?byte                    ;   off-screen (a close wall): then, and only
         jmp ?wide                    ;   then, pay for the full 16x16. The byte
-?byte   qsmul m_a, rs_tpr, qs_p            ;   path is TWO quarter-squares against
+?byte
+ .endif
+	qsmul m_a, rs_tpr, qs_p            ;   path is TWO quarter-squares against
         lda qs_p                     ;   umul16's four plus its carry chain --
         sta m_prod                   ;   ~200 cycles a column, and it is the
                                      ;   common case.
         lda qs_p+1
         sta m_prod+1
+ .if 1
+        stz m_prod+2
+        stz m_prod+3
+ .else
         lda #0
         sta m_prod+2
         sta m_prod+3
+ .endif
         qsmul m_a, rs_tpr+1, qs_p          ; + (lo * tpr_hi) << 8
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda m_prod+1
+        adc qs_p
+        sta m_prod+1
+	sep #$20
+	.LONGA OFF
+ .else
         clc
         lda m_prod+1
         adc qs_p
@@ -594,12 +742,18 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         lda m_prod+2
         adc qs_p+1
         sta m_prod+2
+ .endif
+ .if 1
+	bra ?havep
+ .else
         jmp ?havep
+ .endif
 ?wide   lda rs_tpr
         sta m_b
         lda rs_tpr+1
         sta m_b+1
         jsr umul16                   ; m_prod(32) = (spa-peg) * tpr_q8
+
 ?havep  lda rs_vsh                   ; DOOM's peg shift: whole texels
         beq ?novsh
         clc
@@ -607,6 +761,7 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         sta m_prod+1
         bcc ?novsh
         inc m_prod+2
+
 ?novsh  lda rs_texpow2               ; power-of-two texH -> the modulo is an AND
         bne ?slowmod
         lda m_prod
@@ -614,18 +769,35 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         lda m_prod+1
         and rs_texmask+1
         sta tw_wt+1
+ .if 1
+        bra ?havewt
+ .else
         jmp ?havewt
+ .endif
 ?slowmod lda m_prod+3                ; cannot happen for real geometry, but a
         beq ?red0                    ;   32-bit product would break udiv24
+ .if 1
+        stz m_prod
+        stz m_prod+1
+        stz m_prod+2
+ .else
         lda #0
         sta m_prod
         sta m_prod+1
         sta m_prod+2
-?red0   lda #0                       ; m_den = texH*256 (one tile, Q8)
+ .endif
+?red0
+ .if 1
+	                              ; m_den = texH*256 (one tile, Q8)
+        stz m_den
+ .else
+	lda #0                       ; m_den = texH*256 (one tile, Q8)
         sta m_den
+ .endif
         lda rs_texh_cur
         sta m_den+1
         jsr udiv24
+
         lda m_rem
         sta tw_wt
         lda m_rem+1
@@ -648,6 +820,17 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         ; the span counts in tools/_bench_spans.py, which must not move).
         ldx #0
         lda tw_wt+1                  ; A = texels still ahead of the anchor
+ .if 1
+	ldy #TEX_RUNK		;load counter to Y
+	sec			;get SEC outside the loop
+?find
+?rlen	sbc.l $000000,x
+	bcc ?found
+	inx
+	inx
+	dey
+	bne ?find
+ .else
 ?find   sec
 ?rlen   sbc.l $000000,x              ; run length, in texels (patched above).
         bcc ?found                   ;   A zero-length pad run cannot borrow, so
@@ -655,8 +838,10 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         inx
         cpx #2*TEX_RUNK
         bcc ?find
+ .endif
         ldx pc_x                     ; defensive: the runs must cover texH
         rts
+
 ?found  sta pc_w                     ; A = wt_hi - cum_after (i.e. -(the leftover))
         sec                          ; rem_q8 = (cum << 8) - wt: what is LEFT of
         lda #0                       ;   the run below the anchor
@@ -665,8 +850,13 @@ pc_yn    = zp_mvsec+1                ; first row past the current run
         lda #0                       ; ... and the high byte is 0 - (-leftover)
         sbc pc_w                     ;     minus the borrow the low byte made
         sta pc_w
+ .if 1
+                                     ; yacc = spa, Q8 -- set BEFORE the call now,
+        stz pc_yacc                  ;   so pt_dy can tail-jump straight into the
+ .else
         lda #0                       ; yacc = spa, Q8 -- set BEFORE the call now,
         sta pc_yacc                  ;   so pt_dy can tail-jump straight into the
+ .endif
         lda rs_spa                   ;   loop instead of returning here
         sta pc_yacc+1
         sta pc_y
@@ -685,6 +875,28 @@ pc_paint
         bne ?clamp                   ;   200-row span, so it ends it -- and that
                                      ;   takes the accumulator's third byte out
                                      ;   of the per-run path entirely
+PC_CEIL16 equ 1                      ; 2026-09-09: the CEIL rides the same 16-bit block
+ .if PC_CEIL16
+	rep #$21
+	.LONGA ON
+        lda pc_yacc                  ; yacc += this run's screen extent
+        adc pc_dy
+        sta pc_yacc
+        bcs ?clamp                   ; past row 255 -> this run ends the span
+        adc #$00FF                   ; y_next = CEIL(yacc) = (yacc + 255) >> 8. C=0
+        bcs ?clamp                   ;   (the bcs), and a carry out is the old
+        xba                          ;   "carried past row 255"; the >> 8 is xba
+	sep #$20                     ;   (?clamp does its own sep)
+	.LONGA OFF
+ .elseif 1
+	rep #$21
+	.LONGA ON
+        lda pc_yacc
+        adc pc_dy
+        sta pc_yacc
+	sep #$20
+	.LONGA OFF
+ .else
         clc                          ; yacc += this run's screen extent
         lda pc_yacc
         adc pc_dy
@@ -692,27 +904,42 @@ pc_paint
         lda pc_yacc+1
         adc pc_dy+1
         sta pc_yacc+1
+ .endif
+ .if !PC_CEIL16
         bcs ?clamp                   ; past row 255 -> this run ends the span
+ .endif
         ; y_next = CEIL(yacc), not floor. Row y shows texel
         ; floor((y-peg)*tpr), so it still belongs to a run whose boundary falls
         ; anywhere inside that row -- the first row PAST the run is the ceiling
         ; of the boundary. Flooring it here put every boundary up to one row
         ; early, which at 3x minification moved a fifth of the rows
         ; (tools/_verify_paint.py measures exactly that against the mapping).
+ .if !PC_CEIL16
+ .if 1
+	;nothing
+ .else
         lda pc_yacc                  ; C = there is a fraction left
+ .endif
         cmp #1
         lda pc_yacc+1
         adc #0
         bcs ?clamp                   ; ... and it carried past row 255
+ .endif
         cmp rs_spb
         bcc ?ynok
         beq ?ynok
-?clamp  iny                          ; transparent last run -> nothing to paint
+?clamp  sep #$20                     ; (reached from the 16-bit block too)
+        iny                          ; transparent last run -> nothing to paint
         dey                          ;   (Y is still the raw index; see ?ynok)
         beq ?cend
+
         lda rs_spb                   ; this run ends the column: paint down to
+ .if 1
+	inc
+ .else
         clc                          ;   spb and RETURN. pc_y/pc_yn are dead
         adc #1                       ;   past this point, so neither the pc_yn
+ .endif
         sec                          ;   store nor the old post-emit compare
         sbc pc_y                     ;   against rs_spb is paid any more
         beq ?cend
@@ -726,6 +953,11 @@ pc_paint
         sbc pc_y                     ;   the span the loop continues without
         beq ?adv                     ;   re-comparing against rs_spb
         bcc ?adv                     ; (defensive: yn behind y -> skip, no blit)
+ .if 1
+	cpy #1
+	bcc ?adv
+	dec
+ .else
         iny                          ; TRANSPARENT? Y is still the run's RAW
         dey                          ;   PLAYPAL index (nothing between ?rcol
         beq ?adv                     ;   and here touches it) and index 0 means
@@ -743,11 +975,25 @@ pc_paint
         ;      four BCB fields, same values, same slot advance: ~20 cycles off
         ;      EVERY painted run. ?clamp/?tail still jsr pt_span (per column).
         sbc #1                       ; C=1 (bcc not taken): BCB HEIGHT = rows-1
+ .endif
         ldy #BCB_HEIGHT
         sta (zp_pt),y
         lda zp_color
         ldy #BCB_XOR
         sta (zp_pt),y
+ .if 1
+        ldy pc_y                     ; DST = row*160 + col as ONE word: hi into B
+        lda row_hi,y                 ;   (xba), lo into A, one 16-bit add of the
+        xba                          ;   column word, one 16-bit store of lo+hi
+        lda row_lo,y                 ;   (2026-09-09: -4 cyc, -3 B on every run)
+	rep #$21
+	.LONGA ON
+        adc pc_colw
+        ldy #BCB_DST_ADDR
+        sta (zp_pt),y
+	sep #$20
+	.LONGA OFF
+ .else
         ldy pc_y
         lda row_lo,y
         clc
@@ -759,7 +1005,10 @@ pc_paint
         adc #0                       ; C from the low byte (ldy touches no flags)
         ldy #BCB_DST_ADDR+1
         sta (zp_pt),y
-        lda zp_pt                    ; slot += 21
+ .endif
+        lda zp_pt                    ; slot += 21 -- and still no clc: the DST sum
+                                     ;   above is row*160+col < $8000, so the
+                                     ;   16-bit add cannot carry out either
                                      ; No `clc` here: the `adc #0` above adds to
                                      ;   row_hi, whose largest entry is >(199*160)
                                      ;   = $7C, so it can never carry out -- and
@@ -809,8 +1058,12 @@ pc_resume = *
         sec                          ; rows = spb - y + 1
         lda rs_spb
         sbc pc_y
+ .if 1
+	inc
+ .else
         clc
         adc #1
+ .endif
         tay
         lda pc_y
         jsr pt_span                  ; zp_color is still the last run's shade

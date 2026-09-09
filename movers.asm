@@ -35,6 +35,22 @@
 mvp_resume = *
         org MVPTR_BASE
 .proc mv_ptr
+ .if 1
+	lda mv_i
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+;	sta m_a			;probably a relic of old code
+	asl
+	asl
+	asl
+;	clc
+        adc THINGS_BASE+11
+        sta zp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         lda mv_i
         sta m_prod
         lda #0
@@ -58,10 +74,11 @@ mvp_resume = *
         lda m_prod+1
         adc THINGS_BASE+12
         sta zp_ptr+1
+ .endif
         rts
 .endp
-    .if * > HUDBLIT_BASE
-        ert 'mv_ptr overran $B7C1-$B80F and would clobber hud_blit'
+    .if * > $B810                  ; hud_blit moved to FAST RAM on 2026-09-09; $B810+ is
+        ert 'mv_ptr overran $B7C1-$B80F (memory_map.inc)'   ; free now, the guard keeps the block's size
     .endif
         org mvp_resume
 
@@ -153,7 +170,18 @@ mvs_resume = *
         bcs ?yes
         clc
         rts
-?yes    lda mv_ox                    ; in the right room: now DOOM's own test --
+?yes
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda mv_ox                    ; in the right room: now DOOM's own test --
+        sta mv_px                    ; did the move cross the line? (side changed)
+        lda mv_oy
+        sta mv_py
+	sep #$20
+	.LONGA OFF
+ .else
+	lda mv_ox                    ; in the right room: now DOOM's own test --
         sta mv_px                    ; did the move cross the line? (side changed)
         lda mv_ox+1
         sta mv_px+1
@@ -161,8 +189,19 @@ mvs_resume = *
         sta mv_py
         lda mv_oy+1
         sta mv_py+1
+ .endif
         jsr mv_side_line
         sta mv_s1
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_px
+        sta mv_px
+        lda zp_py
+        sta mv_py
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_px
         sta mv_px
         lda zp_px+1
@@ -171,13 +210,20 @@ mvs_resume = *
         sta mv_py
         lda zp_py+1
         sta mv_py+1
+ .endif
         jsr mv_side_line
         cmp mv_s1
+ .if 1
+	jne mv_cross2
+ .else
         beq ?nocross
         jmp mv_cross2                ; the move straddles the LINE -- real only
                                      ;   if the line also straddles the MOVE
-?nocross clc
+?nocross
+ .endif
+	clc
         rts
+
 ?match  lda (zp_ptr),y               ; ONE byte: pack_things.py asserts 255
         cmp mv_psec                  ;   sectors, so a room id is a byte and $FF
         bne ?nomatch                 ;   is its "no room" sentinel -- which is
@@ -188,9 +234,6 @@ mvs_resume = *
 .endp                                ;  .proc. m_a does not survive mv_side_line
                                      ;  anyway, which is why it could never have
                                      ;  been the latch itself.)
-
-
-
 ;--------------------------------------------------------------
 ; mv_sector -- m_a = the sector the player is in (BSP descent, as door_at_point).
 ;--------------------------------------------------------------
@@ -207,23 +250,68 @@ mvs_top                              ; (mv_guard comes back here). NOT
                                      ;   mv_step -- that name is taken by
                                      ;   the floor-mover's own proc above.
 ?w      lda zp_nid+1
+ .if 1
+        bmi ?leaf
+ .else
         and #$80
         bne ?leaf
+ .endif
         jsr calc_nodeptr
         jsr point_on_side
         bne ?lft
         ldy #8
+ .if 1
+        bra ?ds
+ .else
         bne ?ds
+ .endif
 ?lft    ldy #10
-?ds     lda [zp_nodeptr],y
+?ds
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda [zp_nodeptr],y
+        sta zp_nid
+	sep #$20
+	.LONGA OFF
+ .else
+	lda [zp_nodeptr],y
         sta zp_nid
         iny
         lda [zp_nodeptr],y
         sta zp_nid+1
+ .endif
         jmp mv_guard                 ; ...which is `jmp ?w` unless the descent has
                                      ;   run 40 deep, and then it bails to ?leaf
 mvs_leaf                             ; (mv_guard's bail-out lands here)
-?leaf   lda zp_nid                   ; ssptr = MAP_SSECT + (nid & $7FFF)*4
+?leaf
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_nid
+	asl
+	asl
+;	clc
+	adc #MAP_SSECT
+	sta zp_vptr
+
+        lda [zp_vptr]
+	asl
+	asl
+	asl
+;	clc
+	adc #MAP_SEGS
+	sta zp_sptr
+
+	ldy #SEG_FRONT
+        lda [zp_sptr],y
+	and #$00ff
+        sta m_a
+
+	sep #$20
+	.LONGA OFF
+ .else
+	lda zp_nid                   ; ssptr = MAP_SSECT + (nid & $7FFF)*4
         sta m_a
         lda zp_nid+1
         and #$7F
@@ -236,6 +324,7 @@ mvs_leaf                             ; (mv_guard's bail-out lands here)
         lda m_prod+1                 ;   existed. zp_vptr is render-only scratch
         adc #>MAP_SSECT              ;   with the SAME bank byte ($01, seeded
         sta zp_vptr+1                ;   once) -- free outside the frame walk.
+
         ldy #0                       ; first seg of the subsector
         lda [zp_vptr],y
         sta m_a
@@ -255,6 +344,7 @@ mvs_leaf                             ; (mv_guard's bail-out lands here)
         sta m_a
         lda #0
         sta m_a+1
+ .endif
         rts
 .endp
 
@@ -290,7 +380,41 @@ mv_psec dta 0                        ; the latched sector id (a byte: see mv_cro
 ;   sign of (px-x1)*(y2-y1) - (py-y1)*(x2-x1).
 ;--------------------------------------------------------------
 .proc mv_side_line
+ .if 1
+	rep #$20
+	.LONGA ON
+
         sec                          ; cx_a = px - x1
+	ldy #4
+        lda mv_px
+        sbc (zp_ptr),y
+        sta cx_a
+
+        sec                          ; cx_b = y2 - y1
+        ldy #10
+        lda (zp_ptr),y
+        ldy #6
+        sbc (zp_ptr),y
+        sta cx_b
+
+        sec                          ; cx_c = py - y1
+        ldy #6
+        lda mv_py
+        sbc (zp_ptr),y
+        sta cx_c
+
+        sec                          ; cx_d = x2 - x1
+        ldy #8
+        lda (zp_ptr),y
+        ldy #4
+        sbc (zp_ptr),y
+        sta cx_d
+
+	sep #$20
+	.LONGA OFF
+ .else
+        sec                          ; cx_a = px - x1
+
         ldy #4
         lda mv_px
         sbc (zp_ptr),y
@@ -299,6 +423,7 @@ mv_psec dta 0                        ; the latched sector id (a byte: see mv_cro
         lda mv_px+1
         sbc (zp_ptr),y
         sta cx_a+1
+
         sec                          ; cx_b = y2 - y1
         ldy #10
         lda (zp_ptr),y
@@ -310,6 +435,7 @@ mv_psec dta 0                        ; the latched sector id (a byte: see mv_cro
         ldy #7
         sbc (zp_ptr),y
         sta cx_b+1
+
         sec                          ; cx_c = py - y1
         ldy #6
         lda mv_py
@@ -319,6 +445,7 @@ mv_psec dta 0                        ; the latched sector id (a byte: see mv_cro
         lda mv_py+1
         sbc (zp_ptr),y
         sta cx_c+1
+
         sec                          ; cx_d = x2 - x1
         ldy #8
         lda (zp_ptr),y
@@ -330,6 +457,7 @@ mv_psec dta 0                        ; the latched sector id (a byte: see mv_cro
         ldy #5
         sbc (zp_ptr),y
         sta cx_d+1
+ .endif
         jmp cross_pos
 .endp
 
@@ -370,6 +498,34 @@ mvx2_resume = *
 ;   sign of (Px-Ox)*(Ny-Oy) - (Py-Oy)*(Nx-Ox). Clobbers A/Y, cx_a..cx_d.
 ;--------------------------------------------------------------
 .proc mv_side_pt
+ .if 1
+	rep #$20
+	.LONGA ON
+        sec                          ; cx_a = Px - Ox
+        lda (zp_ptr),y
+        sbc mv_ox
+        sta cx_a
+	iny
+	iny
+
+        sec                          ; cx_c = Py - Oy
+        lda (zp_ptr),y
+        sbc mv_oy
+        sta cx_c
+
+        sec                          ; cx_b = Ny - Oy
+        lda zp_py
+        sbc mv_oy
+        sta cx_b
+
+        sec                          ; cx_d = Nx - Ox
+        lda zp_px
+        sbc mv_ox
+        sta cx_d
+
+	sep #$20
+	.LONGA OFF
+ .else
         sec                          ; cx_a = Px - Ox
         lda (zp_ptr),y
         sbc mv_ox
@@ -379,6 +535,7 @@ mvx2_resume = *
         sbc mv_ox+1
         sta cx_a+1
         iny
+
         sec                          ; cx_c = Py - Oy
         lda (zp_ptr),y
         sbc mv_oy
@@ -387,6 +544,7 @@ mvx2_resume = *
         lda (zp_ptr),y
         sbc mv_oy+1
         sta cx_c+1
+
         sec                          ; cx_b = Ny - Oy
         lda zp_py
         sbc mv_oy
@@ -394,6 +552,7 @@ mvx2_resume = *
         lda zp_py+1
         sbc mv_oy+1
         sta cx_b+1
+
         sec                          ; cx_d = Nx - Ox
         lda zp_px
         sbc mv_ox
@@ -401,6 +560,7 @@ mvx2_resume = *
         lda zp_px+1
         sbc mv_ox+1
         sta cx_d+1
+ .endif
         jmp cross_pos                ; A = 1 if cx_a*cx_b - cx_c*cx_d > 0
 .endp
     .if * > MVX2_END+1
@@ -443,8 +603,12 @@ mvu_resume = *
                                      ;   trigger paid its own BSP descent from
                                      ;   the root -- 32 of them a frame on E1M4,
                                      ;   in the x11.2 chip-speed window.
+ .if 1
+	stz mv_i
+ .else
         lda #0                       ; NO "is a mover running" gate here. It used
         sta mv_i                     ;   to skip the WHOLE scan while a lift was
+ .endif 
                                      ;   moving, so for the ~7 s of a ride not one
                                      ;   walkover line in the level worked -- no
                                      ;   doors (E1M4 has 16 lines of specials
@@ -473,7 +637,11 @@ mvu_resume = *
                                      ;   change bit-identical instead of merely
                                      ;   equivalent.)
 ?nx     inc mv_i                     ; KEEP SCANNING after a fire -- one W1 line
+ .if 1
+	bra ?loop
+ .else
         jmp ?loop                    ;   can tag several sectors (E1M8: the two
+ .endif
                                      ;   baron doors are two records of one line;
                                      ;   the old jmp-out opened only one)
 .endp
@@ -570,6 +738,21 @@ mv_used :[MV_TRIGS/8] dta 0          ; MV_TRIGS triggers, one bit each. E1M4 hit
 mvs2_resume = *
         org MVSEC_BASE
 .proc mv_secptr
+ .if 1
+	rep #$20
+	.LONGA ON
+        ldy #12
+        lda (zp_ptr),y
+        and #$01ff		; sector ids are 9 bits; b9-b15 are flags
+        asl                     ; *8 = sizeof(sector record)
+	asl
+	asl
+;	clc
+	adc #MAP_SECTORS
+	sta zp_mvsec
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #12
         lda (zp_ptr),y
         sta m_prod
@@ -590,6 +773,7 @@ mvs2_resume = *
         lda m_prod+1
         adc #>MAP_SECTORS
         sta zp_mvsec+1
+ .endif
         rts
 .endp
 
@@ -598,6 +782,26 @@ mvs2_resume = *
 ;   out of the $E760 block, which is full to the byte.
 ;--------------------------------------------------------------
 .proc mv_reset
+ .if 1
+        ldx #MV_TABEND-MV_TAB        ; 200 B: dex/bne, NOT dex/bpl -- the index
+?mv     dex                          ;   starts above 127 and bpl would fall out
+        stz MV_TAB,x                 ;   of the loop on the very first pass
+        bne ?mv
+        ldx #11                      ; 96 bits, one per trigger (E1M4 hit 80 once
+?mu     stz mv_used,x                ;   the stairs/teleport/donut specials joined
+        dex                          ;   pack_things SPEC)
+        bpl ?mu
+        stz ts_acc                   ; the scrolling wall starts unscrolled -- a
+        stz ts_col                   ;   stale ts_col would wrap the base address
+        jmp sq2_lt_init              ;   BELOW the texture on the first wrap
+                                     ; ... and TAIL-CALL the light init VIA the
+                                     ;   SQ2 restore shim (math.asm's FRACTAB
+                                     ;   block): load_things just streamed the
+                                     ;   THINGS blob over the SQ2 homes, and
+                                     ;   this jmp is the one per-level link with
+                                     ;   room for the detour -- lights.asm and
+                                     ;   init_level's $1B00 block have none.
+ .else
         lda #0
         ldx #MV_TABEND-MV_TAB        ; 200 B: dex/bne, NOT dex/bpl -- the index
 ?mv     dex                          ;   starts above 127 and bpl would fall out
@@ -617,6 +821,7 @@ mvs2_resume = *
                                      ;   this jmp is the one per-level link with
                                      ;   room for the detour -- lights.asm and
                                      ;   init_level's $1B00 block have none.
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -645,6 +850,7 @@ mvs2_resume = *
         ror
         sta m_b
         jsr mv_slow                  ; ...then DOOM's own speed for this record
+
         ldx mv_slot                  ; the Q8 remainder is PER SLOT
         clc
         lda MV_FRAC,x
@@ -653,6 +859,7 @@ mvs2_resume = *
         lda m_b+1
         adc #0
         sta m_b                      ; whole units this frame
+
         clc                          ; floor += m_b
         ldy #0
         lda (zp_mvsec),y
@@ -662,25 +869,41 @@ mvs2_resume = *
         lda (zp_mvsec),y
         adc #0
         sta m_a+1
+
         sec                          ; reached the target?
         lda MV_DSTL,x
         sbc m_a
         lda MV_DSTH,x
         sbc m_a+1
         bpl ?store                   ; still below it -> keep climbing
+
         lda MV_DSTL,x                ; arrived: clamp and park the slot
         sta m_a
         lda MV_DSTH,x
         sta m_a+1
+ .if 1
+	stz MV_STATE,x
+ .else
         lda #0
         sta MV_STATE,x
+ .endif
         jsr snd_q_pstop              ; DOOM sfx_pstop: T_MoveFloor pastdest
-?store  ldy #0
+
+?store
+ .if 1
+        lda m_a
+        sta (zp_mvsec)
+        ldy #1
+        lda m_a+1
+        sta (zp_mvsec),y
+ .else
+	ldy #0
         lda m_a
         sta (zp_mvsec),y
         iny
         lda m_a+1
         sta (zp_mvsec),y
+ .endif
         rts
 .endp
 ;--------------------------------------------------------------
@@ -737,12 +960,21 @@ mvs2_resume = *
         sta zp_ptr
         lda MV_SECH,x
         sta zp_ptr+1
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda (zp_ptr)
+        sta mvc_new
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda (zp_ptr),y
         sta mvc_new
         iny
         lda (zp_ptr),y
         sta mvc_new+1
+ .endif
         lda mvc_act,x
         beq ?arm                     ; it was idle last frame: just remember
         lda mvc_lstl,x               ; did the floor actually move this frame?
@@ -757,11 +989,17 @@ mvs2_resume = *
         sta mvc_old+1
         stx mvc_slot
         jsr mvc_things
+
         ldx mvc_slot                 ; ...and fall through to remember the height
 ?arm    lda mvc_now                  ; stopped -> the history goes with it. (The
         beq ?forget                  ;   height is stored either way: with
+
         lda #1                       ;   mvc_act clear nobody reads it, and a
+ .if 1
         bne ?put                     ;   `bne` on the height itself would fall
+ .else
+	bra ?put
+ .endif
 ?forget lda #0                       ;   through whenever its high byte is 0.)
 ?put    sta mvc_act,x
         lda mvc_new
@@ -778,6 +1016,19 @@ mvs2_resume = *
 ;   the sector that moved, loc_floor after each locate_floor = where it is now.
 ;--------------------------------------------------------------
 .proc mvc_things
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda zp_ptr                   ; locate_floor clobbers zp_ptr, so keep the
+        sta mvc_sec                  ;   sector we are looking for
+        lda zp_px                    ; ...and borrow the point it tests
+        sta mvc_sv                   ;   (point_on_side reads zp_px/zp_py)
+        lda zp_py
+        sta mvc_sv+2
+	sep #$20
+	.LONGA OFF
+        stz mvc_i
+ .else
         lda zp_ptr                   ; locate_floor clobbers zp_ptr, so keep the
         sta mvc_sec                  ;   sector we are looking for
         lda zp_ptr+1
@@ -792,15 +1043,33 @@ mvs2_resume = *
         sta mvc_sv+3
         lda #0
         sta mvc_i
+ .endif
 ?loop   lda mvc_i
         cmp THINGS_BASE              ; the level's thing count
         bcs ?done
         tax
         jsr thing_alive_bit          ; taken / gone: not standing anywhere
         beq ?next
+
         lda mvc_i
         jsr en_thing.en_th2          ; sp_ptr = its record
+
         ldy #4                       ; is it standing on the height the floor
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda (sp_ptr),y               ;   just left?
+        cmp mvc_old
+        bne ?nextw
+	                       ; a candidate -- but is it in THAT sector?
+        lda (sp_ptr)
+        sta zp_px
+        ldy #2
+        lda (sp_ptr),y
+        sta zp_py
+	sep #$20
+	.LONGA OFF
+ .else
         lda (sp_ptr),y               ;   just left?
         cmp mvc_old
         bne ?next
@@ -808,6 +1077,7 @@ mvs2_resume = *
         lda (sp_ptr),y
         cmp mvc_old+1
         bne ?next
+
         ldy #0                       ; a candidate -- but is it in THAT sector?
         lda (sp_ptr),y
         sta zp_px
@@ -820,24 +1090,53 @@ mvs2_resume = *
         iny
         lda (sp_ptr),y
         sta zp_py+1
+ .endif
         jsr locate_floor             ; leaves zp_ptr on the sector it landed in
+
         lda zp_ptr
         cmp mvc_sec
         bne ?next
         lda zp_ptr+1
         cmp mvc_sec+1
         bne ?next
+
         lda mvc_i                    ; yes: ride the floor down (or up)
         jsr en_thing.en_th2          ;   (locate_floor went through sp_ptr too)
+
         ldy #4
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda loc_floor
+        sta (sp_ptr),y
+ .else
         lda loc_floor
         sta (sp_ptr),y
         iny
         lda loc_floor+1
         sta (sp_ptr),y
-?next   inc mvc_i
+ .endif
+ .if 1
+?nextw	sep #$20
+	.LONGA OFF
+ .else
+	;nothing
+ .endif
+?next	inc mvc_i
         jmp ?loop
-?done   lda mvc_sv                   ; the player goes back where he was
+
+?done
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda mvc_sv                   ; the player goes back where he was
+        sta zp_px
+        lda mvc_sv+2
+        sta zp_py
+	sep #$20
+	.LONGA OFF
+ .else
+	lda mvc_sv                   ; the player goes back where he was
         sta zp_px
         lda mvc_sv+1
         sta zp_px+1
@@ -845,6 +1144,7 @@ mvs2_resume = *
         sta zp_py
         lda mvc_sv+3
         sta zp_py+1
+ .endif
         rts
 .endp
 mvc_act  dta 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0   ; [MV_NMAX] live last frame?
@@ -956,6 +1256,7 @@ mv2_resume = *
         lda (zp_ptr),y               ;   a shift count (pack_things.py SPEED)
         sta MV_SPD,x
         jsr mv_secptr                ; zp_mvsec = &MAP_SECTORS[sector], the same
+
         lda zp_mvsec                 ;   pointer mv_free just compared against
         sta MV_SECL,x
         lda zp_mvsec+1
@@ -966,6 +1267,14 @@ mv2_resume = *
         iny
         lda (zp_ptr),y
         sta MV_DSTH,x
+ .if 1
+        stz MV_FRAC,x                ; where the floor started (to return to) --
+        sec                          ;   and, on the way past, src - dst, which
+        lda (zp_mvsec)               ;   says which WAY this floor goes
+        sta MV_SRCL,x
+        sbc MV_DSTL,x
+        ldy #1
+ .else
         lda #0
         sta MV_FRAC,x
         ldy #0                       ; where the floor started (to return to) --
@@ -974,12 +1283,17 @@ mv2_resume = *
         sta MV_SRCL,x
         sbc MV_DSTL,x
         iny
+ .endif
         lda (zp_mvsec),y
         sta MV_SRCH,x
         sbc MV_DSTH,x
         bmi ?up                      ; target ABOVE us -> state 4 (mv_raise,
         lda #1                       ;   creeping up at FLOORSPEED). Below -> the
-        bne ?st                      ;   old state 1 descent at PLATSPEED*4.
+ .if 1
+        bra ?st                      ;   old state 1 descent at PLATSPEED*4.
+ .else
+	bne ?st
+ .endif
 ?up     lda #4                       ; EVERY mover used to be armed as a descent,
 ?st     sta MV_STATE,x               ;   which is why a staircase snapped into
                                      ;   place: the first step went straight past
@@ -1005,7 +1319,6 @@ mv2_resume = *
                                      ;   thinkers do.
 .endp
 
-
 ;--------------------------------------------------------------
 ; mv_change -- p_plats.c:184, raiseToNearestAndChange. The platform that comes
 ;   up out of the nukage takes the FLOOR of the sector on the line's front side
@@ -1026,6 +1339,21 @@ mvchg_resume = *
         org MVCHG_BASE
 .proc mv_change
         pha                          ; mv_sndst reads the state out of A
+ .if 1
+        lda THINGS_BASE+13           ; n_trig * 16
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+	asl
+;	clc
+        adc THINGS_BASE+11
+        sta zp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         lda THINGS_BASE+13           ; n_trig * 16
         sta m_prod
         lda #0
@@ -1045,20 +1373,36 @@ mvchg_resume = *
         lda m_prod+1
         adc THINGS_BASE+12
         sta zp_ptr+1
-?scan   ldy #0
+ .endif
+?scan
+ .if 1
+        lda (zp_ptr)
+ .else
+	ldy #0
         lda (zp_ptr),y
+ .endif
         cmp #$FF
         beq ?out                     ; end of table: this trigger changes nothing
         cmp mv_i
         beq ?hit
+
         clc
         lda zp_ptr
         adc #2
         sta zp_ptr
         bcc ?scan
         inc zp_ptr+1
+ .if 1
+	bra ?scan
+ .else
         bcs ?scan                    ; (always)
-?hit    iny
+ .endif
+?hit
+ .if 1
+	ldy #1
+ .else
+	iny
+ .endif
         lda (zp_ptr),y               ; the front side's floor colour
         ldy #5
         sta (zp_mvsec),y
@@ -1109,28 +1453,45 @@ mvchg_resume = *
         bne ?next
 ?up     lda #3
         sta MV_STATE,x
+ .if 1
+        stz MV_FRAC,x                ; start the rise on a whole unit
+ .else
         lda #0
         sta MV_FRAC,x                ; start the rise on a whole unit
+ .endif
         jsr snd_q_pstart             ; DOOM sfx_pstart: the lift sets off again
 ?next   ldx mv_slot                  ;   (T_PlatRaise, waiting -> up)
         dex
         bpl ?slot
         rts
+
 ?climb  jsr mv_raiseg                ; = mv_raise + the T_MoveFloor grind
+ .if 1
+	bra ?next
+ .else
         jmp ?next                    ;   (sound.asm: BOTH movers blocks are full,
                                      ;   so the grind hangs off retargeted jsrs)
+ .endif
 ?rise   jsr mv_step                  ; m_b = whole units this frame (MV_FRAC
                                      ;   keeps the Q8 remainder)
         ldx mv_slot
         clc                          ; raising: floor += delta
+ .if 1
+        lda (zp_mvsec)
+        adc m_b
+        sta m_a
+        ldy #1
+ .else
         ldy #0
         lda (zp_mvsec),y
         adc m_b
         sta m_a
         iny
+ .endif
         lda (zp_mvsec),y
         adc #0
         sta m_a+1
+
         sec                          ; back at the start height?
         lda MV_SRCL,x
         sbc m_a
@@ -1141,19 +1502,44 @@ mvchg_resume = *
         sta m_a
         lda MV_SRCH,x
         sta m_a+1
+ .if 1
+        stz MV_STATE,x               ; idle, ready for the next crossing
+ .else
         lda #0
         sta MV_STATE,x               ; idle, ready for the next crossing
+ .endif
         jsr snd_q_pstop              ; DOOM sfx_pstop: back at the top
-?store  ldy #0
+?store
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda m_a
+        sta (zp_mvsec)
+	sep #$20
+	.LONGA OFF
+        bra ?next
+ .else
+	ldy #0
         lda m_a
         sta (zp_mvsec),y
         iny
         lda m_a+1
         sta (zp_mvsec),y
         jmp ?next
+ .endif
 ?fall   jsr mv_stepg                 ; the descent, mirror of ?rise: DOOM slides
+
         ldx mv_slot                  ;   the floor down at the same speed, and
         sec                          ;   the pstop has to come when it LANDS --
+ .if 1
+                                     ;   for the lift ~1.1 s after the pstart
+        lda (zp_mvsec)               ;   (152 units at 2.8/VBLANK). mv_stepg =
+                                     ;   mv_step + the STAY-floor grind
+                                     ;   (T_MoveFloor); a lift slides silently
+        sbc m_b
+        sta m_a
+        ldy #1
+ .else
         ldy #0                       ;   for the lift ~1.1 s after the pstart
         lda (zp_mvsec),y             ;   (152 units at 2.8/VBLANK). mv_stepg =
                                      ;   mv_step + the STAY-floor grind
@@ -1161,9 +1547,11 @@ mvchg_resume = *
         sbc m_b
         sta m_a
         iny
+ .endif
         lda (zp_mvsec),y
         sbc #0
         sta m_a+1
+
         sec                          ; reached the target floor?
         lda m_a
         sbc MV_DSTL,x
@@ -1175,6 +1563,7 @@ mvchg_resume = *
         lda MV_DSTH,x
         sta m_a+1
         jsr snd_q_pstop              ; ...and thunk (DOOM sfx_pstop: T_PlatRaise
+
         ldx mv_slot                  ;   down -> waiting, T_MoveFloor pastdest)
         lda MV_STAY,x
         bmi ?stay                    ; W1 floor: stays down, this slot is done
@@ -1182,10 +1571,19 @@ mvchg_resume = *
         sta MV_TIMER,x               ;   from the landing, like p_plats.c
         lda #2
         sta MV_STATE,x               ; a lift dwells, then rises
+ .if 1
+        bra ?store                   ; (A=2: always)
+
+?stay   stz MV_STATE,x
+        bra ?store                   ; (A=0: always)
+ .else
         bne ?store                   ; (A=2: always)
+
 ?stay   lda #0
         sta MV_STATE,x
         beq ?store                   ; (A=0: always)
+ .endif
+
 .endp
     .if * > MOVERS2_END+1
         ert 'the floor engine outgrew MOVERS2_BASE..END (memory_map.inc)'
@@ -1226,9 +1624,19 @@ usc_resume = *
         cmp MAP_TEXWMASK,x           ;   stand on; one more and it must come back
         bcs ?wrap
         inc ts_col
+ .if 1
+        bra ?fwd                     ; (always)
+ .else
         bne ?fwd                     ; (always)
-?wrap   lda #0                       ; rewind the whole width: from column wmask
+ .endif
+?wrap
+ .if 1
+	                             ; rewind the whole width: from column wmask
+        stz ts_col                   ;   back to column 0 is wmask*stride bytes
+ .else
+	lda #0                       ; rewind the whole width: from column wmask
         sta ts_col                   ;   back to column 0 is wmask*stride bytes
+ .endif
     .if TEX_RUNS
         lda #2*TEX_RUNK              ; a PAINTED column is a fixed run record,
     .else                            ;   not h pixels (paint.asm)
@@ -1237,9 +1645,14 @@ usc_resume = *
         sta m_a
         lda MAP_TEXWMASK,x
         sta m_b
+ .if 1
+        stz m_a+1
+        stz m_b+1
+ .else
         lda #0
         sta m_a+1
         sta m_b+1
+ .endif
         jsr umul16
         sec
         lda MAP_TEXADDRLO,x
@@ -1338,6 +1751,32 @@ tgw_resume = *
         jmp trig_fire                ; doors + floors, one segment away ($CECA)
 ?tele   lda mv_s1
         beq ?out                     ; came from the BACK of the line: no-op
+ .if 1
+        ldy #14                      ; zp_ptr's dst word = destination index;
+        lda (zp_ptr),y               ;   mv_ss (the BSP-descent scratch, free
+	rep #$20
+	.LONGA ON
+	and #$00ff
+                                     ;   again once mv_crossed returned) walks
+                                     ;   the table, so zp_ptr stays valid for
+                                     ;   check_triggers' next record
+        asl
+        asl
+        asl
+;       clc
+        adc THINGS_BASE+14
+        sta mv_ss
+
+	lda (mv_ss)
+	sta zp_px
+	sta mv_ox
+	ldy #2
+	lda (mv_ss),y
+	sta zp_py
+	sta mv_oy
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #14                      ; zp_ptr's dst word = destination index;
         lda (zp_ptr),y               ;   mv_ss (the BSP-descent scratch, free
         sta m_prod                   ;   again once mv_crossed returned) walks
@@ -1356,12 +1795,14 @@ tgw_resume = *
         lda m_prod+1
         adc THINGS_BASE+15
         sta mv_ss+1
+
         ldy #3
 ?cp     lda (mv_ss),y                ; x,y -> the player AND the frame's "where
         sta zp_px,y                  ;   I was", so no later record sees a
         sta mv_ox,y                  ;   crossing (a teleport is not a walk)
         dey
         bpl ?cp
+ .endif
         ldy #4
         lda (mv_ss),y
         sta zp_ang                   ; thing->angle, BAM like MAP_HSANG
@@ -1559,8 +2000,12 @@ d30_resume = *
         sta.l DOOR_WAIT,x
         bcs ?nx
         lda.l DOOR_FRAC,x            ; borrowed into the high half. No read-
+ .if 1
+	dec
+ .else
         sec                          ;   modify-write in place any more: the
         sbc #1                       ;   65816 gives long,X to the accumulator
+ .endif
         sta.l DOOR_FRAC,x            ;   group only, so DEC long,X does not
         cmp #$FF                     ;   exist. A still holds the new value.
         bne ?nx

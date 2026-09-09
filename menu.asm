@@ -439,6 +439,9 @@ mn_resume = *
         bne ?p
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
+        inc snd_menu                 ; the menu's SFX keep a flat pitch
+                                     ;   (sound.asm snd_pstep; the game's first
+                                     ;   snd_dispatch drops it again)
         cpx #MN_E_TITLE
         bne ?n1
         jmp show_title
@@ -477,6 +480,15 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
         asl
         asl
         asl                          ; *8
+ .if 1
+        sec
+        sbc mn_i                     ; ...-1 = *7, and 8i >= i leaves C=1: that
+        adc #<[menu_tab-1]           ;   is the +1 of a 16-bit add of menu_tab-1
+        sta zp_ptr
+        lda #>[menu_tab-1]
+        adc #0
+        sta zp_ptr+1
+ .else
         sec
         sbc mn_i                     ; ...-1 = *7
         clc
@@ -485,6 +497,7 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
         lda #>menu_tab
         adc #0
         sta zp_ptr+1
+ .endif
         rts
 .endp
 
@@ -527,8 +540,12 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
 ; mn_boot -- the boot entry: dismiss the title, then the menu, over TITLEPIC.
 ;--------------------------------------------------------------
 .proc mn_boot
+ .if 1
+        stz mn_ing                   ; boot: NEW GAME just returns (menu_boot
+ .else
         lda #0
         sta mn_ing                   ; boot: NEW GAME just returns (menu_boot
+ .endif
                                      ;   does the loading), and the skull's
         lda #>[MENU_VRAM & $FFFF]    ;   background -- what ESC uncovers and what
         sta mn_bgh                   ;   the cursor blinks over -- is TITLEPIC
@@ -573,8 +590,12 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
 .proc mn_ingame
         lda #1
         sta mn_ing
+ .if 1
+        stz mn_bgh                   ; the skull's background is FRAME_B, the
+ .else
         lda #0
         sta mn_bgh                   ; the skull's background is FRAME_B, the
+ .endif
                                      ;   clean copy mn_freeze just made
         jsr mn_freeze
         jsr mn_run                   ; $FF = just closed, 1 = SAVE, 2 = LOAD.
@@ -636,6 +657,20 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
 ;   from. No extra VRAM -- the second framebuffer IS the backing store.
 ;--------------------------------------------------------------
 .proc mn_freeze
+ .if 1
+        lda zback_hi                 ; the BACK buffer; the other one is shown:
+        eor #1                       ;   it is the SOURCE, straight into the BCB
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2    ;   (no mn_fsrc/mn_fdst round trip)
+        eor #1
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR      ; both buffers start at row 0
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY: opaque, whole frame
+ .else
         lda zback_hi                 ; the BACK buffer; the other one is shown
         eor #1
         sta mn_fsrc
@@ -653,6 +688,7 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
         lda mn_fdst
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+ .endif
         lda #SCREEN_WIDTH
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
         lda #1
@@ -693,8 +729,12 @@ SLOT_TITLEY equ 28
                                      ;   an opaque block. This is also the value
                                      ;   the HUD wants at rest, so nothing has to
                                      ;   put it back.
+ .if 1
+        stz mn_mode                  ; MainMenu[] first, always
+ .else
         lda #0
         sta mn_mode                  ; MainMenu[] first, always
+ .endif
         lda #MENU_SKULLY
         sta mn_top
         lda #MENU_NITEMS             ; ...and how long the list is: at the title
@@ -702,6 +742,19 @@ SLOT_TITLEY equ 28
         bne ?six                     ;   mn_lumpof)
         lda #MENU_NITEMS-1
 ?six    sta mn_n
+ .if 1
+mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
+        dec @
+        asl
+        asl
+        asl
+        asl                          ; (n-1)*16 < 256 (ert below): the asl's shift
+        adc mn_top                   ;   out 0s, so C=0 for the add
+        sta mn_bot
+    .if [MENU_NITEMS-1]*16 > 255 || [SAVE_SLOTS-1]*16 > 255
+        ert 'mn_run: (n-1)*16 carries -- put the clc back'
+    .endif
+ .else
 mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sec
         sbc #1
@@ -712,6 +765,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         clc
         adc mn_top
         sta mn_bot
+ .endif
         lda mn_mode                  ; the drawer for whichever menu this is
         beq ?dmain
         jsr mn_slotitems
@@ -719,9 +773,14 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 ?dmain  jsr mn_items
 ?drawn  ldx #SFX_SWTCHN              ; M_StartControlPanel's own sound: the menu
         jsr snd_play                 ;   opening IS a switch throw (m_menu.c:1545)
+ .if 1
+        stz mn_sk
+        stz mn_arm2                  ; the key that opened the menu has to be
+ .else
         lda #0
         sta mn_sk
         sta mn_arm2                  ; the key that opened the menu has to be
+ .endif
                                      ;   released before it can pick an item too
         lda #MENU_SKTICS
         sta mn_tic
@@ -742,9 +801,14 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sta mn_arm2                  ; everything released -> arm the next press
 ?back   jmp ?loop
 ?act    lda mn_arm2
+ .if 1
+        beq ?back                    ; still held: one press = one action
+        stz mn_arm2
+ .else
         beq ?back                    ; still held: one press = one action
         lda #0
         sta mn_arm2
+ .endif
         lda TRIG0
         lsr
         bcs ?ntrig                   ; (?sel is out of branch range from here
@@ -914,6 +978,19 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         lda #MI_DOOM
         ldx #MENU_DOOMX
         ldy #MENU_DOOMY
+ .if 1
+        jsr mn_draw
+        stz mn_it
+?it     lda mn_it
+        asl
+        asl
+        asl
+        asl                          ; i * LINEHEIGHT (16): i < MENU_NITEMS, so
+        adc #MENU_Y                  ;   the asl's shift out 0s -- no clc
+        tay
+        lda mn_it
+        jsr mn_lumpof
+ .else
         jsr mn_draw
         lda #0
         sta mn_it
@@ -927,6 +1004,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         tay
         lda mn_it
         jsr mn_lumpof
+ .endif
         ldx #MENU_X
         jsr mn_draw
         inc mn_it
@@ -948,11 +1026,18 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         ldx mn_ing
         bne ?ok
         cmp #3                       ; 3 = SAVE GAME (m_menu.c:255)
+ .if 1
+        bcc ?ok
+        inc @
+?ok     clc
+        adc #MI_ITEM0
+ .else
         bcc ?ok
         clc
         adc #1
 ?ok     clc
         adc #MI_ITEM0
+ .endif
         rts
 .endp
 
@@ -986,17 +1071,29 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         lda #SLOT_SKULLX
         sta mn_skx
         jsr mn_title
+ .if 1
+        jsr mn_draw
+        stz mn_it
+?i      jsr mn_slotrow               ; A = digit, X = col, Y = row
+ .else
         jsr mn_draw
         lda #0
         sta mn_it
 ?i      jsr mn_slotrow               ; A = digit, X = col, Y = row
+ .endif
         jsr mn_slotdig
         ldx mn_it                    ; ...and, when the slot holds a game, the
         lda sg_lvl,x                 ;   LEVEL it holds -- E1M<n>, the one thing
+ .if 1
+        bmi ?nx                      ;   about a saved game this port can say
+        inc @                        ;   without a font ($FF = the slot is empty
+        jsr mn_slotrow2              ;   and stays a bare number)
+ .else
         bmi ?nx                      ;   about a saved game this port can say
         clc                          ;   without a font ($FF = the slot is empty
         adc #1                       ;   and stays a bare number)
         jsr mn_slotrow2
+ .endif
         jsr mn_slotdig
 ?nx     inc mn_it
         lda mn_it
@@ -1059,6 +1156,14 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         asl
         asl
         asl
+ .if 1
+        asl                          ; i * LINEHEIGHT (16): i < SAVE_SLOTS, the
+        adc #SLOT_Y                  ;   asl's shift out 0s -- no clc
+        tay
+        lda mn_it
+        inc @                        ; the slots read 1..6, not 0..5
+        ldx #SLOT_X
+ .else
         asl                          ; i * LINEHEIGHT (16)
         clc
         adc #SLOT_Y
@@ -1067,6 +1172,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         clc
         adc #1                       ; the slots read 1..6, not 0..5
         ldx #SLOT_X
+ .endif
         rts
 .endp
 
@@ -1119,10 +1225,19 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
         adc mn_bgh                   ; ... and neither does + $8000
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+ .if 1
+    .if BLT_COPY != 0
+        ert 'BLT_COPY is not 0: mn_box stz-es the ctrl byte'
+    .endif
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY = 0, and so are the other
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ;   two: opaque, the destination is
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ;   bank 0, the pitch fits a byte
+ .else
         lda #BLT_COPY                ; = 0, and so are the other two: opaque, the
         sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; destination is bank 0 and the
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ; source pitch fits in one byte
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+ .endif
         lda #[MENU_VRAM>>16]         ; = FRAME_B>>16: bank $01 either way
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
         lda #SCREEN_WIDTH            ; the source is a screen-wide picture, so a
@@ -1189,6 +1304,15 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sty mb_y
         jsr mn_tabptr                ; index * 7, exactly as mn_draw does it
         ldy #3
+ .if 1
+        lda (zp_ptr),y               ; width
+        dec @
+        sta mb_w
+        iny
+        lda (zp_ptr),y               ; height
+        dec @
+        sta mb_h
+ .else
         lda (zp_ptr),y               ; width
         sec
         sbc #1
@@ -1198,6 +1322,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sec
         sbc #1
         sta mb_h
+ .endif
         jmp mn_box
 .endp
 
@@ -1208,10 +1333,17 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 ;--------------------------------------------------------------
 .proc mn_press
         lda STICK0
+ .if 1
+        ora #$F0                     ; stick 1 is not ours
+        inc @                        ; $FF = centred -> 0: inc IS the cmp #$FF
+        bne ?yes
+        lda TRIG0
+ .else
         ora #$F0                     ; stick 1 is not ours
         cmp #$FF                     ; $FF = centred
         bne ?yes
         lda TRIG0
+ .endif
         lsr                          ; bit0 = 0 while fire is held
         bcc ?yes
         lda SKSTAT
@@ -1251,9 +1383,15 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 ?w      lda POKMSK_R
         lsr                          ; bit0 = Timer-1 armed -> C
         bcc ?done
+ .if 1
+        jsr mn_vsync
+        bra ?w
+?done   jmp snd_stop
+ .else
         jsr mn_vsync
         jmp ?w
-?done   jmp snd_stop                 ; ... and the MUSIC's channels with it:
+?done   jmp snd_stop
+ .endif                 ; ... and the MUSIC's channels with it:
 .endp                                ;   snd_stop zeroes all four AUDCn, so no
                                      ;   note is left hanging over the load
                                      ;   (SIO owns POKEY from here).
@@ -1293,8 +1431,13 @@ mb_x    dta 0                        ; mn_box's rectangle
 mb_y    dta 0
 mb_w    dta 0                        ;   ... width - 1
 mb_h    dta 0                        ;   ... height - 1
+ .if 1
+                                     ; (mn_fsrc/mn_fdst: mn_freeze writes the
+                                     ;  two bank bytes straight into the BCB)
+ .else
 mn_fsrc dta 0                        ; mn_freeze: the buffer that is on screen
 mn_fdst dta 0                        ;   ... and the one it is copied into
+ .endif
 mn_mode dta 0                        ; 0 = MainMenu[], 1 = the save/load slots
 mn_top  dta MENU_SKULLY              ; the skull's first row in this menu
 mn_bot  dta MENU_SKULLY              ;   ... and its last (mn_run recomputes it)

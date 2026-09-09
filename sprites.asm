@@ -126,8 +126,12 @@ ta_resume = *
 sr_resume = *
         org SPRRESET_BASE            ; moved out of the $B000 segment 2026-07-31:
 .proc spr_reset                      ;   spr_add's two chase hooks pushed that
+ .if 1
+	stz sp_n
+ .else
         lda #0                       ;   segment into en_boom at $B715, and this
         sta sp_n                     ;   is the cheapest whole proc to lift out
+ .endif
         lda #<CLIP_BASE              ;   (once per frame, one absolute jsr).
         sta sp_clip
         lda #>CLIP_BASE
@@ -163,7 +167,7 @@ sr_resume = *
         cmp #VIS_MAX-2               ; the ones already collected are the
         bcs ?ret                     ; nearest). Two short: the ball and the
                                      ; missile keep a slot each.
-        clc                          ; prefix entry = th_ss + ssid
+;       clc                          ; prefix entry = th_ss + ssid
         lda zp_nid
         adc th_ss
         sta sp_ptr
@@ -171,23 +175,49 @@ sr_resume = *
         and #$7F
         adc th_ss+1
         sta sp_ptr+1
+ .if 1
+        lda (sp_ptr)                ; first thing of this subsector
+        sta sp_i
+        ldy #1
+ .else
         ldy #0
         lda (sp_ptr),y               ; first thing of this subsector
         sta sp_i
         iny
+ .endif
         lda (sp_ptr),y               ; first thing of the next one
         sta sp_last
         cmp sp_i
         bne ?loop
 ?ret    rts
+
 ?loop   ldx sp_i                     ; already picked up -> do not draw it
         jsr thing_alive_bit
+.if 1
+	jeq ?skip
+ .else
         bne ?live
         jmp ?skip
-?live   lda sp_i                     ; spr_chase already drew it, from where it
+?live
+ .endif
+	lda sp_i                     ; spr_chase already drew it, from where it
         jsr ai_ischase               ;   actually stands
         bne ?skip
+
         lda sp_i                     ; thing record = th_things + i*8
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+        adc th_things
+        sta sp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         sta m_prod
         lda #0
         sta m_prod+1
@@ -204,7 +234,9 @@ sr_resume = *
         lda m_prod+1
         adc th_things+1
         sta sp_ptr+1
+ .endif
         jsr spr_proj
+
 ?skip   inc sp_i
         lda sp_n
         cmp #VIS_MAX-2               ; ...the same two reserved slots
@@ -227,9 +259,14 @@ sr_resume = *
 .proc spr_proj
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
+ .if 1
+        sec
+        lda (sp_ptr)
+ .else
         ldy #0                       ; rx = x - px, ry = y - py
         sec
         lda (sp_ptr),y
+ .endif
         sbc zp_px
         sta zp_rx
         ldy #2
@@ -262,6 +299,7 @@ sr_resume = *
         .LONGA OFF
         sep #$20
         bcc ?skip
+
 ?wide   ldy #$FF                     ; $FF = COMPUTE the rotation (zp_rx/ry are
         sty sp_dfix                  ;   fresh here); spr_one replays instead
         lda sp_i                     ; dying? then the frame comes from the death
@@ -285,7 +323,7 @@ sr_resume = *
         asl @
         asl @
         asl @
-        clc
+;       clc
         adc th_sprtab
         sta sp_tab
 ?have   ldy #3
@@ -297,6 +335,7 @@ sr_resume = *
         .LONGA OFF
         sep #$20
         jsr screenx_signed           ; m_xs = centre column (unclamped, signed)
+
         ldx #0                       ; x1 = centre - (leftoffset*hs)>>8
         lda sp_left
         sta m_a
@@ -307,7 +346,23 @@ sr_resume = *
         sta m_b
         lda sp_hs+1
         sta m_b+1
+
         jsr smul32
+ .if 1
+	rep #$20
+	.LONGA ON
+        sec
+        lda m_xs
+        sbc m_prod+1
+        sta sp_x1
+	lda sp_w
+	and #$00ff
+	sta m_a
+        lda sp_hs
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         sec
         lda m_xs
         sbc m_prod+1
@@ -323,7 +378,25 @@ sr_resume = *
         sta m_b
         lda sp_hs+1
         sta m_b+1
+ .endif
         jsr umul16
+
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda m_prod+1
+	bne ?w1ok
+	inc
+?w1ok	sta m_a
+
+        lda sp_x1
+        adc m_a
+	dec
+        sta m_b
+	sep #$20
+	.LONGA OFF
+	xba			;set NZ acc. to MSB value
+ .else
         lda m_prod+1
         sta m_a
         lda m_prod+2
@@ -353,6 +426,7 @@ sr_resume = *
         lda m_b+1
         sbc #0
         sta m_b+1
+ .endif
         bmi ?skip2                   ; entirely off the left edge
         bne ?xbclamp                 ; >= 256 -> clamp to the right edge
         lda m_b
@@ -362,39 +436,77 @@ sr_resume = *
 ?xbok   sta sp_xb
         lda sp_x1+1                  ; xa = max(x1, 0); x1 >= 160 -> off the right
         bmi ?xazero
-        beq ?xalow
-?skip2  rts
-?xalow  lda sp_x1
+ .if 1
+        bne ?skip2
+ .else
+	beq ?xalow
+?skip2	rts
+?xalow
+ .endif
+	lda sp_x1
         cmp #SCREEN_WIDTH
         bcs ?skip2
         sta sp_xa
+ .if 1
+	bra ?xaok
+?skip2  rts
+?xazero stz sp_xa
+
+ .else
         jmp ?xaok
 ?xazero lda #0
         sta sp_xa
+ .endif
+
 ?xaok   lda sp_xb
         cmp sp_xa
         bcc ?skip2
+
         lda sp_h                     ; on-screen height = (h*scale)>>8
         sta m_a
+ .if 1
+        stz m_a+1
+ .else
         lda #0
         sta m_a+1
+ .endif
         lda sp_scale
         sta m_b
         lda sp_scale+1
         sta m_b+1
+
         jsr umul16
+
         lda m_prod+1
         sta sp_rows
         lda m_prod+2
         sta sp_rows+1
         ora sp_rows
         beq ?skip2
+ .if 1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        ldy #4                       ; world height of the sprite's top row
+        lda sp_top                   ;   = thing z + topoffset, relative to the eye
+	and #$00ff
+;	clc
+	adc (sp_ptr),y
+	sec
+        sbc zp_pz
+        sta m_a
+
+        lda sp_scale
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #4                       ; world height of the sprite's top row
         lda (sp_ptr),y               ;   = thing z + topoffset, relative to the eye
         sta m_a
         iny
         lda (sp_ptr),y
         sta m_a+1
+
         clc
         lda m_a
         adc sp_top
@@ -402,6 +514,7 @@ sr_resume = *
         lda m_a+1
         adc #0
         sta m_a+1
+
         sec
         lda m_a
         sbc zp_pz
@@ -409,22 +522,42 @@ sr_resume = *
         lda m_a+1
         sbc zp_pz+1
         sta m_a+1
+
         lda sp_scale
         sta m_b
         lda sp_scale+1
         sta m_b+1
+ .endif
         jsr track_calc               ; m_prod[0..2] = horizon - world*scale (Q8)
+
         lda m_prod+1                 ; screen row of texture row 0
         sta sp_ytop
         lda m_prod+2
         sta sp_ytop+1
         bmi ?vis                     ; above the horizon -> definitely not below screen
         beq ?vchk                    ; row >= 256 -> below the screen
+ .if 1
+?bail	rts
+ .else
 ?bail   jmp ?skip2                   ; (trampoline: ?skip2 is out of branch range)
+ .endif
+
 ?vchk   lda sp_ytop
         cmp #SCREEN_HEIGHT
         bcs ?bail
-?vis    clc                          ; bottom row = ytop + rows - 1
+
+?vis
+ .if 1
+	rep #$21	;absorb CLC
+	.LONGA ON
+        lda sp_ytop
+        adc sp_rows
+	dec
+        sta sp_ybot
+	sep #$20
+	.LONGA OFF
+ .else
+	clc                          ; bottom row = ytop + rows - 1
         lda sp_ytop
         adc sp_rows
         sta sp_ybot
@@ -438,14 +571,35 @@ sr_resume = *
         lda sp_ybot+1
         sbc #0
         sta sp_ybot+1
+ .endif
         bmi ?bail                    ; entirely above the screen
+
         ; --- snapshot the open window over [xa..xb] into the clip pool ---
         lda sp_xb
         sec
         sbc sp_xa
         sta sp_cnt                   ; columns - 1
-?csize  lda #0                       ; bytes needed = 2*(cnt+1)
+
+?csize
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda sp_cnt
+	and #$00ff
+	inc
+	asl
+;	clc
+	adc sp_clip
+	cmp #CLIP_END
+	sep #$20
+	.LONGA OFF
+ .else
+  .if 1
+        stz m_a+1
+  .else
+	lda #0                       ; bytes needed = 2*(cnt+1)
         sta m_a+1
+  .endif
         lda sp_cnt
         sta m_a
         inc m_a
@@ -459,6 +613,7 @@ sr_resume = *
         lda sp_clip+1
         adc m_a+1
         cmp #>CLIP_END
+ .endif
         bcc ?cfit
         ; --- POOL TOO TIGHT. Dropping the sprite here was a real bug and not
         ;     just a cosmetic one: en_shoot aims at the VISSPRITE list, so a
@@ -473,13 +628,20 @@ sr_resume = *
         ;     by its leftmost column's. Far better than not existing.
         lda sp_cnt
         beq ?bail                    ; already one window: the page really is full
+ .if 1
+	stz sp_cnt
+	bra ?csize
+ .else
         lda #0
         sta sp_cnt
         jmp ?csize
+ .endif
+
 ?cfit   lda sp_clip                  ; block base (the pool is one page: hi = $07)
         sta sp_cbase
         lda #1                       ; assume one window covers every column
         sta sp_uni
+
         ldx sp_xa
 ?snap   lda solid_arr,x
         bne ?closed
@@ -487,24 +649,52 @@ sr_resume = *
         cmp ybotc_arr,x
         beq ?open
         bcs ?closed                  ; top > bot -> nothing open in this column
-?open   ldy #0
+
+?open
+ .if 1
+        sta (sp_clip)                ; window top (A = ytopc)
+        ldy #1
+        lda ybotc_arr,x
+        sta (sp_clip),y              ; window bottom
+        bra ?sadv
+ .else
+	ldy #0
         sta (sp_clip),y              ; window top (A = ytopc)
         iny
         lda ybotc_arr,x
         sta (sp_clip),y              ; window bottom
         jmp ?sadv
-?closed ldy #0
+ .endif
+
+?closed
+ .if 1
+        lda #255                     ; 255 = fully covered by nearer geometry
+        sta (sp_clip)
+        ldy #1
+        sta (sp_clip),y
+ .else
+	ldy #0
         lda #255                     ; 255 = fully covered by nearer geometry
         sta (sp_clip),y
         iny
         sta (sp_clip),y
+ .endif
         ; --- uniform test: 90% of sprites see ONE window over all their columns
         ;     (measured, tools/_dbg_sprcap.py). Those keep just the first pair and
         ;     spr_one re-reads it with a step of 0 -- that is what keeps the pool
         ;     inside a single page at VIS_MAX 40.
 ?sadv   lda sp_clip                  ; first column? -> remember its window
-        cmp sp_cbase
+        cmp sp_cbase		;remark for later: this is only equal for the first column
         bne ?ucmp
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda (sp_clip)
+        sta sp_t0	;sp_b0 is right next to sp_t0, word write ok
+	sep #$20
+	.LONGA OFF
+	bra ?s2
+ .else
         ldy #0
         lda (sp_clip),y
         sta sp_t0
@@ -512,25 +702,41 @@ sr_resume = *
         lda (sp_clip),y
         sta sp_b0
         jmp ?s2
-?ucmp   ldy #0
+ .endif
+
+?ucmp
+ .if 1
+        lda (sp_clip)
+        cmp sp_t0
+        bne ?unot
+        ldy #1
+ .else
+	ldy #0
         lda (sp_clip),y
         cmp sp_t0
         bne ?unot
         iny
+ .endif
         lda (sp_clip),y
         cmp sp_b0
         beq ?s2
-?unot   lda #0
+?unot
+ .if 1
+        stz sp_uni
+ .else
+	lda #0
         sta sp_uni
-?s2     clc
+ .endif
+?s2	clc
         lda sp_clip
         adc #2
         sta sp_clip
         bcc ?s3
         inc sp_clip+1
-?s3     inx
+?s3	inx
         dec sp_cnt
         bpl ?snap
+
         lda sp_uni
         beq ?keep                    ; per-column windows: keep the whole block
         lda sp_t0
@@ -538,7 +744,12 @@ sr_resume = *
         bne ?uni                     ; every column closed -> nothing to draw at
         lda sp_cbase                 ; all: hand the whole block back and drop it
         sta sp_clip                  ; (a hidden sprite must not eat a vissprite)
-        jmp ?skip2
+ .if 1
+	rts
+ .else
+        jmp ?skip2		;(LOL)
+ .endif
+
 ?uni    clc                          ; uniform: give the pool everything back but
         lda sp_cbase                 ; the one pair (hi stays $07 -- see CLIP_BASE)
         adc #2
@@ -597,7 +808,11 @@ sr_resume = *
 ?shift  tya
         sta vs_ord,x
         dex
+ .if 1
+	bra ?ins
+ .else
         jmp ?ins
+ .endif
 ?place  lda sp_n
         sta vs_ord,x
         inc sp_n
@@ -633,36 +848,31 @@ sr_resume = *
 pk_resume = *
         org PICKUP_BASE              ; moved out of the $B000 segment -- see the
 .proc spr_pickup                     ;   PICKUP_BASE note in memory_map.inc
-        lda #0
-        sta sp_i
-?loop   lda sp_i                     ; done when i == n_things
-        cmp THINGS_BASE
+        lda pk_valid                 ; the level's PICKUP LIST (PK_*, memory_map
+        bne ?walk                    ;   .inc): en_init cleared the flag, so the
+        jsr pk_build                 ;   first frame scans all things ONCE; every
+?walk   lda #0                       ;   later frame walks just the items -- the
+        sta pk_j                     ;   old full scan cost 2.12 ms/f on E1M6's
+pk_loop                              ;   270 things (_bench_subsys 2026-08-31)
+?loop   ldx pk_j                     ; (pk_rm re-enters at pk_loop: same slot,
+        cpx pk_n                     ;   done when the list is out)
         bcc ?go
         rts
-?go     ldx sp_i
-        jsr thing_alive_bit
-        bne ?have
-?jnext  jmp ?next                    ; already taken (trampoline: ?next is far)
-?have
-        lda #0                       ; record = th_things + i*8, with the low half
-        sta m_prod+1                 ;   kept in A the whole way (spr_take does the
-        lda sp_i                     ;   same): it is the adc's operand already, so
-        asl                          ;   the three shifts cost one byte each
-        rol m_prod+1                 ;   instead of two and there is no store to
-        asl                          ;   m_prod at all. -7 B, which is what pays
-        rol m_prod+1                 ;   for pk_x/pk_y below -- this block ends
-        asl                          ;   FLUSH at $FEAB and enemy.asm is org'd at
-        rol m_prod+1                 ;   $FEAC (GUNFIRE_BASE).
-        clc
-        adc th_things
-        sta sp_ptr
-        lda m_prod+1
-        adc th_things+1
+?go     lda.l PK_IDX,x               ; the thing index -- spr_take's and the
+        sta sp_i                     ;   alive bit's key -- and its record
+        tax                          ;   address, precomputed by pk_build: the
+        jsr thing_alive_bit          ;   i*8 shift run left this FLUSH block
+        bne ?have                    ;   (ends $FEAB, enemy.asm org'd at $FEAC)
+?spent  jmp pk_rm                    ; taken item / collected drop: it can never
+?have   ldx pk_j                     ;   match again -- swap-remove the slot and
+        lda.l PK_ALO,x               ;   rescan it, so the walked list SHRINKS
+        sta sp_ptr                   ;   toward zero as the level gets played
+        lda.l PK_AHI,x
         sta sp_ptr+1
         ldy #7                       ; bit0 = a map pickup, bit2 = a corpse that
         lda (sp_ptr),y               ;   P_KillMobj dropped ammo on (en_kill sets
         and #1|F_DROP                ;   it for the zombieman and the shotgun guy)
-        beq ?jnext
+        beq ?spent
         sta sp_pick                  ; remember WHICH -- the bonus id and the
         ldy #0                       ; |x - pk_x| < PICKUP_R ?  (pk_x/pk_y, NOT
         sec                          ;   zp_px/zp_py: the point move_player ASKED
@@ -673,7 +883,7 @@ pk_resume = *
         lda (sp_ptr),y
         sbc pk_x+1
         jsr ?near
-        bcc ?jnext
+        bcc ?next                    ; just out of reach: the entry stays
         ldy #2                       ; |y - pk_y| < PICKUP_R ?
         sec
         lda (sp_ptr),y
@@ -683,11 +893,11 @@ pk_resume = *
         lda (sp_ptr),y
         sbc pk_y+1
         jsr ?near
-        bcc ?jnext
+        bcc ?next
         jsr spr_take                 ; the whole "hand it over" tail moved to the
                                      ;   DROP block: adding the dropped-ammo path
                                      ;   inline pushed this proc past PICKUP_END
-?next   inc sp_i
+?next   inc pk_j
         jmp ?loop
         ; A = delta hi, m_a = delta lo -> C set if |delta| < PICKUP_R
 ?near   bmi ?neg
@@ -710,6 +920,94 @@ pk_resume = *
     .endif
         icl 'enemy.asm'              ; damage + death: en_init / en_gunshot
         org pk_resume
+
+;--------------------------------------------------------------
+; pk_build -- fill the pickup list from the records: every thing with bit0
+;   (map pickup). ONCE per level entry -- en_init clears pk_valid, the next
+;   spr_pickup lands here. Fresh level, restart and load-game all stream
+;   fresh records, so F_DROP is never set at build time; en_dropmark appends
+;   those corpses live as they happen. Cost = one old-style full scan, once.
+;--------------------------------------------------------------
+pkb_resume = *
+        org PKBUILD_BASE
+.proc pk_build
+        lda #0
+        sta pk_n
+        sta pk_i
+?lp     lda pk_i
+        cmp THINGS_BASE              ; the packed thing count
+        bcs ?done
+        jsr en_thing.en_th2          ; sp_ptr = the record (A = index; clobbers Y)
+        ldy #7
+        lda (sp_ptr),y
+        and #1                       ; map pickups only -- see the header
+        beq ?nx
+        lda pk_i
+        jsr pk_append
+?nx     inc pk_i
+        jmp ?lp
+?done   lda #1
+        sta pk_valid
+        rts
+.endp
+;--------------------------------------------------------------
+; pk_append -- A = thing index, sp_ptr = its record: one more list row.
+;   Also en_dropmark's live append (a corpse that just got its F_DROP).
+;   Never overflows: at most one row per thing, and the count is a byte.
+;--------------------------------------------------------------
+.proc pk_append
+        ldx pk_n
+        sta.l PK_IDX,x
+        lda sp_ptr
+        sta.l PK_ALO,x
+        lda sp_ptr+1
+        sta.l PK_AHI,x
+        inc pk_n
+        rts
+.endp
+;--------------------------------------------------------------
+; pk_dropadd -- en_dropmark's tail (its block is full to the byte): append
+;   the corpse whose F_DROP it just set, put its caller's Y back, return.
+;--------------------------------------------------------------
+.proc pk_dropadd
+        lda ai_t2                    ; the thing index en_dropmark parked
+        jsr pk_append
+        ldy ai_t2
+        rts
+.endp
+;--------------------------------------------------------------
+; pk_rm -- spr_pickup's spent slot (taken item, or a corpse whose drop was
+;   collected -- bit0 is static and F_DROP is set once, so neither can ever
+;   match again): copy the LAST row over slot pk_j, shrink, rescan the slot.
+;   Long indexing is X-only, so the row rides the stack between the two X
+;   phases. pk_j == pk_n-1 copies the row onto itself and the loop's cpx
+;   ends the walk -- both edges fall out of the same code. Cold: runs once
+;   per spent entry ever, so its slow-window home costs nothing.
+;--------------------------------------------------------------
+.proc pk_rm
+        dec pk_n
+        ldx pk_n
+        lda.l PK_IDX,x
+        pha
+        lda.l PK_ALO,x
+        pha
+        lda.l PK_AHI,x
+        ldx pk_j
+        sta.l PK_AHI,x
+        pla
+        sta.l PK_ALO,x
+        pla
+        sta.l PK_IDX,x
+        jmp spr_pickup.pk_loop
+.endp
+pk_valid dta 0                       ; 0 = rebuild (en_init clears it per level)
+pk_n     dta 0                       ; rows in the list
+pk_j     dta 0                       ; spr_pickup's cursor
+pk_i     dta 0                       ; pk_build's thing counter
+    .if * > PKBUILD_END+1
+        ert 'pk_build outgrew PKBUILD_BASE..END (memory_map.inc)'
+    .endif
+        org pkb_resume
 
         icl 'spr_draw.asm'           ; billboard drawing: spr_draw / spr_one / spr_blit
 
@@ -782,8 +1080,12 @@ an_resume = *
         lda an_i,x
         cmp an_n
         bcc ?ok
+ .if 1
+        stz an_i,x
+ .else
         lda #0
         sta an_i,x
+ .endif
 ?ok     txa
         ora #$10                     ; +$10 = ITAB_FIRST
         tay
@@ -792,11 +1094,29 @@ an_resume = *
         adc an_i,x
         sta en_k2+1                  ; en_row takes the row + 1 (a TH_STATE value)
         inc en_k2+1
+ .if 1
+	txy
+ .else
         txa                          ; ...and the ring's SPRITE, before en_row
         tay                          ;   walks zp_ptr off the ITAB
+ .endif
         lda [zp_ptr],y
         sta an_n
         jsr en_row                   ; zp_ptr = &DTAB_ROWS[row], bank $01
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda an_n
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+        adc th_sprtab
+        sta sp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         lda #0                       ; sp_ptr = th_sprtab + id*8, the shifts in
         sta sp_ptr+1                 ;   the ACCUMULATOR (a level can carry 50
         lda an_n                     ;   sprites, so id*8 is 9 bits and the carry
@@ -812,11 +1132,14 @@ an_resume = *
         lda sp_ptr+1
         adc th_sprtab+1
         sta sp_ptr+1
+ .endif
+
         ldy #6                       ; row 0..6 IS sprtab 0..6; byte 7 is the
 ?cp     lda [zp_ptr],y               ;   bonus/kind id and must survive
         sta (sp_ptr),y
         dey
         bpl ?cp
+
         ldy #7
         lda [zp_ptr],y               ; ...and the row's tics is the next countdown
         sta an_t,x
@@ -841,10 +1164,16 @@ an_resume = *
         lda #>ITAB_SID
         sta zp_ptr+1
         ldx #ITAB_MAX-1
-?lp     lda #0
+?lp
+ .if 1
+        stz an_t,x                   ; assume the slot is empty
+	txy
+ .else	
+	lda #0
         sta an_t,x                   ; assume the slot is empty
         txa
         tay
+ .endif
         lda [zp_ptr],y               ; a sprite id, or $FF for "no ring"
         cmp #$FF
         beq ?nx
@@ -852,11 +1181,19 @@ an_resume = *
         ora #$20                     ; ITAB_N
         tay
         lda [zp_ptr],y
+ .if 1
+	dec
+ .else
         sec
         sbc #1                       ; one before row 0: the first tic wraps
+ .endif
         sta an_i,x
+ .if 1
+        inc an_t,x
+ .else
         lda #1
         sta an_t,x
+ .endif
 ?nx     dex
         bpl ?lp
         rts

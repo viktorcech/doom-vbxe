@@ -71,10 +71,16 @@ wi_resume = *
 ;--------------------------------------------------------------
         org WINEW_BASE
 .proc wi_newlvl
+ .if 1
+        stz wi_time
+        stz wi_time+1
+        jmp load_things
+ .else
         lda #0
         sta wi_time
         sta wi_time+1
         jmp load_things
+ .endif
 .endp
     .if * > WINEW_END+1
         ert 'wi_newlvl outgrew WINEW_BASE..END (memory_map.inc)'
@@ -110,6 +116,14 @@ wi_resume = *
         lda #BANK_EN | WI2_BANK
         sta VBXE_BANK_SEL
         ldx #0
+ .if 1
+?s2     txa                          ;   inside WI2_PAGES and the slot
+        clc
+        adc #>MEMW
+        sta ?src+2                   ; $90+X cannot carry (X < WI2_PAGES), so
+        adc #<[[>WI2_RUN]-[>MEMW]]   ;   the second add rides on C=0 and A
+        sta ?dst+2
+ .else
 ?s2     txa                          ;   inside WI2_PAGES and the slot
         clc
         adc #>MEMW
@@ -118,6 +132,7 @@ wi_resume = *
         clc
         adc #>WI2_RUN
         sta ?dst+2
+ .endif
         ldy #0
 ?src    lda MEMW,y
 ?dst    sta WI2_RUN,y
@@ -212,6 +227,22 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         bpl ?a
         lda #SCREEN_WIDTH
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+ .if 1
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        lda wc_w
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        lda wc_h
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+    .if BLT_COPY != 0
+        ert 'BLT_COPY is not 0: wi_rect/wi_erase stz the ctrl byte'
+    .endif
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
+        jsr hud_blit.hud_fire
+        jmp blitter_wait
+ .else
         lda #0
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
         sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
@@ -225,6 +256,7 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
         jsr hud_blit.hud_fire
         jmp blitter_wait
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -248,6 +280,15 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 ; wi_grab -- the screen AS SHOWN -> wa_b. Two rectangles, because the port's
 ;--------------------------------------------------------------
 .proc wi_grab
+ .if 1
+        stz wa_col
+        stz wc_src
+        stz wc_src+1
+        lda ZFRONT
+        sta wc_src+2
+        stz wc_dst
+        lda wa_b+1
+ .else
         lda #0
         sta wa_col
         sta wc_src
@@ -257,6 +298,7 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         lda #0
         sta wc_dst
         lda wa_b+1
+ .endif
         sta wc_dst+1
         lda wa_b+2
         sta wc_dst+2
@@ -303,20 +345,32 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 .proc wi_meltinit
         lda RANDOM
         and #15
+ .if 1
+        eor #15
+        inc @                        ; = 16 - (rnd&15), so 1..16
+        sta wy
+ .else
         eor #15
         clc
         adc #1                       ; = 16 - (rnd&15), so 1..16
         sta wy
+ .endif
         ldx #1
 ?l      lda RANDOM                   ; r = (M_Random()%3) - 1
         and #3
         cmp #3
         bcc ?ok
         lda #0
+ .if 1
+?ok     dec @                        ; r - 1 (dec leaves C alone: the clc is next)
+        clc
+        adc wy-1,x                   ; y[i] = y[i-1] + r
+ .else
 ?ok     sec
         sbc #1
         clc
         adc wy-1,x                   ; y[i] = y[i-1] + r
+ .endif
         cmp #WI_BIAS+1               ; "if (y[i] > 0) y[i] = 0"
         bcc ?lo
         lda #WI_BIAS
@@ -335,10 +389,16 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 ;--------------------------------------------------------------
 .proc wi_melt
         jsr wi_meltinit
+ .if 1
+?tic    jsr wi_tic
+        stz wm_busy
+        ldx #0
+ .else
 ?tic    jsr wi_tic
         lda #0
         sta wm_busy
         ldx #0
+ .endif
         stx wa_col
 ?col    lda wy,x
         cmp #WI_BIAS
@@ -354,10 +414,16 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 ?live   sta wm_y                     ;   does not reach from here)
         inc wm_busy
         cmp #16                      ; dy = (y < 16) ? y+1 : 8
+ .if 1
+        bcs ?d8
+        inc @                        ; (y+1 <= 16: never 0, the bne is always taken)
+        bne ?dy
+ .else
         bcs ?d8
         clc
         adc #1
         bne ?dy
+ .endif
 ?d8     lda #8
 ?dy     sta wm_dy
         clc
@@ -376,6 +442,18 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         sta wa_b+2
         ldx wm_y
         ldy #0
+ .if 1
+        jsr wi_set24                 ; src = END + y*160 + col
+        stz wa_b+1                   ; ...dst = the screen, same place
+        stz wa_b+2
+        ldx wm_y
+        ldy #3
+        jsr wi_set24
+        stz wc_w                     ; one byte wide -- a COLUMN
+        lda wm_dy
+        dec @
+        sta wc_h
+ .else
         jsr wi_set24                 ; src = END + y*160 + col
         lda #0
         sta wa_b+1                   ; ...dst = the screen, same place
@@ -389,6 +467,7 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         sec
         sbc #1
         sta wc_h
+ .endif
         jsr wi_rect
         clc                          ; y += dy
         lda wm_y
@@ -411,6 +490,16 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         sta wa_b+2
         ldx #0
         ldy #0
+ .if 1
+        jsr wi_set24
+        stz wa_b+1
+        stz wa_b+2
+        ldx wm_y
+        ldy #3
+        jsr wi_set24                 ; dst = the screen at row y
+        stz wc_w
+        sec                          ; height = 200 - y
+ .else
         jsr wi_set24
         lda #0
         sta wa_b+1
@@ -421,6 +510,7 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         lda #0
         sta wc_w
         sec                          ; height = 200 - y
+ .endif
         lda #WIPE_H-1
         sbc wm_y
         sta wc_h
@@ -440,12 +530,20 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 ; wi_wipe -- the whole ceremony around one melt: WIPE_START already holds the
 ;--------------------------------------------------------------
 .proc wi_wipe
+ .if 1
+        stz wa_b
+        stz wa_b+1
+        stz wa_b+2
+        lda #<WIPE_END
+        sta wa_b2
+ .else
         lda #0
         sta wa_b
         sta wa_b+1
         sta wa_b+2
         lda #<WIPE_END
         sta wa_b2
+ .endif
         lda #>WIPE_END
         sta wa_b2+1
         lda #[WIPE_END>>16]
@@ -456,13 +554,22 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         lda #>WIPE_START
         sta wa_b+1
         lda #[WIPE_START>>16]
+ .if 1
+        sta wa_b+2
+        stz wa_b2
+        stz wa_b2+1
+        stz wa_b2+2
+        jsr wi_page
+        jsr wi_show
+ .else
         sta wa_b+2
         lda #0
         sta wa_b2
         sta wa_b2+1
         sta wa_b2+2
         jsr wi_page
-        jsr wi_show                  ; only NOW is FRAME_A worth showing
+        jsr wi_show
+ .endif                  ; only NOW is FRAME_A worth showing
         jmp wi_melt
 .endp
 
@@ -470,19 +577,32 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 ; wi_melt2 -- the SECOND melt: the intermission picture (still in WIPE_START,
 ;--------------------------------------------------------------
 .proc wi_melt2
+ .if 1
+        stz XDLA_PEND
+        stz wa_b
+        stz wa_b+1
+        stz wa_b+2
+        lda ZFRONT
+ .else
         lda #0
         sta XDLA_PEND
         sta wa_b
         sta wa_b+1
         sta wa_b+2
         lda ZFRONT
+ .endif
         beq ?have
         jsr wi_grab                  ;    there on purpose)
 ?have   jsr wi_wipe
         lda #1
+ .if 1
+        sta zback_hi
+        stz EXIT_REQ                 ; ...and the game goes on
+ .else
         sta zback_hi
         lda #0
         sta EXIT_REQ                 ; ...and the game goes on
+ .endif
         rts
 .endp
 
@@ -490,10 +610,16 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 ; wi_show -- FRAME_A on screen, and nothing about to take it away again.
 ;--------------------------------------------------------------
 .proc wi_show
+ .if 1
+        stz zback_hi
+        stz ZFRONT
+        stz XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
+ .else
         lda #0
         sta zback_hi
         sta ZFRONT
         sta XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
+ .endif
         lda #>VRAM_XDL_A
         sta VBXE_XDLA1
         rts
@@ -558,11 +684,18 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda wi_state
         cmp #WI_ST_DONE
         bne ?loop
+ .if 1
+        jsr wi_nextloc
+        stz wa_b
+        stz wa_b+1                   ;   survives it; nothing in RAM does)
+        stz wa_b+2
+ .else
         jsr wi_nextloc
         lda #0
         sta wa_b
         sta wa_b+1                   ;   survives it; nothing in RAM does)
         sta wa_b+2
+ .endif
         lda #<WIPE_START
         sta wa_b2
         lda #>WIPE_START
@@ -577,12 +710,20 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_stats -- everything G_DoCompleted puts in wminfo, derived rather than
 ;--------------------------------------------------------------
 .proc wi_stats
+ .if 1
+        stz wi_kills
+        stz wi_items
+        stz wi_maxkills              ;   throw the tally away
+        stz wi_maxitems
+        lda th_things
+ .else
         lda #0
         sta wi_kills
         sta wi_items
         sta wi_maxkills              ;   throw the tally away
         sta wi_maxitems
         lda th_things
+ .endif
         sta sp_ptr
         lda th_things+1
         sta sp_ptr+1
@@ -649,10 +790,16 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta wi_secs+1
         ldx current_level            ; pars[1][map] (g_game.c:981)
         lda wi_par,x
+ .if 1
+        sta wi_parsec
+        stz wi_parsec+1
+        rts
+ .else
         sta wi_parsec
         lda #0
         sta wi_parsec+1
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -684,6 +831,17 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 .proc wi_initstats
         lda #1
         sta wi_sp
+ .if 1
+        stz wi_accelst
+        stz wi_bcnt
+        stz wi_state
+        stz wi_tacc
+        stz wi_tvis
+        stz wi_ctime                 ;   and cnt_par start at -1, and
+        stz wi_ctime+1               ;   WI_drawTime returns on t < 0)
+        stz wi_cpar
+        stz wi_cpar+1
+ .else
         lda #0
         sta wi_accelst
         sta wi_bcnt
@@ -694,6 +852,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta wi_ctime+1               ;   WI_drawTime returns on t < 0)
         sta wi_cpar
         sta wi_cpar+1
+ .endif
         ldx #2
         lda #$FF
 ?z      sta wi_cnt,x
@@ -712,11 +871,18 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         and #4                       ; bit2 = 0 while a key is held
         bne ?up
         lda wi_karm
+ .if 1
+        beq ?no
+        stz wi_karm
+        lda #1
+        sta wi_accelst
+ .else
         beq ?no
         lda #0
         sta wi_karm
         lda #1
         sta wi_accelst
+ .endif
 ?no     rts
 ?up     lda #1
         sta wi_karm
@@ -731,10 +897,16 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         beq ?state
         lda wi_sp
         cmp #10
+ .if 1
+        beq ?state
+        stz wi_accelst
+        jsr wi_finals
+ .else
         beq ?state
         lda #0
         sta wi_accelst
         jsr wi_finals
+ .endif
         ldx #SFX_BAREXP
         jsr snd_play
         lda #10
@@ -885,6 +1057,25 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_mul100 -- A -> wi_m = A*100, as 4 + 32 + 64 shifted and added. 255*100 is
 ;--------------------------------------------------------------
 .proc wi_mul100
+ .if 1
+        rep #$21                     ; ---- 16-bit A, C=0: *4 -> t3, *32 -> m,
+        .LONGA ON                    ;   *64 + *32 + *4 = *100, all in A. No
+        and #$FF                     ;   sum passes 25500, so no add carries
+        asl @
+        asl @                        ; *4
+        sta wi_t3
+        asl @
+        asl @
+        asl @                        ; *32
+        sta wi_m
+        asl @                        ; *64
+        adc wi_m                     ; *96
+        adc wi_t3                    ; *100
+        sta wi_m
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         sta wi_m
         lda #0
         sta wi_m+1
@@ -919,6 +1110,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         adc wi_t3+1
         sta wi_m+1                   ; *100
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -932,6 +1124,22 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_entry -- A = wi.tab index -> zp_ptr = its 7-byte row, so hud_blit can draw
 ;--------------------------------------------------------------
 .proc wi_entry
+ .if 1
+        rep #$20                     ; ---- 16-bit A: index*7 = *8 - index, and
+        .LONGA ON                    ;   8i >= i leaves C=1: that is the +1 of a
+        and #$FF                     ;   16-bit add of WI_TAB-1
+        sta zp_ptr                   ; (the index, parked for the subtract)
+        asl @
+        asl @
+        asl @
+        sec
+        sbc zp_ptr
+        adc #WI_TAB-1
+        sta zp_ptr
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         sta wi_ix
         lda #0
         sta zp_ptr+1
@@ -953,6 +1161,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         adc #>WI_TAB
         sta zp_ptr+1
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1079,6 +1288,18 @@ wi_erasew
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
         lda #SCREEN_WIDTH
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+ .if 1
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        lda wi_ew
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        lda wi_eh
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+ .else
         lda #0
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
         sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
@@ -1092,6 +1313,7 @@ wi_erasew
         sec
         sbc #1
         sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+ .endif
         lda row_lo,x
         clc
         adc wi_px
@@ -1101,6 +1323,15 @@ wi_erasew
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
         lda #[VRAM_SCREEN>>16]
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+ .if 1
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY: opaque, this IS the
+        jsr hud_blit.hud_fire                  ;   background (ert in wi_rect)
+        jmp blitter_wait
+.endp
+
+;--------------------------------------------------------------
+; wi_num
+ .else
         lda #BLT_COPY                ; opaque: this IS the background
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
         jsr hud_blit.hud_fire
@@ -1108,7 +1339,8 @@ wi_erasew
 .endp
 
 ;--------------------------------------------------------------
-; wi_num -- WI_drawNum(x, y, n, digits): digits right to left from x, leaving
+; wi_num
+ .endif -- WI_drawNum(x, y, n, digits): digits right to left from x, leaving
 ;--------------------------------------------------------------
 .proc wi_num
         stx wi_px
@@ -1127,12 +1359,20 @@ wi_erasew
 ?got    stx wi_dig
 ?have   lda wi_n
 ?loop   ldx #0                       ; digit = n mod 10, X = n / 10
+ .if 1
+?d      cmp #10
+        bcc ?done                    ; (not taken: C=1, the sbc needs no sec)
+        sbc #10
+        inx
+        bra ?d
+ .else
 ?d      cmp #10
         bcc ?done
         sec
         sbc #10
         inx
         jmp ?d
+ .endif
 ?done   sta wi_arg                   ; the digit
         stx wi_n                     ; ...and what is left
         lda wi_px
@@ -1229,6 +1469,24 @@ wi_erasew
 ; wi_mul60 -- A -> wi_m = A*60 (= 32 + 16 + 8 + 4), for the seconds remainder.
 ;--------------------------------------------------------------
 .proc wi_mul60
+ .if 1
+        rep #$20                     ; ---- 16-bit A: *60 = *64 - *4, in A
+        .LONGA ON
+        and #$FF
+        asl @
+        asl @                        ; *4
+        sta wi_t3
+        asl @
+        asl @
+        asl @
+        asl @                        ; *64
+        sec
+        sbc wi_t3                    ; *60
+        sta wi_m
+        sep #$20
+        .LONGA OFF
+        rts
+ .else
         sta wi_m
         lda #0
         sta wi_m+1
@@ -1268,6 +1526,7 @@ wi_erasew
         adc wi_t3+1
         sta wi_m+1                   ; *60
         rts
+ .endif
 .endp
 
 ;==============================================================
@@ -1283,14 +1542,25 @@ wi_erasew
         inc wi_af
         lda wi_af
         cmp #WI_ANIMF
+ .if 1
+        bcc ?draw
+        stz wi_af
+?draw   ldx current_level
+ .else
         bcc ?draw
         lda #0
         sta wi_af
-?draw   ldx current_level            ; epsd0animinfo is the only set packed, so
+?draw   ldx current_level
+ .endif            ; epsd0animinfo is the only set packed, so
         lda wi_ebase,x               ;   only episode 1 has animations at all --
+ .if 1
+        bne wi_over                  ;   see wi_syms.inc. Episode 1 IS ebase 0.
+        stz wi_ai
+ .else
         bne wi_over                  ;   see wi_syms.inc. Episode 1 IS ebase 0.
         lda #0
         sta wi_ai
+ .endif
 ?l      ldy wi_ai
         lda wi_animy,y
         sta wi_arg
@@ -1380,9 +1650,14 @@ wi_erasew
                                      ;   anim pass tail-draws the whole ABOVE
                                      ;   layer (wi_over: splats + EL title;
                                      ;   wi_yon is still 0 here)
+ .if 1
+        stz wi_accelst               ; cnt = SHOWNEXTLOCDELAY * TICRATE
+        stz wi_yon
+ .else
         lda #0                       ; cnt = SHOWNEXTLOCDELAY * TICRATE
         sta wi_accelst
         sta wi_yon
+ .endif
         lda #<[WI_SNLDELAY*WI_TICRATE]
         sta wi_cnt16
         lda #>[WI_SNLDELAY*WI_TICRATE]
@@ -1435,10 +1710,16 @@ wi_erasew
         ldx wi_next                  ;   shows next-1 instead (wi_stuff.c:790)
         sec
         lda wi_next
+ .if 1
+        sbc wi_ebase,x
+        dec @
+?have   clc
+ .else
         sbc wi_ebase,x
         sec
         sbc #1
 ?have   clc
+ .endif
         adc wi_ai                    ; ...so stop at ebase + last, INCLUSIVE
         sta wi_arg+1                 ;   (wi_stuff.c:793 is i <= last)
 ?sp     ldx wi_ai
@@ -1480,9 +1761,15 @@ wi_erasew
 .proc wi_yah
         cmp wi_yon
         beq ?out
+ .if 1
+        sta wi_yon
+        tay                          ; (sta keeps the cmp's flags: tay sets them
+        bne wi_yahput                ;  from A; Y is dead on both paths)
+ .else
         sta wi_yon
         lda wi_yon                   ; (sta keeps the cmp's flags -- refresh)
         bne wi_yahput
+ .endif
         ldx wi_next                  ; OFF: erase its box back to the map
         lda wi_nodey,x
         sta wi_arg
@@ -1516,10 +1803,16 @@ wi_erasew
         ldy #0
         jsr wi_put
         lda #BLT_BSTENCIL
+ .if 1
+        sta hb_ctrl
+        stz wi_bcnt
+        stz wi_anext                 ;   all ten over the fresh background
+ .else
         sta hb_ctrl
         lda #0
         sta wi_bcnt
         sta wi_anext                 ;   all ten over the fresh background
+ .endif
         jmp wi_anim
 .endp
 

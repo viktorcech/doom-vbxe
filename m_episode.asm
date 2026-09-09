@@ -33,6 +33,18 @@
 ;   it out of the same bank.
 ;--------------------------------------------------------------
 .proc ep_head
+ .if 1
+        ldx #1
+?pg     txa                          ; page X of the chunk -> page X of the run
+        clc
+        adc #>MEMW
+        sta ?src+2                   ; $90+X cannot carry (X < 4: ert below), so
+        adc #<[[>MENU_RUN]-[>MEMW]]  ;   the second add rides on C=0 and A
+        sta ?dst+2                   ;   instead of a fresh txa/clc
+    .if [>MEMW] + [EPIOVL_MAX/256] > 255
+        ert 'ep_head: >MEMW + page carries -- put the txa/clc back'
+    .endif
+ .else
         ldx #1
 ?pg     txa                          ; page X of the chunk -> page X of the run
         clc
@@ -42,6 +54,7 @@
         clc
         adc #>MENU_RUN
         sta ?dst+2
+ .endif
         ldy #0
 ?src    lda MEMW,y
 ?dst    sta MENU_RUN,y
@@ -61,6 +74,16 @@
 ;   DOOM's EpiDef.lastOn is a fixed initialiser and M_SetupNextMenu copies it in.
 ;--------------------------------------------------------------
 .proc ep_main
+ .if 1
+        stz ep_sel
+        stz ep_sk
+        jsr ep_paint
+        lda #MENU_SKTICS
+        sta ep_tic
+        stz ep_arm                   ; the key that picked NEW GAME is still
+                                     ;   down: it must come up before this menu
+                                     ;   takes a press of its own
+ .else
         lda #0
         sta ep_sel
         sta ep_sk
@@ -71,6 +94,7 @@
         sta ep_arm                   ; the key that picked NEW GAME is still
                                      ;   down: it must come up before this menu
                                      ;   takes a press of its own
+ .endif
 ?loop   jsr ep_vsync
         dec ep_tic                   ; skullAnimCounter (m_menu.c:1836-1839)
         bne ?nb
@@ -88,8 +112,12 @@
         bne ?loop                    ; (always)
 ?act    lda ep_arm
         beq ?loop                    ; still held: one press = one action
+ .if 1
+        stz ep_arm
+ .else
         lda #0
         sta ep_arm
+ .endif
         lda TRIG0
         lsr
         bcc ?sel                     ; fire = select
@@ -108,6 +136,26 @@
         beq ?up
         cmp #KEY_EQUALS              ; ... and its down arrow
         bne ?loop
+ .if 1
+?down   lda ep_sel
+        inc @                        ; (C dies at ?mv's sta: inc, not clc/adc #1)
+        cmp #EPI_N
+        bcc ?mv
+        lda #0
+        beq ?mv                      ; (always) -- m_menu.c wraps both ways
+?up     lda ep_sel
+        bne ?dec
+        lda #EPI_N
+?dec    dec @
+?mv     pha                          ; the cursor moved: erase, then redraw it
+        jsr ep_erase                 ;   where it now is -- the new row waits on
+        pla                          ;   the stack, not in a RAM cell
+        sta ep_sel
+        ldx #SFX_PSTOP               ; m_menu.c:1651 -- the cursor's own sound
+        jsr snd_play
+        jsr ep_skull
+        bra ?loop
+ .else
 ?down   lda ep_sel
         clc
         adc #1
@@ -128,6 +176,7 @@
         jsr snd_play
         jsr ep_skull
         jmp ?loop
+ .endif
 ?back   ldx #SFX_SWTCHX              ; M_ClearMenu, and the panel closing is the
         jsr snd_play                 ;   switch coming back (m_menu.c:1681) --
                                      ;   the same sound and the same "pop ONE
@@ -151,8 +200,16 @@
         jmp pl_restart               ; G_InitNew in game. A TAIL jump: pl_restart
                                      ;   reloads the level THROUGH TEX_STAGE,
                                      ;   i.e. over this very code
+ .if 1
+?boot   rts                          ; ...and at BOOT the loading is menu_boot's,
+                                     ;   whose `jsr mn_open` frame is what this
+                                     ;   returns to (menu.asm ?ng drops mn_run's).
+                                     ;   No return value: load_level_c starts
+                                     ;   with stz/ldx and never reads A
+ .else
 ?boot   lda #0                       ; ...and at BOOT the loading is menu_boot's,
         rts                          ;   whose `jsr mn_open` frame is what this
+ .endif
 .endp                                ;   returns to (menu.asm ?ng drops mn_run's)
 
 ;--------------------------------------------------------------
@@ -172,6 +229,27 @@
         ldx #EPI_TITLEX
         ldy #EPI_TITLEY
         jsr ep_draw
+ .if 1
+        stz ep_it
+?it     lda ep_it
+        asl
+        asl
+        asl
+        asl                          ; i * LINEHEIGHT (16): i <= 2, so the asl's
+        adc #EPI_Y                   ;   shift out 0s (C=0, no clc) and the sum
+        tay                          ;   stays < 256 (ert below): C=0 again
+        lda ep_it
+        adc #EPI_I_ITEM0             ;   ... so this adc needs no clc either
+        ldx #EPI_X
+        jsr ep_draw
+        inc ep_it
+        lda ep_it
+        cmp #EPI_N
+        bcc ?it
+    .if [EPI_N-1]*16 + EPI_Y > 255
+        ert 'ep_paint: i*16 + EPI_Y carries -- put the clc back'
+    .endif
+ .else
         lda #0
         sta ep_it
 ?it     lda ep_it
@@ -191,6 +269,7 @@
         lda ep_it
         cmp #EPI_N
         bcc ?it
+ .endif
         ; fall through -- the cursor goes on last
 .endp
 
@@ -198,12 +277,20 @@
 ; ep_skull -- the blinking cursor at (EPI_SKULLX, EPI_SKULLY + sel*16).
 ;--------------------------------------------------------------
 .proc ep_skull
+ .if 1
+        jsr ep_srow                  ; (C=0 on return: ert in ep_srow)
+        tay
+        lda ep_sk
+        adc #EPI_I_SKULL
+        ldx #EPI_SKULLX
+ .else
         jsr ep_srow
         tay
         lda ep_sk
         clc
         adc #EPI_I_SKULL
         ldx #EPI_SKULLX
+ .endif
         ; fall through
 .endp
 
@@ -235,6 +322,20 @@
 ; ep_srow -- A = the cursor's screen row for the current selection.
 ;--------------------------------------------------------------
 .proc ep_srow
+ .if 1
+        lda ep_sel
+        asl
+        asl
+        asl
+        asl                          ; sel*16: sel <= 2 -> the asl's shift out 0s,
+        adc #EPI_SKULLY              ;   C=0 without a clc; and the sum stays < 256
+                                     ;   (ert below), so C=0 on return as well --
+                                     ;   ep_skull and ep_erase both lean on that
+    .if [EPI_N-1]*16 + EPI_SKULLY > 255
+        ert 'ep_srow: sel*16 + EPI_SKULLY carries -- put the clc back in ep_skull/ep_erase'
+    .endif
+        rts
+ .else
         lda ep_sel
         asl
         asl
@@ -243,6 +344,7 @@
         clc
         adc #EPI_SKULLY
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -254,12 +356,20 @@
 ;   to the DRAW, so the erase has to apply it too.
 ;--------------------------------------------------------------
 .proc ep_erase
+ .if 1
+        jsr ep_srow                  ; ... which leaves C=0 (its adc cannot
+        tax                          ;   carry: ert in ep_srow), and tax/inx/lda
+        inx                          ;   do not touch C -- no clc
+        lda row_lo,x
+        adc #EPI_SKULLX
+ .else
         jsr ep_srow
         tax
         inx
         lda row_lo,x
         clc
         adc #EPI_SKULLX
+ .endif
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
         lda row_hi,x
@@ -267,10 +377,20 @@
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
         adc mn_bgh                   ; ... and neither does + $8000
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+ .if 1
+    .if BLT_COPY != 0
+        ert 'BLT_COPY is not 0: the stz below (and ep_wipe) store the wrong ctrl'
+    .endif
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY = 0, and so are the other
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ;   two: opaque, the destination is
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ;   bank 0 and the source pitch fits
+                                               ;   in one byte
+ .else
         lda #BLT_COPY                ; = 0, and so are the other two: opaque, the
         sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; destination is bank 0 and the
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ; source pitch fits in one byte
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+ .endif
         lda #[MENU_VRAM>>16]         ; = FRAME_B>>16: bank $01 either way
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
         lda #SCREEN_WIDTH            ; the source is a screen-wide picture, so a
@@ -290,6 +410,14 @@
 ;   the source is mn_bgh's picture at the same coordinates, exactly as ep_erase.
 ;--------------------------------------------------------------
 .proc ep_wipe
+ .if 1
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY (= 0: ert in ep_erase)
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+ .else
         lda #0
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
@@ -297,6 +425,7 @@
         sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+ .endif
         lda mn_bgh
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
         lda #[MENU_VRAM>>16]
@@ -307,10 +436,22 @@
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
         lda #SCREEN_WIDTH-1
         sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+ .if 1
+        lda #VIEW_HEIGHT-1           ; rows 0..167 ONLY (dracobug.txt, 2026-09-09):
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT        ;   in game the source is FRAME_B, and
+        jmp hud_blit.hud_fire                  ;   mn_freeze copies just the view into
+.endp                                          ;   it -- its rows 168-199 are whatever
+                                               ;   VRAM held, and this blit put them
+                                               ;   over the SHARED status bar (the
+                                               ;   "kaszka"). The picker never draws
+                                               ;   below row 168, so nothing is lost
+                                               ;   at the title either.
+ .else
         lda #SCREEN_HEIGHT-1
         sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
         jmp hud_blit.hud_fire
 .endp
+ .endif
 
 ;--------------------------------------------------------------
 ; ep_press / ep_vsync / ep_quiet -- menu.asm's mn_press, mn_vsync and mn_quiet,
@@ -319,10 +460,17 @@
 ;   cannot do.
 ;--------------------------------------------------------------
 .proc ep_press
+ .if 1
+        lda STICK0
+        ora #$F0                     ; stick 1 is not ours
+        inc @                        ; $FF = centred -> 0: inc IS the cmp #$FF,
+        bne ?yes                     ;   and A is dead past the branch
+ .else
         lda STICK0
         ora #$F0                     ; stick 1 is not ours
         cmp #$FF                     ; $FF = centred
         bne ?yes
+ .endif
         lda TRIG0
         lsr                          ; bit0 = 0 while fire is held
         bcc ?yes
@@ -364,7 +512,12 @@ ep_sel  dta 0                        ; itemOn
 ep_sk   dta 0                        ; which skull frame
 ep_tic  dta 0                        ; skullAnimCounter
 ep_arm  dta 0                        ; 0 = a key is down and must come up first
+ .if 1
+                                     ; (ep_move: the cursor's new row rides the
+                                     ;  stack across ep_erase now -- see ?mv)
+ .else
 ep_move dta 0
+ .endif
 ep_it   dta 0
 ep_i    dta 0
 ep_x    dta 0

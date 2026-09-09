@@ -136,10 +136,16 @@
 ;     rocket / plasma    P_SpawnPlayerMissile: no spread at all (it autoaims)
 ;--------------------------------------------------------------
 .proc en_gunshot
+ .if 1
+        stz en_hit                   ; en_shoot raises it when the shot CONNECTS
+        stz en_melee                 ;   (wp_fire_a picks punch/sawhit off it)
+        stz pf_mel                   ; a bullet, until ?melee says otherwise
+ .else
         lda #0
         sta en_hit                   ; en_shoot raises it when the shot CONNECTS
         sta en_melee                 ;   (wp_fire_a picks punch/sawhit off it)
         sta pf_mel                   ; a bullet, until ?melee says otherwise
+ .endif
         lda #SCREEN_HALF             ; the aim column: dead centre = an ACCURATE
         sta en_col                   ;   shot; the branches below roll it off
         ldy #SCREEN_HALF-1           ; ...and THE AIM CELL around it. DOOM's trace
@@ -200,8 +206,13 @@
         cmp #10                      ;   frequency on 0..5 the file's header
         bcc ?m1                      ;   already accepts for `and #3`
         sbc #10
-?m1     clc
+?m1
+ .if 1
+	inc
+ .else
+	clc
         adc #1                       ; 1..10
+ .endif
         asl                          ; *2 -> 2..20
         sta en_t
         lda PW_FLAGS                 ; "if (player->powers[pw_strength])
@@ -214,7 +225,11 @@
         clc
         adc en_t
         adc en_t                     ; + 2d = d*10
+ .if 1
+	bra ?mgo
+ .else
         bne ?mgo                     ; (always: the roll is 20..200)
+ .endif
 ?msend  lda en_t
 ?mgo    jsr en_shoot
         jmp pf_shot                  ; blood on what it hit, or the MELEERANGE
@@ -230,8 +245,13 @@
         cmp #3
         bne ?ok
         lda #2                       ; 3 -> 2, the same bias hud.asm accepts
-?ok     clc
+?ok
+ .if 1
+	inc
+ .else
+	clc
         adc #1                       ; 1..3
+ .endif
         sta en_t
         asl
         asl                          ; *4
@@ -247,8 +267,12 @@
 ;   without it a burst of pistol fire makes one long scream. Clobbers A/X.
 ;--------------------------------------------------------------
 .proc en_hurt_snd
+ .if 1
+	stz en_painr
+ .else
         lda #0                       ; the roll ALSO drives MF_JUSTHIT (p_inter.c
         sta en_painr                 ;   :895 sets it in the same if), so ai_hurt
+ .endif
         ldx en_kind                  ;   reads the answer out of here
         beq ?no                      ; 0 = not a monster (a barrel, a decoration)
         lda RANDOM                   ; POKEY LFSR, like the rest of this file
@@ -257,8 +281,9 @@
         inc en_painr                 ; ...but it DID flinch: fight back
         lda mk_pain,x
         bmi ?no                      ; $FF = this type has no sound in the build
-        sta en_snd_q                 ; NOT snd_pending: wp_fire_a stores the
-?no     rts                          ;   gunshot AFTER this runs and would stomp it
+        jsr snd_qm_last              ; NOT snd_pending: wp_fire_a stores the
+?no     rts                          ;   gunshot AFTER this runs and would stomp it.
+                                     ;   STEREO: en_last is the one in pain
 .endp
 
 ; (en_die_snd MOVED to the MKTAB block 2026-08-04: the A_Scream variant roll
@@ -313,9 +338,14 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 ;--------------------------------------------------------------
 .proc en_shoot
         sta en_dmg
+ .if 1
+        stz en_bsc
+        stz en_bsc+1
+ .else
         lda #0                       ; best scale so far = 0 (nothing beats "none")
         sta en_bsc
         sta en_bsc+1
+ .endif
         lda #$FF
         sta en_best
         lda #<TH_HPL                 ; set up ONCE: the loop probes health through
@@ -336,6 +366,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
         bcc ?nx
 ?xok    jsr en_seen                  ; and is it actually VISIBLE in that column?
         beq ?nx                      ;   (a ledge lip, a closing door -- en_seen)
+
         ldy vs_th,x                  ; SHOOTABLE at all? p_map.c:867 -- DOOM's
         lda [zp_ptr],y               ;   traverse callback returns TRUE (= keep
         sta en_t                     ;   going) for a non-shootable thing, so a
@@ -344,6 +375,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
         dec zp_ptr+1                 ;   after the pick is the whole fix: picking
         ora en_t                     ;   the nearest and then bailing made anything
         beq ?nx                      ;   behind a prop unkillable.
+
         lda vs_sch,x                 ; nearer than the best so far? (scale falls
         cmp en_bsc+1                 ;   with Z, so bigger scale = nearer)
         bcc ?nx
@@ -398,25 +430,42 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
         sta [zp_ptr],y
         ora en_t+1
         beq ?dead
+ .if 1
+	phy
+ .else
         tya                          ; survived: it yells, if the pain roll says so
         pha
+ .endif
         jsr en_hurt_snd
+ .if 1
+	ply
+ .else
         pla
         tay
+ .endif
         jsr en_thrust_plr            ; ...and takes P_DamageMobj's kick, away
         ldy en_last                  ;   from the player (en_thrust wants Y for
                                      ;   itself, en_last is the same thing)
         jmp ai_hurt                  ; p_inter.c:902 "we're awake now": clear its
                                      ;   reactiontime, and MF_JUSTHIT if it flinched
-?dead   tya                          ; P_KillMobj: the death cry, then the death
+?dead
+ .if 1
+	phy
+ .else
+	tya                          ; P_KillMobj: the death cry, then the death
         pha                          ;   CHAIN -- en_kill parks the thing on its
+ .endif
         jsr en_thrust_plr            ;   first DIE frame and en_tick walks it.
                                      ;   The KICK first, though: p_inter.c:806
                                      ;   runs it before the health test, so a
                                      ;   corpse slides (en_slide, enemy_ai.asm)
         jsr en_die_snd
+ .if 1
+	ply
+ .else
         pla                          ;   (en_die_snd clobbers X, hence the stack.
         tay                          ;   A kind with no chain still just vanishes:
+ .endif
         jmp en_kill                  ;   en_kill tail-calls thing_kill for that.)
 ?out    rts
 .endp
@@ -439,8 +488,12 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 .proc en_rocket
         lda RANDOM                   ; ((P_Random()&7)+1) * 20
         and #7
+ .if 1
+ 	inc
+ .else
         clc
         adc #1
+ .endif
         asl
         asl                          ; n*4
         sta en_t+1
@@ -542,6 +595,25 @@ SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
 
 .proc sh_trace
         sta sh_n
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_px
+	sta USE_PT_A
+        lda zp_py
+        sta USE_PT_A+2
+	lda sh_n
+	and #$00ff
+	asl
+	asl
+	asl
+	asl
+	asl
+	sta sh_hi
+	sta sh_d
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_px                    ; USE_PT_A = the real player position: the
         sta USE_PT_A                 ;   BSP descent below reads zp_px/zp_py, so
         lda zp_px+1                  ;   the walk borrows them and ?done puts
@@ -550,28 +622,50 @@ SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
         sta USE_PT_A+2
         lda zp_py+1
         sta USE_PT_A+3
+
         lda sh_n                     ; sh_hi = the full ray = n * SH_STEP
         sta sh_hi
+  .if 1
+        stz sh_hi+1
+  .else
         lda #0
         sta sh_hi+1
+  .endif
         ldx #5
 ?x32    asl sh_hi
         rol sh_hi+1
         dex
         bne ?x32
+
         lda sh_hi
         sta sh_d
         lda sh_hi+1
         sta sh_d+1
+ .endif
         jsr sh_setb                  ; USE_PT_B = the ray end (a loop constant)
         lda #$FF
         sta USE_SS                   ; no leaf tested yet ($FFFF is not a leaf id)
         sta USE_SS+1
+ .if 1
+        stz sh_d                     ; sample 0 = the player's own subsector
+        stz sh_d+1
+ .else
         lda #0
         sta sh_d                     ; sample 0 = the player's own subsector
         sta sh_d+1
+ .endif
 ?loop   jsr sh_dist                  ; zp_px/zp_py = A + sh_d*(cos,sin)
         jsr use_locate               ; zp_nid = the leaf there
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_nid
+	cmp USE_SS
+	beq ?step
+	sta USE_SS
+	sep #$20
+	.LONGA OFF
+ .else
         lda zp_nid
         cmp USE_SS
         bne ?test
@@ -582,16 +676,30 @@ SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
         sta USE_SS
         lda zp_nid+1
         sta USE_SS+1
+ .endif
         jsr sh_leaf                  ; C=1: a crossed seg stops a bullet
         bcs ?found
-?step   clc
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+?step	lda sh_d
+	adc #SH_STEP-1
+	sta sh_d
+	sep #$20
+	.LONGA OFF
+ .else
+?step	clc
         lda sh_d
         adc #SH_STEP
         sta sh_d
         bcc ?nc
         inc sh_d+1
-?nc     dec sh_n
+?nc
+ .endif
+	dec sh_n
         bne ?loop
+
         lda sh_hi                    ; nothing in reach: the ray END is the point
         sta sh_d                     ;   (out of blast range by construction)
         lda sh_hi+1
@@ -617,9 +725,25 @@ rkw2_resume = *
         pha
         lda #$FF
         sta en_k2                    ; no exploding THING: the sweep skips nobody
+ .if 1
+	rep #$20
+	.LONGA ON
+        stz en_lp                    ; and no LOS grid
+        sec                          ; --- the player (PIT_RadiusAttack verbatim)
+        lda en_bx
+        sbc zp_px
+        sta m_a
+        sec
+        lda en_by
+        sbc zp_py
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         lda #0
         sta en_lp                    ; and no LOS grid
         sta en_lp+1
+
         sec                          ; --- the player (PIT_RadiusAttack verbatim)
         lda en_bx
         sbc zp_px
@@ -627,6 +751,7 @@ rkw2_resume = *
         lda en_bx+1
         sbc zp_px+1
         sta m_a+1
+
         sec
         lda en_by
         sbc zp_py
@@ -634,6 +759,7 @@ rkw2_resume = *
         lda en_by+1
         sbc zp_py+1
         sta m_b+1
+ .endif
         jsr en_dist
         bcc ?things
         jsr en_plr_hurt
@@ -717,6 +843,20 @@ enanim_resume = *
 ;--------------------------------------------------------------
 .proc en_row
         lda en_k2+1
+ .if 1
+	dec
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+	adc #DTAB_ROWS
+	sta zp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         sec
         sbc #1
         sta zp_ptr
@@ -735,6 +875,7 @@ enanim_resume = *
         lda zp_ptr+1
         adc #>DTAB_ROWS
         sta zp_ptr+1
+ .endif
         rts
 .endp
 
@@ -771,8 +912,12 @@ enanim_resume = *
         lda [zp_ptr],y
         cmp #$FF
         beq ?none
+ .if 1
+	inc
+ .else
         clc
         adc #1
+ .endif
         sta en_k2+1
         jsr en_row
         ldy #7
@@ -992,6 +1137,62 @@ bdat_resume = *
 entick_resume = *
         org ENTICK_BASE
 .proc en_tick
+ .if 1
+        ; 2026-09-09 (drac030 style): TH_STATE read as WORDS, two things per
+        ; [zp_ptr],y -- see ai_tick (enemy_ai.asm) for the shape and the
+        ; alignment argument. Same order of side effects as the byte loop.
+    .if [TH_STATE & $FF] != 0
+        ert 'en_tick: TH_STATE must be page-aligned for the word sweep'
+    .endif
+        stz zp_ptr
+        lda #>TH_STATE
+        sta zp_ptr+1
+        ldy #0
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
+?lp     lda [zp_ptr],y
+        bne ?hit
+?next   iny
+        iny
+        bne ?lp
+        sep #$20
+        .LONGA OFF
+        jmp an_tick                  ; the idle rings ride the SAME DOOM tic
+                                     ;   (sprites.asm). Chained, not a second jsr
+                                     ;   in wp_think: that block is full
+?hit    sep #$20                     ; one of the pair is dying: which?
+        .LONGA OFF
+        lda [zp_ptr],y               ; the even one
+        beq ?odd
+        jsr ?one
+?odd    iny
+        lda [zp_ptr],y               ; the odd one (?one puts TH_STATE back)
+        beq ?cont
+        jsr ?one
+?cont   iny                          ; Z = Y wrapped: the sweep is over
+        rep #$20
+        .LONGA ON
+        bne ?lp
+        sep #$20
+        .LONGA OFF
+        jmp an_tick
+?one    sta en_k2+1                  ; ---- thing Y is dying: A = its row+1
+        lda #>TH_TICS
+        sta zp_ptr+1
+        lda [zp_ptr],y
+        cmp #$FF
+        beq ?back                    ; the corpse: nothing left to do
+        dec @
+        sta [zp_ptr],y
+        bne ?back
+        sty en_k2                    ; the row is over -> next frame
+        jsr en_adv
+        ldy en_k2
+        stz zp_ptr                   ; en_adv walked pages of its own
+?back   lda #>TH_STATE
+        sta zp_ptr+1
+        rts
+ .else
         lda #<TH_STATE               ; the live path is trimmed like ai_tick's:
         sta zp_ptr                   ;   one read and the loop step, no page
         lda #>TH_STATE               ;   reload until something is dying
@@ -1010,8 +1211,12 @@ entick_resume = *
         lda [zp_ptr],y
         cmp #$FF
         beq ?back                    ; the corpse: nothing left to do
+ .if 1
+ 	dec
+ .else
         sec
         sbc #1
+ .endif
         sta [zp_ptr],y
         bne ?back
         sty en_k2                    ; the row is over -> next frame
@@ -1022,6 +1227,7 @@ entick_resume = *
 ?back   lda #>TH_STATE
         sta zp_ptr+1
         jmp ?next
+ .endif
 .endp
     .if * > ENTICK_END+1
         ert 'en_tick outgrew ENTICK_BASE..END (memory_map.inc)'
@@ -1051,6 +1257,17 @@ entick_resume = *
         lda en_kind
         pha
         jsr en_thing                 ; sp_ptr = the exploding thing's record
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda (sp_ptr)
+	sta en_bx
+	ldy #2
+	lda (sp_ptr),y
+	sta en_by
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0                       ; remember where the blast went off
         lda (sp_ptr),y
         sta en_bx
@@ -1063,8 +1280,24 @@ entick_resume = *
         iny
         lda (sp_ptr),y
         sta en_by+1
+ .endif
         jsr en_lfind                 ; this barrel's sight grid -> en_lp (en_dist
                                      ;   reads it for the player AND the sweep)
+ .if 1
+	rep #$20
+	.LONGA ON
+        sec                          ; --- the player
+        lda en_bx
+        sbc zp_px
+        sta m_a
+
+        sec
+        lda en_by
+        sbc zp_py
+        sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         sec                          ; --- the player
         lda en_bx
         sbc zp_px
@@ -1072,6 +1305,7 @@ entick_resume = *
         lda en_bx+1
         sbc zp_px+1
         sta m_a+1
+
         sec
         lda en_by
         sbc zp_py
@@ -1079,6 +1313,7 @@ entick_resume = *
         lda en_by+1
         sbc zp_py+1
         sta m_b+1
+ .endif
         jsr en_dist
         bcc ?things
         jsr en_plr_hurt
@@ -1157,8 +1392,12 @@ ensolid_resume = *
         ;     and nothing else. The sweep used to read the RECORD of all 255
         ;     things (34k cycles, paid by every walking monster per step).
 ?things jsr blk_tgt                  ; which cell is the target in?
+ .if 1
+        stz sol_n
+ .else
         lda #0
         sta sol_n
+ .endif
 ?cell   ldx sol_n
         lda sol_cx
         clc
@@ -1199,6 +1438,17 @@ ensolid_resume = *
         jsr ?bdist
         lda sol_i
         jsr en_thing.en_th2          ; sp_ptr = its record (x @ +0, y @ +2)
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda (sp_ptr)
+	sta sol_ox
+	ldy #2
+        lda (sp_ptr),y
+        sta sol_oy
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         lda (sp_ptr),y
         sta sol_ox
@@ -1211,14 +1461,21 @@ ensolid_resume = *
         iny
         lda (sp_ptr),y
         sta sol_oy+1
+ .endif
+
         jsr ?hit
+ .if 1
+	jne ?yes
+ .else
         beq ?nitem
         jmp ?yes
+ .endif
 ?nitem  ldy sol_i                    ; ...next thing in the same cell
         lda #>TH_BNEXT
         sta zp_ptr+1
         lda [zp_ptr],y
         jmp ?item
+
 ?ncell  inc sol_n
         lda sol_n
         cmp #9
@@ -1245,12 +1502,19 @@ ensolid_resume = *
         sbc coll_cx+1
         sta m_a+1
         jsr ?absa
+
+ .if 1
+        lda m_a
+        cmp sol_bd
+ .else
         sec                          ; |dx| >= blockdist -> DOOM's early "no hit"
         lda m_a
         sbc sol_bd
+ .endif
         lda m_a+1
         sbc sol_bd+1
         bcs ?miss
+
         sec
         lda sol_oy
         sbc coll_cy
@@ -1258,10 +1522,16 @@ ensolid_resume = *
         lda sol_oy+1
         sbc coll_cy+1
         sta m_a+1
+
         jsr ?absa
+ .if 1
+        lda m_a
+        cmp sol_bd
+ .else
         sec
         lda m_a
         sbc sol_bd
+ .endif
         lda m_a+1
         sbc sol_bd+1
         bcs ?miss
@@ -1271,7 +1541,11 @@ ensolid_resume = *
         rts
 ?absa   lda m_a+1                    ; m_a = |m_a|
         bpl ?ap
+ .if 1
+	jmp m_neg
+ .else
         jsr m_neg
+ .endif
 ?ap     rts
 ;   X = thing index -> A/Z = its THING_ALIVE bit (thing_kill clears it)
 ?alive  txa
@@ -1306,6 +1580,17 @@ radf_resume = *
 ;   by tools/pack_things.py _check_radius_rule.
 ;--------------------------------------------------------------
 .proc en_radfill
+ .if 1
+	rep #$20
+	.LONGA ON
+        lda th_things
+        sta sp_ptr
+        lda #TH_RAD
+        sta zp_ptr
+	sep #$20
+	.LONGA OFF
+	stz sol_i
+ .else
         lda th_things
         sta sp_ptr
         lda th_things+1
@@ -1316,6 +1601,7 @@ radf_resume = *
         sta zp_ptr+1
         lda #0
         sta sol_i
+ .endif
 ?l      lda sol_i
         cmp THINGS_BASE
         bcs ?done
@@ -1347,8 +1633,13 @@ radf_resume = *
 .proc rad_of
         ldy #7                       ; record +7 = flags
         lda (sp_ptr),y
+ .if 1
+	lsr
+	bcs ?zero
+ .else
         and #1
         bne ?zero                    ; a pickup: walk through it
+ .endif
         ldy #6                       ; record +6 = sprite id
         lda (sp_ptr),y
         jsr en_kind_of               ; en_kind = 0 for anything not a monster
@@ -1386,7 +1677,22 @@ blk_oy  dta $FF,$FF,$FF,0,0,0,1,1,1
 
 .proc en_thing
         lda en_k2
-en_th2  sta m_prod
+en_th2
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+;	clc
+        sta m_prod		;not sure if necessary
+        adc th_things
+        sta sp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
+	sta m_prod
         lda #0
         sta m_prod+1
         asl m_prod
@@ -1402,6 +1708,7 @@ en_th2  sta m_prod
         lda m_prod+1
         adc th_things+1
         sta sp_ptr+1
+ .endif
         rts
 .endp
     .if * > ENTHING_END+1
@@ -1521,6 +1828,30 @@ enray_resume = *
         lda en_lp
         ora en_lp+1
         bne ?ok                      ; a barrel: en_los has already answered
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda zp_px
+	sta sg_pl
+	lda zp_px+2
+	sta sg_pl+2
+
+	lda (sp_ptr)
+	sta USE_PT_B
+	ldy #2
+	lda (sp_ptr),y
+	sta USE_PT_B+2
+
+	lda en_bx
+	sta USE_PT_A
+	lda en_bx+2
+	sta USE_PT_A+2
+
+	lda #$ffff
+	sta USE_SS
+	sep #$20
+	.LONGA OFF
+ .else
         ldx #3                       ; the player, parked for sg_bsp's restore --
 ?pl     lda zp_px,x                  ;   it BORROWS zp_px/zp_py for the walk's
         sta sg_pl,x                  ;   sample point and puts sg_pl back after
@@ -1539,6 +1870,7 @@ enray_resume = *
         lda #$FF                     ; no leaf tested yet ($FFFF is not a leaf
         sta USE_SS                   ;   id), as ai_sight primes it
         sta USE_SS+1
+ .endif
         stz sg_zon                   ; a FLAT walk, no sill test: sg_set resolves
                                      ;   a z only for a PLAYER target and a blast
                                      ;   has no eye, so this takes the same flat
@@ -1623,6 +1955,20 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ; d is in -143..143 for anything the blast can reach, so the result is 0..18.
 ?cell   sta en_lt
         stx en_lt+1
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+	lda #LOS_BIAS
+	sbc en_lt
+	lsr
+	lsr
+	lsr
+	lsr
+	sta en_lt
+	sep #$20
+	.LONGA OFF
+ .else
         sec
         lda #LOS_BIAS
         sbc en_lt
@@ -1636,6 +1982,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         dex
         bne ?sh
         lda en_lt
+ .endif
         rts
 .endp
     .if * > ENLOS_END+1
@@ -1668,9 +2015,14 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         inc zp_ptr+1
 ?nc     dex
         bne ?rec
+ .if 1
+        stz en_lp
+        stz en_lp+1
+ .else
         lda #0
         sta en_lp
         sta en_lp+1
+ .endif
         rts
 ?found  lda zp_ptr
         sta en_lp
@@ -1693,14 +2045,27 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 .proc en_bthings
         lda en_k2
         sta en_bself                 ; en_kind_of below reuses en_k2 as scratch
+ .if 1
+        stz en_bi
+ .else
         lda #0
         sta en_bi
-?lp     lda en_bi
+ .endif
+?lp
+ .if 1
+	ldy en_bi
+	cpy THINGS_BASE
+	bcs ?done
+	cpy en_bself
+	beq ?next
+ .else
+	lda en_bi
         cmp THINGS_BASE              ; thing count
         bcs ?done
         cmp en_bself
         beq ?next
         ldy en_bi
+ .endif
         lda #<TH_HPL
         sta zp_ptr
         lda #>TH_HPL
@@ -1712,12 +2077,31 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         lda [zp_ptr],y
         ora m_a
         beq ?next                    ; 0 health: a decoration, or already dead
+
         lda #>TH_STATE
         sta zp_ptr+1
         lda [zp_ptr],y
         bne ?next                    ; already dying -- do not restart its chain
+
         lda en_bi
         jsr en_thing.en_th2
+
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+	lda en_bx
+	sbc (sp_ptr)
+	sta m_a
+
+	ldy #2
+	sec
+	lda en_by
+	sbc (sp_ptr),y
+	sta m_b
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         sec
         lda en_bx
@@ -1727,6 +2111,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         lda en_bx+1
         sbc (sp_ptr),y
         sta m_a+1
+
         ldy #2
         sec
         lda en_by
@@ -1736,6 +2121,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         lda en_by+1
         sbc (sp_ptr),y
         sta m_b+1
+ .endif
         jsr en_bdist                 ; PIT_RadiusAttack's boss exemption, its
         bcc ?next                    ;   range test AND its P_CheckSight, all
         jsr en_bhit                  ;   three behind the same three bytes the
@@ -1755,6 +2141,13 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;--------------------------------------------------------------
 .proc en_bhit
         sta m_prod
+ .if 1
+        ldy en_bi
+        sty en_last                  ; STEREO: en_die_snd/en_gibq pan the voice
+                                     ;   from en_last, and a blast kill comes
+                                     ;   through here, not en_shoot
+ .endif
+
         ldy en_bi
         lda #<TH_HPL
         sta zp_ptr
@@ -1836,9 +2229,14 @@ engib_resume = *
         lda #0
         sbc en_t+1
         sta en_ovk+1
+ .if 1
+        stz en_t
+        stz en_t+1
+ .else
         lda #0                       ; ...and only now clamp (DOOM's <= 0 test)
         sta en_t
         sta en_t+1
+ .endif
 ?out    rts
 .endp
     .if * > OVKILL_END+1
@@ -1874,8 +2272,12 @@ engib_resume = *
 ;   it -- and `ldy en_kind` now serves the mk_hp compare AND the chain lookup.
 ;--------------------------------------------------------------
 .proc en_gibq
+ .if 1
+        stz en_gib
+ .else
         lda #0
         sta en_gib
+ .endif
         ldy en_kind                  ; Y survives to the chain lookup below
         lda #>XTAB_EXT               ; == >DTAB_EXT: only the LOW byte tells the
         sta zp_ptr+1                 ;   two chain headers apart
@@ -1892,7 +2294,7 @@ engib_resume = *
         beq ?no                      ; no S_x_XDIE in info.c -> ordinary death
         inc en_gib
         lda #SFX_SLOP                ; A_XScream, not A_Scream (p_enemy.c:1572)
-        sta en_snd_q
+        jsr snd_qm_last              ;   (STEREO: from en_last, see sound.asm)
         rts                          ; zp_ptr already on XTAB_EXT
 ?no     lda #<DTAB_EXT               ; the ordinary chain, and en_kill reads
         sta zp_ptr                   ;   zp_ptr straight out of here
@@ -1960,18 +2362,27 @@ engib_resume = *
 .proc spr_dyn
         stx sp_dsx
         tax
+ .if 1
+        pei (zp_ptr)
+	stz sp_dflip
+ .else
         lda zp_ptr
         pha
         lda zp_ptr+1
         pha
         lda #0                       ; default: no mirrored view (spr_wrot sets
         sta sp_dflip                 ;   it; the death path must not inherit one)
+ .endif
         lda #<TH_STATE
         sta zp_ptr
         lda #>TH_STATE
         sta zp_ptr+1
+ .if 1
+	txy
+ .else
         txa
         tay
+ .endif
         lda [zp_ptr],y
         bne ?row                     ; dying: TH_STATE is the death row+1
         lda #>TH_WROW                ; not dying -- is it CHASING? TH_WROW is the
@@ -1985,16 +2396,39 @@ engib_resume = *
                                      ;   DOOM's attack frames rotate too)
 ?row    sta en_k2+1
         jsr en_row                   ; zp_ptr -> DTAB_ROWS + row*8
+ .if 1
+	rep #$20
+	.LONGA ON
+	ldy #8-2		;can't fully unroll, doesn't fit in the assigned RAM block
+?cp	lda [zp_ptr],y
+	sta sp_drow,y
+	dey
+	dey
+	bpl ?cp
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #7
 ?cp     lda [zp_ptr],y
         sta sp_drow,y
         dey
         bpl ?cp
+ .endif
         jsr wrot_left                ; a mirrored view anchors from its other
                                      ;   edge (r_things.c: tx -= width - offset)
                                      ; (the frame id in the copied row's byte 0
                                      ;   is all spr_one's spr_fget needs -- the
                                      ;   T4-era directory hook died with B1)
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda #sp_drow
+	sta sp_tab
+	pla
+	sta zp_ptr
+	sep #$20
+	.LONGA OFF
+ .else
         lda #<sp_drow
         sta sp_tab
         lda #>sp_drow
@@ -2003,15 +2437,24 @@ engib_resume = *
         sta zp_ptr+1
         pla
         sta zp_ptr
+ .endif
+
         ldx sp_dsx
         sec
         rts
 ?live   jsr wrot_idle                ; an IDLE monster faces its SPAWN angle
         bcs ?row                     ;   (walk image 0's rotation group)
+ .if 1
+        pla
+        sta zp_ptr
+        pla
+        sta zp_ptr+1
+ .else
         pla
         sta zp_ptr+1
         pla
         sta zp_ptr
+ .endif
         ldx sp_dsx
         clc
         rts
@@ -2110,6 +2553,21 @@ swr_vy  dta a(0)
 ;   2026-08-03: moved out of the packed ENINIT block, next to its new caller.
 ;--------------------------------------------------------------
 .proc en_kind_of
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+	sta en_k2
+;	clc
+;	lda en_k2
+        adc th_sprtab
+        sta sp_tab
+	sep #$20
+	.LONGA OFF
+ .else
         sta en_k2                    ; id*8 = the sprtab row offset
         lda #0
         sta en_k2+1
@@ -2125,6 +2583,7 @@ swr_vy  dta a(0)
         lda en_k2+1
         adc th_sprtab+1
         sta sp_tab+1
+ .endif
         ldy #7
         lda (sp_tab),y
         sta en_kind
@@ -2152,6 +2611,22 @@ swr_vy  dta a(0)
                                      ;   it for the melee/newdir tests already)
         lda ai_t
         jsr en_thing.en_th2          ; sp_ptr = MY record
+ .if 1
+	rep #$20
+	.LONGA ON
+	sec
+	lda ai_tx
+	sbc (sp_ptr)
+	sta swr_vx
+
+	ldy #2
+	sec
+	lda ai_ty
+	sbc (sp_ptr),y
+	sta swr_vy
+	sep #$20
+	.LONGA OFF
+ .else
         ldy #0
         sec
         lda ai_tx                    ; vector = target - me
@@ -2162,6 +2637,7 @@ swr_vy  dta a(0)
         sbc (sp_ptr),y
         sta swr_vx+1
         iny
+
         sec
         lda ai_ty
         sbc (sp_ptr),y
@@ -2170,6 +2646,7 @@ swr_vy  dta a(0)
         lda ai_ty+1
         sbc (sp_ptr),y
         sta swr_vy+1
+ .endif
         jmp oct_of                   ; -> A = the octant, 0..7
 .endp
 ; DOOM rot (0 = facing the viewer) -> stored slot (bits 0-1) + mirror (bit 7).
@@ -2207,13 +2684,21 @@ swr_t    dta a(0)
         sta zp_ptr
         lda #>WTAB_N
         sta zp_ptr+1
+ .if 1
+        lda [zp_ptr]
+ .else
         ldy #0
         lda [zp_ptr],y
+ .endif
         bne ?nst
         lda #1
 ?nst    sta wrot_nst
+ .if 1
+	stz zp_ptr
+ .else
         lda #0                       ; zp_ptr low byte back to the page pattern
         sta zp_ptr                   ;   every other bank-$01 reader assumes
+ .endif
         rts
 .endp
 
@@ -2272,12 +2757,20 @@ swr_t    dta a(0)
         lda #>WTAB_EXT
         sta zp_ptr+1
         lda [zp_ptr],y
+ .if 1
+	stz zp_ptr
+ .else
         ldy #0                       ; zp_ptr low byte back to the page pattern
         sty zp_ptr                   ;   BEFORE spr_wrot reads TH_MODE/TH_DIR
+ .endif
         cmp #$FF
         beq ?flat
+ .if 1
+	inc
+ .else
         clc
         adc #1                       ; row+1, like TH_WROW carries it
+ .endif
         ldy swr_y2
         jsr spr_wrot                 ; idle: TH_MODE bit0 clear, TH_DIR = spawn
         sec                          ;   octant -> the facing-correct slot
@@ -2316,7 +2809,22 @@ swr_t    dta a(0)
         lda [zp_ptr],y
         ora en_t
         beq ?zero
+
         lda en_k2                    ; th_sprtab + sid*8 + 7 = the kind byte
+ .if 1
+	rep #$20
+	.LONGA ON
+	and #$00ff
+	asl
+	asl
+	asl
+	sta en_t
+;	clc
+	adc th_sprtab
+	sta sp_tab
+	sep #$20
+	.LONGA OFF
+ .else
         sta en_t                     ;   (shared with the bonus id, but hp>0
         lda #0                       ;   says which reading is the true one)
         sta en_t+1
@@ -2333,6 +2841,7 @@ swr_t    dta a(0)
         lda en_t+1
         adc th_sprtab+1
         sta sp_tab+1
+ .endif
         ldy #7
         lda (sp_tab),y
         bne ?put

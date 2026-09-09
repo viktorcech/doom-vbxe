@@ -42,6 +42,55 @@
 ;   Clobbers A/X/Y, the AI's step scratch and m_a/m_b/m_prod.
 ;--------------------------------------------------------------
 .proc en_thrust
+ .if 1
+        sty ai_t
+        sta m_a                      ; damage, 16 bit for umul16
+        stz m_a+1
+        stz m_b+1
+        lda #<TH_KIND                ; the mass rides in the kind (mk_thr)
+        sta zp_ptr
+        lda #>TH_KIND
+        sta zp_ptr+1
+        lda [zp_ptr],y
+        beq ?out                     ; no kind -> no mass -> no kick
+        tax
+        lda mk_thr,x                 ; units of slide per damage point, Q4
+        sta m_b
+        jsr umul16
+        rep #$20                     ; ---- 16-bit A: -> whole units, rounded (the
+        .LONGA ON                    ;   last bit out is the half: adc #0 adds it)
+        lda m_prod
+        lsr @
+        lsr @
+        lsr @
+        lsr @
+        adc #0
+        sta thr_d
+        beq ?out16                   ; under a unit: not worth a P_TryMove
+        sep #$20
+        .LONGA OFF
+        lda ai_t                     ; the vector victim - inflictor, as two
+        jsr en_thing.en_th2          ;   words (the record's x,y at +0/+2, and
+        rep #$20                     ;   thr_x/thr_y adjacent -- the ert below)
+        .LONGA ON
+        sec
+        lda (sp_ptr)
+        sbc thr_x
+        sta swr_vx
+        ldy #2
+        sec
+        lda (sp_ptr),y
+        sbc thr_y
+        sta swr_vx+2
+        sep #$20
+        .LONGA OFF
+        jsr oct_of                   ; A = the octant to shove along
+        tax
+        jmp thr_tail                 ; alive -> spend it now, dead -> en_slide
+?out16  sep #$20
+        .LONGA OFF
+?out    rts
+ .else
         sty ai_t
         sta m_a                      ; damage, 16 bit for umul16
         lda #0
@@ -93,6 +142,7 @@
         tax
         jmp thr_tail                 ; alive -> spend it now, dead -> en_slide
 ?out    rts
+ .endif
 .endp
 
 ; thr_step lives in the SLIDE block with its other caller -- this one is full
@@ -114,6 +164,43 @@
 ;   P_TryMove takes. Clobbers A and m_a.
 ;--------------------------------------------------------------
 .proc thr_comp
+ .if 1
+        sta thr_s
+        and #$03
+        beq ?zero
+        cmp #2
+        beq ?q3
+        rep #$20                     ; the whole slide, one word
+        .LONGA ON
+        lda thr_d
+        sta ai_sx,y
+        bra ?sign
+?q3     rep #$20                     ; three quarters = half + quarter, in A
+        .LONGA ON
+        lda thr_d
+        lsr @
+        sta ai_sx,y                  ; d/2
+        lsr @                        ; d/4
+        clc
+        adc ai_sx,y
+        sta ai_sx,y
+?sign   sep #$20
+        .LONGA OFF
+        lda thr_s
+        bpl ?done
+        rep #$20                     ; away from the inflictor, not towards it
+        .LONGA ON
+        sec
+        lda #0
+        sbc ai_sx,y
+        sta ai_sx,y
+        sep #$20
+        .LONGA OFF
+?done   rts
+?zero   sta ai_sx,y                  ; A = 0 here
+        sta ai_sx+1,y
+        rts
+ .else
         sta thr_s
         and #$03
         beq ?zero
@@ -155,6 +242,7 @@
 ?zero   sta ai_sx,y                  ; A = 0 here
         sta ai_sx+1,y
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -192,6 +280,19 @@ thrc_resume = *
 ;   what tells a step from a corpse's slide.
 ;--------------------------------------------------------------
 .proc en_thrust_bl
+ .if 1
+        rep #$20
+        .LONGA ON
+        lda en_bx
+        sta thr_x
+        lda en_by
+        sta thr_y
+        sep #$20
+        .LONGA OFF
+        ldy en_bi
+        lda m_prod                   ; en_bhit parked the damage here
+        jmp en_thrust
+ .else
         lda en_bx
         sta thr_x
         lda en_bx+1
@@ -203,6 +304,7 @@ thrc_resume = *
         ldy en_bi
         lda m_prod                   ; en_bhit parked the damage here
         jmp en_thrust
+ .endif
 .endp
     .if * > THRBL_END+1
         ert 'en_thrust_bl outgrew THRBL_BASE..THRBL_END (memory_map.inc)'
@@ -215,6 +317,18 @@ thrc_resume = *
 ;   bullet just failed to kill, en_dmg = what it took off.
 ;--------------------------------------------------------------
 .proc en_thrust_plr
+ .if 1
+        rep #$20
+        .LONGA ON
+        lda zp_px
+        sta thr_x
+        lda zp_py
+        sta thr_y
+        sep #$20
+        .LONGA OFF
+        lda en_dmg
+        jmp en_thrust
+ .else
         lda zp_px
         sta thr_x
         lda zp_px+1
@@ -225,6 +339,7 @@ thrc_resume = *
         sta thr_y+1
         lda en_dmg
         jmp en_thrust
+ .endif
 .endp
 ; The octant (oct_of: 0 = east, counting counter-clockwise) -> how much of the
 ; slide goes on each axis: 0 = none, 1 = all of it, 2 = three quarters (the
@@ -305,12 +420,26 @@ thrdat_resume = *
 ;   step scratch -- it runs beside en_tick, which owns none of that.
 ;--------------------------------------------------------------
 .proc en_slide
+ .if 1
+        ldy sl_th
+        iny                          ; $FF = nothing sliding -> 0. NOT `bmi`: a
+        beq ?out                     ;   thing index runs to 253, so bit 7 is
+        dey                          ;   just "thing 128 or later" (pj_hit)
+        sty ai_t
+ .else
         ldy sl_th
         bmi ?out                     ; nothing sliding
+        sty ai_t
+ .endif
+ .if 1
+        stz thr_d+1
+        lda sl_d                     ; thr_d = an eighth of what is left
+ .else
         sty ai_t
         lda #0
         sta thr_d+1
         lda sl_d                     ; thr_d = an eighth of what is left
+ .endif
         lsr
         lsr
         lsr
