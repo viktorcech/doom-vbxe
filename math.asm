@@ -1,5 +1,5 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 3525 B free, biggest contiguous block 173 B.
+; RAM BUDGET: 3563 B free, biggest contiguous block 173 B.
 ;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
 ;   Print it any time with:  python tools/ram_map.py
 ;
@@ -740,6 +740,18 @@ bft_resume = *
 udiv_resume = *
         org FASTDIV_BASE
 .proc udiv24
+ .if 1
+	rep #$20
+	.LONGA ON
+	lda m_prod+1
+	cmp m_den
+	bcc ?pre16
+
+	lda m_prod+2
+	and #$00ff
+	cmp m_den
+	bcs ?full
+ .else
         lda m_prod+2                 ; top 16 bits of the dividend vs den
         cmp m_den+1
         bcc ?pre16
@@ -752,22 +764,24 @@ udiv_resume = *
         lda m_prod+2
         cmp m_den
         bcs ?full                    ; ... and den = 0 falls here, as before
-?pre8
- .if 1
-	rep #$20
-	.LONGA ON
-	lda m_prod+2		;put m_rem into accumulator
-	and #$00ff
- .else
-	lda m_prod+2                 ; ---- 16 steps: remainder = the top byte ----
-        sta m_rem
-  .if 1
-	stz m_rem+1
-  .else
-        lda #0
-        sta m_rem+1
-  .endif
  .endif
+?pre8
+;  .if 1
+;	rep #$20
+;	.LONGA ON
+;	lda m_prod+2		;put m_rem into accumulator
+;	and #$00ff
+; .else
+;	lda m_prod+2                 ; ---- 16 steps: remainder = the top byte ----
+;        sta m_rem
+;   .if 1
+;	stz m_rem+1
+;   .else
+;        lda #0
+;        sta m_rem+1
+;   .endif
+;  .endif
+
         ; ---- 65816 NATIVE, 16-BIT ACCUMULATOR (2026-08-11 pm) ---------------
         ; This is the path tw_setup takes on EVERY column, so it is where the
         ; port's first 16-bit block goes. Each step was four 8-bit shifts + a
@@ -807,6 +821,7 @@ udiv_resume = *
 	inc m_prod
 ?s16	dex
 	bne ?l16
+
 	sta m_rem
 	lda m_prod
 	sta m_quot
@@ -833,9 +848,9 @@ udiv_resume = *
 
 ?pre16
  .if 1
-	rep #$20
+;	rep #$20
 	.LONGA ON
-	lda m_prod+1
+;	lda m_prod+1
 	pha
 	lda m_prod
 	and #$00ff
@@ -894,6 +909,34 @@ udiv_resume = *
         rts
 
 ?full
+ .if 1
+	.LONGA ON
+	lda m_prod+1
+	sta m_prod+2
+	lda m_prod
+	and #$00ff
+	xba
+	sta m_prod
+
+	lda #$0000
+	ldx #24
+?l24	asl m_prod
+	rol m_prod+2
+	rol
+	cmp m_den
+	bcc ?s24
+	sbc m_den
+	inc m_prod
+?s24	dex
+	bne ?l24
+
+	sta m_rem
+	lda m_prod
+	sta m_quot
+	sep #$20
+	.LONGA OFF
+	rts
+ .else
    .if 1
         stz m_rem
         stz m_rem+1
@@ -926,6 +969,7 @@ udiv_resume = *
         lda m_prod+1                 ;   old `jmp ?q16` -- the 16-step path took
         sta m_quot+1                 ;   ?q16 into its native block, and those
         rts                          ;   three bytes are what pays for it
+ .endif
 .endp
     .if * > FASTDIV_END+1
         ert 'udiv24 outgrew FASTDIV_BASE..FASTDIV_END (memory_map.inc)'
