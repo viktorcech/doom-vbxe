@@ -38,6 +38,11 @@ from doomstates import SRC_DIR             # the ONE place the C tree is located
 
 MANUAL_DOOR = {1, 26, 27, 28, 31, 32, 33, 34, 117, 118}
 TAG_DOOR = {2, 16, 29, 63, 76, 86, 90, 103,
+            # 3 = W1 CLOSE door (p_spec.c:549), on E2M4 ld265 and E3M2
+            # ld296. Closes the tagged sectors and leaves them shut --
+            # unlike 16/76, which reopen after 30 s. pack_things marks
+            # that difference with F_DSTAY riding on F_DCLOSE.
+            3,
             # E3M5 (2026-08-18): 40 = W1 ceiling raise to HIGHEST neighbour.
             # The port's only ceiling machinery is the door mover, so the
             # tagged sectors become door records and the trigger opens them
@@ -48,6 +53,11 @@ GUN_DOOR = {46}          # 47 (G1 raise+change) has no E1-E3 user; 24 (G1
                          # raise floor, E2M4) is a gun FLOOR -- it lives in
                          # FLOORS below and carries F_GUN in pack_things.SPEC
 FLOORS = {5, 7, 8, 9, 18, 19, 20, 21, 22, 23, 36, 38, 62, 70, 82, 88, 91, 98,
+          # 10 = W1 plat down-wait-up-stay (E2M2 ld696, tag 86). The same
+          # EV_DoPlat(downWaitUpStay) 88/62/21 already run, on a W1 trigger.
+          10,
+          # 89 = WR stop the plat (EV_StopPlat), 10 linedefs on E2M2/E2M3.
+          89,
           # E2 additions (2026-08-18, first E2 maps): 14 S1 raise 32 + change,
           # 37 W1 lower to lowest + change, 102 S1 lower to highest neighbour.
           # Formulas are pack_things.SPEC's kinds 3/1/2 -- same reductions the

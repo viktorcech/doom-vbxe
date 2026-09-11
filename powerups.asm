@@ -86,13 +86,20 @@ pw_resume = *
         beq ?pack
         cpy #BN_BERSERK
         beq ?zerk
-        sec                          ; 28 map / 29 visor: nothing to store
+        cpy #BN_VISOR
+        beq ?visor
+        sec                          ; 28 map: nothing to store
         rts
+?visor  lda #<INFRATICS              ; p_inter.c:307 -- P_GivePower REFRESHES
+        ldx #>INFRATICS              ;   the visor to full instead of refusing a
+        sta PW_VISOR                 ;   second pickup, unlike the others
+        stx PW_VISOR+1
+        bra ?ok                      ; share the sec/rts below
 ?invis  lda #<INVISTICS
         ldx #>INVISTICS
         sta PW_INVIS
         stx PW_INVIS+1
-        sec
+?ok     sec
         rts
 ?iron   lda #<IRONTICS
         ldx #>IRONTICS
@@ -148,6 +155,15 @@ pw_resume = *
 pw_aidx dta PS_BULLETS, PS_SHELLS, PS_ROCKETS, PS_CELLS
 pw_clip dta 10, 4, 1, 20             ; p_inter.c clipammo[]
 pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
+PW_VISOR dta 0,0                     ; u16 DOOM tics of light-amp VISOR left.
+                                     ;   Data, not an equ, so the loader zeroes
+                                     ;   it -- lt_seg reads it per seg and a
+                                     ;   random byte here would light the whole
+                                     ;   level full bright from the first frame.
+vis_lit  dta 0                       ; $FF = the visor lights this tic. pw_tic
+                                     ;   sets it, lt_seg/lt_seg_flash read it.
+kb_last  dta $FF                     ; last code seen down by kb_scan ($FF = none)
+kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 
 ;--------------------------------------------------------------
 ; pw_max -- A = DOOM's maxammo[] for some ammo type -> the cap that applies right
@@ -197,8 +213,14 @@ pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
 ?nx	dex
 	dex
 	bpl ?lp
-	sep #$20
+	lda PW_VISOR                 ; the FOURTH counter, and it cannot join the
+	beq ?nov                     ;   loop above: PW_FLAGS occupies the slot a
+	dec                          ;   fourth u16 would have needed
+	sta PW_VISOR
+?nov	sep #$20
 	.LONGA OFF
+	jsr pw_vislit
+?vdone
  .else
 ?lp     lda PW_INVIS,x
         ora PW_INVIS+1,x
@@ -617,3 +639,154 @@ fl_zt   dta 0                        ; tics left in the current bzc step
         org zerk_resume
 
         org pw_resume
+
+
+;--------------------------------------------------------------
+; pw_vislit -- p_user.c:371. The light-amp visor is SOLID while more than 4*32
+;   tics are left; below that it lights only while bit 3 is set, so it blinks 8
+;   tics on, 8 off, as it runs out. Decided once a tic: lt_seg runs ~140 times a
+;   frame and only reads the answer. Lives in the run pw_give vacated -- pw_tic's
+;   own block is full to the byte.
+;--------------------------------------------------------------
+vsl_resume = *
+        org VISLIT_BASE
+.proc pw_vislit
+        lda PW_VISOR+1
+        bne ?von                     ; more than 255 tics left: solid
+        lda PW_VISOR
+        beq ?vst                     ; expired -- and A is already 0 to store
+        cmp #129
+        bcs ?von                     ; > 4*32: still solid
+        and #8                       ; ...below that, bit 3 IS the blink: 0 or 8, and
+        bra ?vst                     ;   lt_seg only ever tests it with bne
+?von        lda #$FF
+?vst        sta vis_lit
+        rts
+.endp
+
+;--------------------------------------------------------------
+; hud_god -- ST_updateFaceWidget's priority 4: CF_GODMODE or pw_invulnerability
+;   shows STFGOD0 and outranks the pain levels. This port has no IDDQD, so the
+;   invulnerability sphere is the only way in -- but it IS one, and the face was
+;   missing on every sphere until now. C=1 = handled, leave the face alone.
+;--------------------------------------------------------------
+.proc hud_god
+        lda PW_INVUL
+        ora PW_INVUL+1
+        beq ?no
+        lda #HUD_FACE_GOD
+        cmp face_cur
+        beq ?yes                     ; already showing it
+        sta face_cur
+        inc hud_dirty                ; the bar repaints to show it
+?yes    sec
+        rts
+?no     clc
+        rts
+.endp
+
+;--------------------------------------------------------------
+; hud_god_gate -- what draw_hud_gate calls instead of hud_face_upd: the god
+;   face outranks the look-around animation, and hud_face_upd's own block had
+;   not three bytes left for the test.
+;--------------------------------------------------------------
+.proc hud_god_gate
+        jsr hud_god
+        bcs ?out
+        jmp hud_face_upd
+?out    rts
+.endp
+
+;--------------------------------------------------------------
+; kb_scan -- ONE keyboard sample per VBLANK, from rom_nmi. read_keys samples
+;   once per RENDERED frame (~140 ms at this port's fps) and cht_key therefore
+;   cannot see a DOUBLED letter: KBCODE latches, so the second press of the same
+;   key looks like the first one still held. That is why the port shipped one
+;   cheat -- IDKFA, which has no doubled letter -- and why IDDQD could not work.
+;   At 20 ms this sees the release between them.
+;   A-ONLY: rom_nmi saves nothing but A, and deliberately leaves X/Y alone so a
+;   16-bit index survives the VBI.
+;--------------------------------------------------------------
+.proc kb_scan
+        lda SKSTAT
+        and #4                       ; bit2 low = a key IS down
+        bne ?up
+        lda KBCODE
+        cmp kb_last
+        beq ?out                     ; same key still held: not a new press
+        sta kb_last
+        sta kb_new                   ; ...and hand it to cht_key
+        rts
+?up     lda #$FF                     ; released: the NEXT press counts as new
+        sta kb_last                  ;   even if it is the same key
+?out    rts
+.endp
+    .if * > VISLIT_END+1
+        ert 'pw_vislit + hud_god outgrew VISLIT_BASE..END (memory_map.inc)'
+    .endif
+        org vsl_resume
+
+cht_resume = *
+        org CHEAT_BASE
+
+;--------------------------------------------------------------
+; cht_scan -- read_keys calls this instead of cht_key. kb_scan (in the VBI) has
+;   already turned the keyboard into PRESS EDGES, so a doubled letter is visible
+;   and a second cheat becomes possible. Feeds the one byte to both matchers,
+;   then consumes it.
+;--------------------------------------------------------------
+.proc cht_scan
+        lda kb_new
+        cmp #$FF
+        beq ?out                     ; nothing new since the last frame
+        pha
+        jsr cht_key                  ; IDKFA
+        pla
+        jsr cht_dqd                  ; IDDQD
+        lda #$FF
+        sta kb_new
+?out    rts
+.endp
+
+;--------------------------------------------------------------
+; cht_dqd -- IDDQD. A = a new key press. Same shape as cht_key, minus the
+;   held-key test: kb_new IS the edge, so the doubled D matches.
+;--------------------------------------------------------------
+.proc cht_dqd
+        ldx dqd_n
+        cpx #DQD_LEN                 ; boot RAM must not index past the table
+        bcs ?rst
+        cmp dqd_tab,x
+        bne ?rst
+        inx
+        cpx #DQD_LEN
+        bcc ?set
+        jsr dqd_give
+?rst    ldx #0
+?set    stx dqd_n
+        rts
+.endp
+dqd_tab dta KEY_I, KEY_D, KEY_D, KEY_Q, KEY_D
+DQD_LEN equ * - dqd_tab
+dqd_n   dta 0
+
+;--------------------------------------------------------------
+; dqd_give -- st_stuff.c's IDDQD: CF_GODMODE. The port has no cheats field, so
+;   it does what godmode DOES -- full health and the invulnerability the face
+;   already reads (hud_god). Not a timer: DOOM's godmode does not run out, so
+;   this parks PW_INVUL at its maximum instead of counting down to it.
+;--------------------------------------------------------------
+.proc dqd_give
+        lda #100
+        sta PSTATE+PS_HEALTH
+        lda #$FF
+        sta PW_INVUL
+        sta PW_INVUL+1
+        lda #1
+        sta hud_dirty
+        rts
+.endp
+    .if * > CHEAT_END+1
+        ert 'the cheat matchers outgrew CHEAT_BASE..END (memory_map.inc)'
+    .endif
+        org cht_resume

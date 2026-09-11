@@ -222,8 +222,9 @@ hdyn_resume = *
                                      ;   DOOM's map replaces the view, gun and
                                      ;   all, but keeps the status bar below
 
-        jsr hud_face_upd             ; the look-around animation (hud_hurt owns
-                                     ;   the pain face, off fl_damage itself)
+        jsr hud_god_gate             ; STFGOD0 first (priority 4), else the
+                                     ;   look-around animation. Both in
+                                     ;   powerups.asm -- this block is full.
         lda hud_dirty
         beq ?tail
         dec hud_dirty

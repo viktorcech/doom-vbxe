@@ -1,7 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 3563 B free, biggest contiguous block 173 B.
-;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
-;   Print it any time with:  python tools/ram_map.py
 ;
 ; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
 ; NOT. It carries no XEX segment, so the assembler places code there happily --
@@ -1285,6 +1282,12 @@ sw_hit  dta 0
         lda (zp_ptr),y
         and #$20                     ; b13 = DOOR action
         bne ?door
+        lda (zp_ptr),y               ; (Y still 13) b9 WITHOUT b13 = STOP the
+        and #$02                     ;   plat, p_spec.c case 89 EV_StopPlat. The
+        jne mv_stop                  ;   89 is WR: no once-bit to spend, so
+                                     ;   mv_stop's rts returns from trig_fire
+                                     ;   directly. Body is in movers.asm --
+                                     ;   this block has nothing left.
         jsr mv_free                  ; a slot for this record? mv_free also runs
         bcs ?go                      ;   EV_DoPlat's "if (sec->specialdata)
         rts                          ;   continue" -- all busy, or that sector is
@@ -1560,20 +1563,40 @@ dfo_go                               ; no-record entry: open, never close
         jsr snd_q_door_at            ;   or silently (s_sound.c attenuation)
  .endif
 ?out    rts
-?shut   lda.l DOOR_STATE,x           ; already on its way down? leave it alone
+?shut   lda (zp_ptr),y               ; Y is still 13 HERE -- the b9 test at the
+                                     ;   top of this proc left it, and ?shut is
+                                     ;   only reachable through that test. It is
+                                     ;   read BEFORE the DOOR_STATE dance below,
+                                     ;   which clobbers Y with `tay`.
+        and #$08                     ; b11 WITH b9 = close and STAY shut, i.e.
+                                     ;   special 3. Alone, b11 means "parks OPEN",
+                                     ;   which a close action can never also mean,
+                                     ;   so the pair is free the way b15+b13 is.
+        eor #$08                     ; 8 -> 0 (stay shut), 0 -> 8 (arm the timer)
+        lsr @
+        lsr @                        ; ...8 lands on b1, which is what
+                                     ;   update_door30 waits on, and b0 (parked
+                                     ;   open) comes out 0 either way -- it has
+                                     ;   to, or the dwell test never fires.
+                                     ;   DOORSTAY holds nothing but b0 and b1, so
+                                     ;   this plain store IS the whole update.
+                                     ;   16 and 76 keep b11 clear and so keep
+                                     ;   their 30 s reopen, unchanged.
+        pha                          ; onto the stack, not into a RAM cell
+        lda.l DOOR_STATE,x           ; already on its way down? leave it alone
         cmp #3
-        beq ?out
+        beq ?outp
         tay                          ; parked (0) -> it joins the live scan
         bne ?go
         inc DOOR_NACT
 ?go     lda #3
         sta.l DOOR_STATE,x
-        lda.l DOORSTAY,x
-        ora #2                       ; b1: update_door30 waits for the landing,
-        and #$FE                     ;   then counts 30 s. b0 (parked open) has
-        sta.l DOORSTAY,x             ;   to go or the dwell test never fires.
+        pla
+        sta.l DOORSTAY,x
         lda #SFX_DORCLS
         jmp snd_q_door_at
+?outp   pla                          ; the early exit has to balance it
+        rts
 .endp
     .if * > DFORCE_END+1
         ert 'door_force_open outgrew the DFORCE hole (memory_map.inc)'

@@ -919,9 +919,11 @@ wld_resume = *
         bne ?chunk
         lda #MAP_EXT_BANK            ; put ll_bank back: load_dtab/load_los
         sta ll_bank                  ;   stream into bank $01 and assume it
-        rts                          ; (this tail-called load_music while the
-                                     ;  songs were in the build -- see the note
-                                     ;  in snd_dispatch)
+        jmp load_music               ; TAIL CALL: the song streams to SDRAM
+                                     ;   $550000 right behind the weapons, and
+                                     ;   load_music puts ll_bank back itself.
+                                     ;   (An rts from 2026-08-08, when the songs
+                                     ;    were taken out, until 2026-09-11.)
 .endp
 wld_i   dta 0
 ; ---- per-level VRAM pool split (make_atr_doom.py -> atr_levels.inc) ---------

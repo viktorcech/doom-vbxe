@@ -26,7 +26,7 @@ if (-not (Test-Path $menuBin)) {
 python tools/split_menu_ovl.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu overlay split failed'; exit 1 }
 
-python tools/ram_map.py --update | Out-Null   # refresh the RAM budget comment
+# (the RAM budget COMMENT is gone -- check_xex.py still imports RESERVED)
 python tools/bank_map.py --check
 if ($LASTEXITCODE -ne 0) { Write-Error 'two Rapidus bank $01 regions overlap'; exit 1 }
 python tools/check_xex.py build/doom_bsp.xex

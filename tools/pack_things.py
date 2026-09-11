@@ -171,6 +171,16 @@ RAISE_BY = {14: 32, 58: 24, 59: 24}
 
 SPEC = {                     # special: (flags, floor kind)
     88: (0, 1),                                  # WR plat DWU (E1M1 lift)
+    89: (F_DCLOSE, 1),                           # WR STOP the plat (E2M2 x5,
+                                                 #   E2M3 x5). F_DCLOSE's bit
+                                                 #   means door-close only
+                                                 #   alongside F_DOOR, so on a
+                                                 #   floor record it is free to
+                                                 #   mean EV_StopPlat.
+    10: (F_ONCE, 1),                             # W1 plat DWU (E2M2 ld696).
+                                                 #   Same action as 88/62/21,
+                                                 #   only the trigger class
+                                                 #   differs: walk, once.
     36: (F_STAY, 2), 19: (F_STAY, 2), 38: (F_STAY, 2),  # W1 lower floor
     62: (F_USE, 1),                              # SR plat DWU (switch lift)
     21: (F_USE | F_ONCE, 1),                     # S1 plat DWU
@@ -225,6 +235,15 @@ SPEC = {                     # special: (flags, floor kind)
                                                  #   (E3M5; doomspecs TAG_DOOR
                                                  #   carries it so the door
                                                  #   records exist)
+    3:  (F_DOOR | F_DCLOSE | F_DSTAY | F_ONCE, 0),  # W1 door CLOSE and stay
+                                                 #   shut. F_DSTAY normally
+                                                 #   means "parks open",
+                                                 #   which a close action
+                                                 #   cannot also mean -- so
+                                                 #   on TOP of F_DCLOSE it
+                                                 #   reads as "and do NOT
+                                                 #   arm the 30 s reopen"
+                                                 #   (doors.asm ?shut)
     16: (F_DOOR | F_DCLOSE | F_ONCE, 0),         # W1 door close 30 s, then open
     76: (F_DOOR | F_DCLOSE, 0),                  # WR door close 30 s, then open
                                                  #   (E1M6 has all three)
@@ -2551,6 +2570,20 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
         if kind == 6:                    # EV_DoDonut: two sectors, one line
             for si, dst, dspd in _donut(md, ld.tag):
                 trig.append((a1, a2, mid, si | flags, dst, dspd))
+            continue
+        if ld.special == 89:             # EV_StopPlat: ONE record per line, not
+                                         #   one per tagged sector. E2M2 has 5
+                                         #   such lines against 8 sectors tagged
+                                         #   23, and 40 records blew that map's
+                                         #   1920 B piece-2 budget. mv_stop
+                                         #   (movers.asm) therefore parks EVERY
+                                         #   running mover slot instead of the
+                                         #   tagged one -- a reduction, and the
+                                         #   sector field below is unused. On
+                                         #   E2M2/E2M3 the tag IS the platform
+                                         #   group and nothing else is moving
+                                         #   when these lines are crossed.
+            trig.append((a1, a2, mid, flags, 0, spd))
             continue
         if flags & F_TELE:               # EV_Teleport: the tagged sector has to
             for si, sec in enumerate(md.sectors):    # hold a teleport man, and

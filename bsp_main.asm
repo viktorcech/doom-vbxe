@@ -1,7 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 3563 B free, biggest contiguous block 173 B.
-;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
-;   Print it any time with:  python tools/ram_map.py
 ;
 ; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
 ; NOT. It carries no XEX segment, so the assembler places code there happily --
@@ -1047,13 +1044,16 @@ tw_seg_end = *                       ; watched by the .if below
 ; Included AFTER tw_seg_end so it does not blunt the $B000 assert below.
 ;==============================================================
         icl 'sound.asm'
-                                     ; (music.asm is NOT icl'd: the songs were
-                                     ;  wired up on 2026-08-08 and taken back
-                                     ;  out the same day -- the RMT renderings
-                                     ;  sounded wrong. The file, its packer and
-                                     ;  its two verifiers are intact; putting it
-                                     ;  back is this icl plus the two tail calls
-                                     ;  named in music.asm's header.)
+        icl 'music.asm'               ; D_INTER as a POKEY register stream.
+                                     ; The 2026-08-08 attempt went in and out in
+                                     ;  one day -- "the RMT renderings did not
+                                     ;  sound right" -- and music.asm, rmt_render
+                                     ;  and the verifiers were deleted with it;
+                                     ;  only pack_musstream.py survived, broken.
+                                     ;  Rebuilt 2026-09-11 from tools/DOOM.WAD's
+                                     ;  own MUS lump (tools/mus2rmt.py), which is
+                                     ;  what sidesteps the RMT rendering that was
+                                     ;  the original complaint.
         icl 'weapon.asm'             ; the player's weapon (p_pspr.c psprites).
                                      ; AFTER sound.asm: its WP_SFX table names the
                                      ; SFX_* ids sound_tables.inc defines.

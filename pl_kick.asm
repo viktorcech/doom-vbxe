@@ -34,7 +34,7 @@
 ;                 leaves through ?nomove before it ever computes a step
 ;
 ; WHERE IT LIVES -- and the rule that was broken twice before this worked.
-; ram_map.py says "FREE RAM FOR NEW CODE: NONE" and means it; what is left is
+; base RAM is full; what is left is
 ; a few hundred bytes in gaps of 10-26 B, so this is cut into thirteen pieces
 ; chained by jmp (the port already relocates procs that way: collision @ $0900,
 ; check_bbox @ $1B00, tw_setup @ $8D00).

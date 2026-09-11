@@ -1,7 +1,7 @@
 ;==============================================================
 ; bank01.asm -- COLD ENGINE CODE THAT RUNS IN RAPIDUS SRAM BANK $01.
 ;--------------------------------------------------------------
-; WHY. Base RAM is full to the byte (tools/ram_map.py: "FREE RAM FOR NEW CODE:
+; WHY. Base RAM is full to the byte (base RAM is full).
 ; NONE"), and the Rapidus SRAM banks are 448 KB of which bank $01 still has
 ; ~26 KB free above SNDX_EXT (tools/bank_map.py --check). The 65816 EXECUTES
 ; from there at full speed -- the opcode fetch is ExtReadByteAccel(mPC, mK)

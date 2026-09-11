@@ -6,6 +6,7 @@
 #         .\build_atr.ps1 -Full         # re-pack every asset from the WAD
 #         .\build_atr.ps1 -Check        # + the slow gates (boot sim, _verify_*)
 #         .\build_atr.ps1 -Time         # + seconds per step
+#         .\build_atr.ps1 -Antonia2     # ANTONIA II hw mul/div -> build/doom_bsp_ant2.atr
 #
 # WHY THE SWITCHES (2026-08-11). A full run is ~42 s and 35 of them are three
 # packers that only ever read DOOM1.WAD:
@@ -26,7 +27,11 @@ param(
   [string[]]$Levels,
   [switch]$Full,          # re-pack every asset even if it is up to date
   [switch]$Check,         # run the slow verification gates
-  [switch]$Time           # print seconds per step
+  [switch]$Time,          # print seconds per step
+  [switch]$Antonia2       # swap umul16/udiv24 for drac030's ANTONIA II
+                          #   hardware mul/div versions ($FFF00C/$FFF008).
+                          #   Writes doom_bsp_ant2.atr, which does NOT run on
+                          #   Rapidus -- those registers are Antonia's.
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -51,6 +56,15 @@ $lvls = if ($Levels -and $Levels.Count) { @($Levels) } else {
 # E, 1, M, 9 and died with "map E not in WAD", so the documented
 # `.\build_atr.ps1 E1M1` never worked. Passing the array to a native command
 # unrolls it correctly for one, many or none.
+
+# THE GATES ARE SIM RUNS AND THE SIM HAS NO ANTONIA. tools/sim6502 models a
+# 65816 and RAM, not the $FFF008/$FFF00C mul/div ports, so every _verify_*
+# that renders would read open bus through the new umul16/udiv24 and 'fail'
+# on hardware that is simply absent. -Antonia2 therefore drops them.
+if ($Antonia2 -and $Check) {
+  Write-Host 'gates OFF: -Antonia2 needs hardware sim6502 does not model' -ForegroundColor Yellow
+  $Check = $false
+}
 
 $swAll = [Diagnostics.Stopwatch]::StartNew()
 $swStep = [Diagnostics.Stopwatch]::StartNew()
@@ -236,7 +250,12 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'layout emit failed'; exit 1 }
 #    _verify_* that runs the shipped bytes resolves its symbols through it, and
 #    a .lab left over from an older build resolves them to the WRONG addresses
 #    without saying so. It costs nothing to emit here (2026-08-16).
-& $mads -i:. bsp_main.asm -o:build/doom_bsp.xex -l:build/doom_bsp.lst -t:build/doom_bsp.lab
+# [string[]] IS LOAD-BEARING: `$x = if (..) { @('a') }` unrolls the one-element
+# array back to a STRING, and `@$x` then splats a string -- mads got garbage
+# arguments and printed its usage instead of assembling (2026-09-10).
+[string[]]$madsDef = @()
+if ($Antonia2) { $madsDef = @('-d:ANTONIA2=1') }
+& $mads -i:. bsp_main.asm @madsDef -o:build/doom_bsp.xex -l:build/doom_bsp.lst -t:build/doom_bsp.lab
 if ($LASTEXITCODE -ne 0) { Write-Error 'assemble failed'; exit 1 }
 Lap 'mads'
 
@@ -253,7 +272,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'menu overlay split failed'; exit 1 }
 #     It was deleted on 2026-08-14, so both are skipped until it is back. The .asm
 #     `ert` guards still catch every parked block that outgrows its hole.
 if (Test-Path tools/ram_map.py) {
-    & $py tools/ram_map.py --update | Out-Null   # refresh the RAM budget comment
+    # (the RAM budget COMMENT is gone -- check_xex.py still imports RESERVED)
     & $py tools/bank_map.py --check
 if ($LASTEXITCODE -ne 0) { Write-Error 'two Rapidus bank $01 regions overlap'; exit 1 }
 & $py tools/check_xex.py build/doom_bsp.xex
@@ -412,4 +431,24 @@ if ($Check) {
   Write-Host 'gates skipped: boot sim + _verify_* (-Check runs them)' -ForegroundColor DarkGray
 }
 
-Write-Host ("OK -> build/doom.atr  ({0:N1}s)" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
+# make_atr_doom.py always writes build/doom.atr. RENAME, do not copy: an
+# Antonia image left sitting under the stock name is the one mistake this
+# switch can cause. The stock doom.atr is rebuilt right below, so a -Antonia2
+# run leaves BOTH images correct and doom.atr untouched in content.
+if ($Antonia2) {
+  Move-Item -Force build/doom.atr     build/doom_bsp_ant2.atr
+  Move-Item -Force build/doom_bsp.xex build/doom_bsp_ant2.xex
+  # ... and PUT THE STOCK IMAGE BACK. build/doom.atr is what every test,
+  # every emulator shortcut and every 'is it fixed yet' run reaches for;
+  # leaving an Antonia-only build under that name (or no build at all)
+  # would break all of them silently. Same assets, so this is ~3 s.
+  & $mads -i:. bsp_main.asm -o:build/doom_bsp.xex -l:build/doom_bsp.lst -t:build/doom_bsp.lab | Out-Null
+  if ($LASTEXITCODE -ne 0) { Write-Error 'stock re-assemble failed'; exit 1 }
+  & $py tools\split_menu_ovl.py | Out-Null
+  if ($LASTEXITCODE -ne 0) { Write-Error 'stock overlay split failed'; exit 1 }
+  & $py tools\make_atr_doom.py $lvls | Out-Null
+  if ($LASTEXITCODE -ne 0) { Write-Error 'stock atr rebuild failed'; exit 1 }
+  Write-Host ('OK -> build/doom_bsp_ant2.atr  ANTONIA II ONLY, not Rapidus  ({0:N1}s)' -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
+} else {
+  Write-Host ("OK -> build/doom.atr  ({0:N1}s)" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
+}

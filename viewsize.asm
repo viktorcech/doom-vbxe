@@ -1,7 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 3563 B free, biggest contiguous block 173 B.
-;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
-;   Print it any time with:  python tools/ram_map.py
 ;
 ; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
 ; NOT. It carries no XEX segment, so the assembler places code there happily --
@@ -84,20 +81,80 @@ vs_resume = *
         rts
 .endp
 
+;  vw_frame lives in OVLCLR_BASE now -- see the block at the end of this file.
+
+vwf_resume = *
+        org OVLCLR_BASE
+;--------------------------------------------------------------
+; ovl_frame -- erase the overlay band, but only when someone has to.
+;
+; EVERY DRAWER THAT PUTS TEXT OVER THE VIEW ASSUMES THE RENDER ERASES IT.
+; fps.asm says so outright ("the digits are inside the view, so the next
+; frame's render erases them for free") and msg_tick's strip_blit leans on the
+; same thing. The assumption holds at FULL size and nowhere else: vw_apply
+; shrinks the view to [vw_x0..vw_x1] x [vw_y0..vw_y1] and from 3/4 down the
+; smallest y0 is 21, so rows 0..17 are BORDER -- painted once per resize
+; (vw_dirty = 3, one per buffer) and never again. Both drawers are STENCIL
+; blits, so they do not erase what they land on: the readout piles digit on
+; digit, three buffers deep, and a message stays after it expires (2026-09-10,
+; fps.png -- "ked zmensim okno, texty sa tam neprepisuju spravne").
+;
+; SO RESTORE THE ASSUMPTION rather than teach every drawer to clip: clear the
+; band they share and let them go on believing it. 121x18 = 2178 B through the
+; blitter, ~0,24 % of a frame -- clear_screen is 26880 B and would show up in
+; the very readout it is there to keep legible.
+;
+; NOT MOVING THE TEXT INSTEAD. Anchoring the pen to vw_x0/vw_y0 fixes the
+; readout (37 B wide) and CANNOT fix the message: the strips are padded to
+; TITLE_W = 121 bytes and the smallest view is 40 wide.
+;
+; ovl_dirty counts buffers, not frames -- three, like vw_dirty, and topped up
+; every frame anything is showing, so the last message clears out of all three.
+;--------------------------------------------------------------
 ;--------------------------------------------------------------
 ; vw_frame -- once per frame, off read_keys: paint the border after a resize.
-;   Two frames = both buffers. The 3D view is redrawn every frame anyway, so
-;   only the ring around it needs this (clear_screen covers rows 0..167; the
+;   Three frames = all three buffers. The 3D view is redrawn every frame anyway,
+;   so only the ring around it needs this (clear_screen covers rows 0..167; the
 ;   status bar owns the rest).
+;   OUT OF VIEWSZ (2026-09-10): that block was full to the byte and this now
+;   FALLS THROUGH into ovl_frame, which costs nothing where a `jmp` cost three.
 ;--------------------------------------------------------------
 .proc vw_frame
         lda vw_dirty
-        beq ?ret
-        dec vw_dirty
+        beq ovl_frame                ; no resize pending -> the band may still
+        dec vw_dirty                 ;   need it (fall through, next proc)
         lda #VIEW_BORDER
         jmp clear_screen             ; tail-call
-?ret    rts
 .endp
+
+.proc ovl_frame
+        lda vw_size
+        beq ?ret                     ; FULL view: the render still erases them
+        lda msg_t                    ;   free, so this costs two loads a frame
+        ora fps_on
+        beq ?stale                   ; nothing showing -> just drain the counter
+        lda #3
+        sta ovl_dirty                ; showing -> keep all three buffers due
+?stale  lda ovl_dirty
+        beq ?ret
+        dec ovl_dirty
+        lda #0                       ; bg_blit's rectangle: cols 0..OVL_W-1,
+        sta bg_x0                    ;   rows 0..OVL_H-1, in the BACK buffer
+        sta bg_top
+        lda #OVL_W
+        sta bg_w
+        lda #OVL_H-1
+        sta bg_bot
+        jmp bg_blit                  ; BG_COLOUR, not VIEW_BORDER: 247 and 0 are
+?ret    rts                          ;   both rgb(0,0,0), and this saves the byte
+.endp                                ;   a colour argument would cost
+
+ovl_dirty dta 0                      ; buffers still owing the clear
+
+    .if * > OVLCLR_END+1
+        ert 'ovl_frame outgrew OVLCLR_BASE..END (memory_map.inc)'
+    .endif
+        org vwf_resume
 
 ;--------------------------------------------------------------
 ; vw_smaller / vw_bigger -- one step down / up the ladder ('-' / '=').

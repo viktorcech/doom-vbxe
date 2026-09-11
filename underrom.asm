@@ -80,6 +80,7 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
         lda #0                       ;   store lands mid-picture (the flicker),
         sta XDLA_PEND                ;   Altirra latches at frame start; this is
  .endif
+        jsr kb_scan                  ; the cheat matcher's press edge, at 50 Hz
 ?done   pla                          ;   correct on both. $00 = nothing pending.
         rti
 .endp

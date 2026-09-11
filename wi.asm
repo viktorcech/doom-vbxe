@@ -150,6 +150,10 @@ wi_resume = *
 ; wi_pre -- the reads that have to happen while the map slot is still a MAP.
 ;--------------------------------------------------------------
 .proc wi_pre
+        lda #MUS_INTER               ; wi_stuff.c:1514 S_ChangeMusic(mus_inter):
+        jsr mus_reset                ;   the stats screen gets its own song, and
+                                     ;   mus_play loops it at the $FF marker for
+                                     ;   as long as the screen is up.
         lda MAP_HNSECR
         sta wi_maxsecr
         sta wi_secret                ; ...and count DOWN from it
@@ -203,6 +207,11 @@ wi_next     dta 0
 ?v      lda RTCLOK3
 ?w      cmp RTCLOK3
         beq ?w
+        jsr mus_play                 ; ONE frame of the song per VBLANK, not
+                                     ;   per DOOM tic: the stream is authored
+                                     ;   at the PAL frame rate, and this loop
+                                     ;   can spin several VBLANKs before the
+                                     ;   35 Hz accumulator below carries.
         lda wi_tacc
         clc
         adc #WI_TICQ8
@@ -703,6 +712,11 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda #[WIPE_START>>16]
         sta wa_b2+2
         jsr wi_page
+        jsr mus_stop                 ; the stats screen is over: drop AUDC2/3/4
+                                     ;   before WI_XLOAD, or the last note of
+                                     ;   the song hangs through the level load
+                                     ;   (SIO takes POKEY over whole -- the same
+                                     ;    hazard mn_quiet exists for).
         jmp WI_XLOAD
 .endp                                ;   second melt for the frame after it
 

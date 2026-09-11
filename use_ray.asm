@@ -1,7 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 755 B free, biggest contiguous block 397 B.
-;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
-;   Print it any time with:  python tools/ram_map.py
 ;
 ; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
 ; NOT. It carries no XEX segment, so the assembler places code there happily --

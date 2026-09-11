@@ -76,6 +76,24 @@ SOUNDR_R equ $0041                   ; OS "noisy I/O" flag (SIO load noise)
 VIMIRQ_R equ $0216                   ; OS immediate IRQ vector (OS: CLD, JMP (VIMIRQ))
 
 ; ---- the mixer's one knob --------------------------------------------------
+SND_PITCHVAR equ 1                   ; 0 = every sound plays at its own rate.
+                                     ;   DOOM's per-play pitch roll (s_sound.c
+                                     ;   :326) stopped being audible in v1.4:
+                                     ;   the DMX API changed its parameter count
+                                     ;   and id swapped the separation and pitch
+                                     ;   arguments at every call site. Both are
+                                     ;   int, so it compiled and shipped, and
+                                     ;   from 1.4 on the engine handed DMX the
+                                     ;   STEREO POSITION as the pitch. Romero
+                                     ;   (2019) called the feature "mostly
+                                     ;   experimental" and was glad it went.
+                                     ;   1 here is NOT the pre-1.4 behaviour: it
+                                     ;   is the roll narrowed to the chainsaw
+                                     ;   band for every sound (see snd_pstep).
+                                     ;   The full pre-1.4 width is in the table --
+                                     ;   snd_pitch.inc and its generator stay in
+                                     ;   the tree either way.
+                                     ;   doomwiki.org/wiki/Random_sound_pitch_removed
 SND_NV   equ 4                       ; simultaneous voices (POKEY has 4 channels)
 SND_VTOP equ (SND_NV-1)*2            ; the top DOUBLED voice index -- every loop
                                      ;   here is `ldx #SND_VTOP` ... `dex:dex`
@@ -189,6 +207,17 @@ sf_rd   lda.l SND_EXT                ; SMC operand = this voice's byte address
 snda_resume = *
         org SNDALLOC_BASE
 .proc snd_alloc
+ .if 1
+        ldy snd_vmax                 ; the TOP voice the allocator may hand out
+?free   lda sv_act,y                 ;   music.asm drops it to 0 while the
+        beq ?got                     ;   intermission song plays, so every SFX
+        dey                          ;   lands on POKEY channel 1 and the song
+        dey                          ;   keeps channels 2/3/4 to itself. Sharing
+        bpl ?free                    ;   them cost either a stolen voice (one or
+        ldy snd_vmax                 ;   two tones instead of three) or a click
+                                     ;   on every sample, depending on which
+                                     ;   side gave way.
+ .else
         ldy #SND_VTOP
 ?free   lda sv_act,y
         beq ?got                     ; idle -> take it, no one loses anything
@@ -196,6 +225,7 @@ snda_resume = *
         dey
         bpl ?free
         ldy #SND_VTOP                ; all busy: steal the one closest to done
+ .endif
         sty snd_best
         lda sv_rh,y                  ; A = the best -remaining seen so far
 ?scan   dey
@@ -874,32 +904,33 @@ sndpst_resume = *
 .proc snd_pstep
         lda #0
         sta sv_frc,y
+ .if SND_PITCHVAR
         cpx #SFX_ITEMUP
         beq ?flat                    ; s_sound.c: this one is never varied
- .if 1
         lda snd_menu                 ; ...and neither is anything the MENU plays
         bne ?flat                    ;   (2026-09-09): the switch and the pistol
                                      ;   there sounded different on every press
- .endif
         stx snd_sid                  ; X is the SFX id and the caller still
                                      ;   wants it; the table read needs X too
         lda RANDOM                   ; POKEY's LFSR -- the port's M_Random
-        cpx #SFX_SAWFUL
-        beq ?saw
-        cpx #SFX_SAWUP
-        bcc ?wide
-        cpx #SFX_SAWHIT+1
-        bcs ?wide
-?saw    and #$0F                     ; 8 - (M_Random()&15)
-        clc
-        adc #8
-        bne ?tab                     ; (always: 8..23)
-?wide   and #$1F                     ; 16 - (M_Random()&31)
-?tab    tax
+        and #$07                     ; NORMAL..FASTER, never slower: index
+        clc                          ;   9..16 is delta +7..0, x1.000..x1.083,
+        adc #9                       ;   0.00..+1.31 semitones -- eight steps,
+                                     ;   one of them exactly SND_PITCH_ONE.
+                                     ;   DOOM's own roll is SYMMETRIC -- `pitch
+                                     ;   += 16 - (M_Random()&31)` spans delta
+                                     ;   +16..-15, so it plays sounds slower as
+                                     ;   often as faster. The slow half is what
+                                     ;   made effects sound thick and dragged on
+                                     ;   this hardware, so only the upper half is
+                                     ;   rolled here. Deliberately NOT the
+                                     ;   original behaviour.
+        tax
         lda snd_pitch,x
         ldx snd_sid
         sta sv_stp,y
         rts
+ .endif
 ?flat   lda #SND_PITCH_ONE
         sta sv_stp,y
         rts

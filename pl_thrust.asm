@@ -36,7 +36,7 @@
 ;
 ; WHERE IT LIVES -- and why it is in six pieces. The engine's bank-0 address
 ; space is full: 223 bytes over eleven gaps, the biggest 26 B (tools/ram_map.py
-; says "FREE RAM FOR NEW CODE: NONE" and it is telling the truth). This proc is
+; is full). This proc is
 ; ~110 B. Rather than evict a warm block, the code is CUT INTO SIX and parked in
 ; six of those gaps, each piece ending in a jmp to the next. The port already
 ; relocates procs this way (collision @ $0900, check_bbox @ $1B00, tw_setup @

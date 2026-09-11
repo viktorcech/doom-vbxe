@@ -1,7 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 3563 B free, biggest contiguous block 173 B.
-;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
-;   Print it any time with:  python tools/ram_map.py
 ;
 ; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
 ; NOT. It carries no XEX segment, so the assembler places code there happily --
@@ -86,6 +83,17 @@
 ;     p00=aL*bL  p01=aL*bH  p10=aH*bL  p11=aH*bH   (aL=m_a, aH=m_a+1, ...)
 ;--------------------------------------------------------------
 .proc umul16
+ .ifdef ANTONIA2
+        ; ---- ANTONIA II HARDWARE MULTIPLIER (drac030, 2026-09-10) -----------
+        ; $FFF00C/$FFF00E take the two 16-bit factors, $FFF00C..$FFF00F hands
+        ; back the 32-bit product: CONSTANT 46 cycles, against 80..360+ for the
+        ; four quarter-squares below. Bit-identical -- the same unsigned product
+        ; -- so every caller (smul32 included) inherits it unchanged.
+        ; drac030's file, dropped in verbatim so a newer one can replace it
+        ; without re-editing math.asm. NOT Rapidus-compatible; build it with
+        ;   .\build_atr.ps1 -Antonia2
+        icl 'umul16a.asm'
+ .else
         ; --- THE OPERANDS ARE SMALL. Measured on a real frame
         ;     (tools/_dbg_mathargs.py, 1307 calls): m_a < 256 in 76 % of them and
         ;     BOTH < 256 in 44 %. A zero high byte makes p10 and p11 zero and
@@ -186,6 +194,7 @@
         bcc ?done
         inc m_prod+3
 ?done   rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -737,9 +746,29 @@ bft_resume = *
 ; Bit-identical to the old single 24-step loop over every input the renderer
 ; produces -- tools/_verify_udiv.py checks all three paths against it.
 ;--------------------------------------------------------------
+ .ifndef ANTONIA2                    ; ANTONIA2: no Rapidus window to move into
 udiv_resume = *
         org FASTDIV_BASE
+ .endif
 .proc udiv24
+ .ifdef ANTONIA2
+        ; ---- ANTONIA II HARDWARE DIVIDER (drac030, 2026-09-10) --------------
+        ; $FFF008/$FFF00A take a 16-bit dividend and divisor, $FFF008/$FFF00A
+        ; hand back quotient and remainder. A 24-bit dividend needs TWO of
+        ; those: top 16 / den, then (rem<<8 | low byte) / den -- and that second
+        ; one only fits the 16-bit port while rem < 256, so the routine keeps an
+        ; 8-step software tail for the rest -- v2 keeps that tail entirely in
+        ; A (16-bit) with the quotient riding in ?q_lo's vacated bits, so the
+        ; 32-bit memory shift ladder v1 used is gone. 60..770 cycles vs 230..940.
+        ; NOTE v2 dropped v1's `.LONGI OFF`, so its `ldx #$08` is only 8-bit
+        ; because MADS defaults that way and spr_draw.asm's `.LONGI ON` pair
+        ; (the only one in the tree) is icl'd AFTER math.asm. Order-dependent.
+        ; NO `org FASTDIV_BASE` on this path. v1 could not fit (202 B vs the
+        ; window's 160); v2 is 154 B and WOULD fit, but the point of that window
+        ; is RAPIDUS-fast fetches and an Antonia machine has none, so moving it
+        ; there buys nothing. It assembles where it stands.
+        icl 'udiv24a_v2.asm'
+ .else
  .if 1
 	rep #$20
 	.LONGA ON
@@ -970,11 +999,14 @@ udiv_resume = *
         sta m_quot+1                 ;   ?q16 into its native block, and those
         rts                          ;   three bytes are what pays for it
  .endif
+ .endif
 .endp
+ .ifndef ANTONIA2
     .if * > FASTDIV_END+1
         ert 'udiv24 outgrew FASTDIV_BASE..FASTDIV_END (memory_map.inc)'
     .endif
         org udiv_resume
+ .endif
 
 ;--------------------------------------------------------------
 ; udiv16 -- UNSIGNED (16-bit dividend m_prod[0..1]) / (m_den 16) -> m_quot(2).

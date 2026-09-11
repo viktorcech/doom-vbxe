@@ -1,7 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: 3563 B free, biggest contiguous block 173 B.
-;   Full map: the generated RAM-BUDGET block at the top of memory_map.inc.
-;   Print it any time with:  python tools/ram_map.py
 ;
 ; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
 ; NOT. It carries no XEX segment, so the assembler places code there happily --
@@ -63,7 +60,7 @@ rk_resume = *
         org READKEYS_BASE
 .proc read_keys
         lda KBCODE                    ; --- the IDKFA sniffer gets the FIRST look,
-        jsr cht_key                   ;   and it must NOT ask SKSTAT whether a key
+        jsr cht_scan                  ; both cheats, off kb_scan's press edges
                                       ;   is down right now. SKSTAT bit2 is low
                                       ;   only while the key is physically held
                                       ;   (Altirra pokey.cpp:1510), this runs once

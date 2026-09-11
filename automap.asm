@@ -1,6 +1,4 @@
 ;--------------------------------------------------------------
-; RAM BUDGET: see the RAM-BUDGET block at the top of memory_map.inc, or run
-; `python tools/ram_map.py`. Some RAM looks free to MADS and is NOT ($1000
 ; TEX_STAGE, $4000 map slot, $9000 MEMAC window): code assembled there is
 ; overwritten at runtime with no error and boots to a flat pink screen.
 ;--------------------------------------------------------------

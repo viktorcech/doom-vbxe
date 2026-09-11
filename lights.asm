@@ -1,7 +1,6 @@
 ;==============================================================
 ; lights.asm -- SECTOR LIGHT: DOOM's light thinkers (p_lights.c) and the shade
 ;   every flat-painted surface goes through (r_main.c's scalelight).
-; RAM BUDGET: see the RAM-BUDGET block at the top of memory_map.inc.
 ;
 ; WHAT IS SHADED, AND WHY NOT EVERYTHING
 ;   DOOM shades per PIXEL: R_DrawColumn reads dc_colormap[texel]. This port
@@ -117,12 +116,23 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;   the caller is mid-way through resolving the wall texture handle.
 ;--------------------------------------------------------------
 .proc lt_seg
+        lda vis_lit                  ; the visor's answer for THIS tic, decided
+                                     ;   once in pw_tic (it blinks as it runs
+        bne ?bright                  ;   (p_user.c:371) and every surface goes
+                                     ;   full bright; here that is colormap ROW
+                                     ;   0, which is the same thing -- the row
+                                     ;   IS the high byte. X stays untouched:
+                                     ;   the caller is mid-way through resolving
+                                     ;   a wall texture handle.
         ldy #4                       ; sector->lightlevel
         lda (zp_ptr),y
         eor #$FF                     ; row = (255 - light) >> 3
         lsr @
         lsr @
         lsr @
+        bpl ?add                     ; always: the row is 0..31
+?bright lda #0
+?add
         clc
         adc #>CMAP_EXT               ; ... a page per row, so the row IS the
         sta zp_cm+1                  ;     high byte (0..31 above the base)
@@ -419,6 +429,9 @@ lt_u    dta 0
 ltsf_resume = *
         org LTSEGF_BASE
 .proc lt_seg_flash
+        lda vis_lit                  ; the visor's answer for THIS tic, decided
+                                     ;   once in pw_tic (it blinks as it runs
+        bne ?vis                     ;   lightnum+extralight sum (r_main.c)
         ldy #4                       ; sector->lightlevel
         lda (zp_ptr),y
         eor #$FF                     ; row = (255 - light) >> 3
@@ -431,6 +444,9 @@ ltsf_resume = *
         lda #0                       ; brighter than row 0 IS row 0 (r_main.c
 ?cl     clc                          ;   clamps lightnum the same way)
         adc #>CMAP_EXT               ; a page per row, so the row IS the high byte
+        bpl ?st                      ; always: row is 0..31
+?vis    lda #>CMAP_EXT               ; row 0
+?st
         sta zp_cm+1
         iny                          ; floor_pal @5
         lda (zp_ptr),y

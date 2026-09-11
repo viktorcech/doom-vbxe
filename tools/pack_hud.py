@@ -98,6 +98,13 @@ HUD_LUMPS = (['STBAR'] + [f'STTNUM{i}' for i in range(10)] + ['STTPRCNT', 'STARM
              # the turn-left/right pair would be six more patches and the slot
              # holds three (3 chunks, $07D000..$07FFFF since 2026-08-11).
              + ['STFKILL0', 'STFKILL2', 'STFKILL4']           # 26..28 rampage
+             # 29 GOD, 30 DEAD (2026-09-11). st_stuff.c:900 shows STFGOD0
+             # for CF_GODMODE *or* pw_invulnerability -- the port has the
+             # second, so the face was missing on every invulnerability
+             # sphere. STFDEAD0 did NOT fit: the region is 12 KB to the
+             # VRAM top ($07D000) and two more faces ran 348 B past it,
+             # into FRAME_A. Nothing guards that, so it is checked here.
+             + ['STFGOD0']                                    # 29
              + [f'STYSNUM{i}' for i in range(10)]
              + ['STGNUM' + str(i) for i in range(2, 8)]
              # 2026-08-28: the FPS readout shows 6,25 and needs a separator.
@@ -106,7 +113,7 @@ HUD_LUMPS = (['STBAR'] + [f'STTNUM{i}' for i in range(10)] + ['STTPRCNT', 'STARM
              # invented here. APPENDED: every index above is baked into
              # memory_map.inc's HUD_* equs.
              + ['STCFN044'])
-HUD_TAB_ENGINE = 29          # bar, digits, %, arms, keys, the 13 face frames
+HUD_TAB_ENGINE = 30          # bar, digits, %, arms, keys, the 14 face frames
 
 
 def emit(wt):
@@ -137,6 +144,14 @@ def emit(wt):
         addr += len(img)
     out = os.path.join(os.path.dirname(_HERE), 'build', 'assets', 'hud')
     os.makedirs(out, exist_ok=True)
+    # THE REGION IS 12 KB TO THE VRAM TOP and nothing downstream checks it:
+    # past $080000 the blob wraps onto FRAME_A and paints over the picture.
+    # Two extra face frames (STFGOD0 + STFDEAD0, 2026-09-11) ran 348 B over
+    # and the build still said OK, which is why this assert exists.
+    assert HUD_VRAM_BASE + len(blob) <= 0x080000, (
+        'hud.bin is %d B: $%06X..$%06X runs past the 512 KB VRAM top and '
+        'would wrap onto FRAME_A' % (len(blob), HUD_VRAM_BASE,
+                                     HUD_VRAM_BASE + len(blob)))
     open(os.path.join(out, 'hud.bin'), 'wb').write(blob)
     # SIX bytes a row on disk, not seven (2026-08-30). Every lump lives in the
     # same 64 KB VBXE bank, so the u24's high byte is one constant for the whole

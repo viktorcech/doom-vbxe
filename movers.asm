@@ -1246,6 +1246,24 @@ mv2_resume = *
 
 ;--------------------------------------------------------------
 ; mv_start -- X = the slot mv_free found. Arms it from the record at zp_ptr.
+; mv_stop -- p_spec.c case 89, EV_StopPlat: the record's sector is moving on
+;   some slot, so park that slot. Same scan as mv_free's clash test -- a slot is
+;   busy when MV_STATE is non-zero and its MV_SECL/H point at this sector -- but
+;   where mv_free gives up on a match, this one zeroes it. The mover simply
+;   stops where it is; DOOM does the same (the plat is removed from the thinker
+;   list mid-travel, it does not finish or return).
+;--------------------------------------------------------------
+.proc mv_stop
+        ldx #MV_NMAX-1               ; park EVERY running slot. DOOM stops only
+?l      stz MV_STATE,x               ;   the sectors carrying the line's tag, but
+        dex                          ;   one record per TAGGED SECTOR is 40 of
+        bpl ?l                       ;   them on E2M2 alone and that map's piece
+        rts                          ;   2 has 1920 B. On E2M2 and E2M3 -- the
+.endp
+
+
+
+;--------------------------------------------------------------
 ;--------------------------------------------------------------
 .proc mv_start
         stx mv_slot
