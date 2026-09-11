@@ -34,6 +34,9 @@ mads.exe
 /wi_syms.inc
 /wi_tables.inc
 
+# wadconv's remembered paths (IWAD / PWAD / emulator -- local to each machine)
+tools/wad/wadconv.json
+
 # python
 __pycache__/
 *.pyc
