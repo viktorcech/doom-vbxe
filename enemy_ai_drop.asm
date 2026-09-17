@@ -5,12 +5,16 @@
 ;==============================================================
 ; P_KillMobj's "Drop stuff" -- the two kinds that leave ammo behind.
 ;==============================================================
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org DROP_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; en_dropmark -- Y = the thing that just died, en_kind = its kind. Flags the
 ;   corpse as carrying a dropped item, for spr_pickup to hand over.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_dropmark
         lda en_kind
         cmp #MK_POSS                 ; zombieman -> MT_CLIP
@@ -32,6 +36,7 @@
                                      ;   3 B ldy it replaces bought exactly it
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_seen -- X = vissprite. Z=0 if the thing is actually VISIBLE in the centre
@@ -68,12 +73,25 @@
 ;   ybot the byte spr_add clamped into vs_ybt. Both are the whole sprite IMAGE,
 ;   margins included, which is the same box the billboard draws.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > DROP_END+1
         ert 'en_dropmark outgrew DROP_BASE..DROP_END (memory_map.inc)'
     .endif
+ .endif
         org ESEEN_BASE               ; 2026-08-11 win2 evacuation: the drop block
                                      ;   split four ways (memory_map.inc)
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_seen
+ .if 1
+        ldy #>CLIP_BASE
+        sty zp_tmp+1
+        lda vs_cpl,x
+        lsr                          ; bit0 = uniform -> C, the block/2 in A
+        bcs ?uni                     ; one window for every column -> offset 0
+        asl                          ; the block, 2 B aligned (bit 0 clear)
+        sta zp_tmp
+ .else
         lda vs_cpl,x
         and #$FE                     ; the block, 2 B aligned (bit0 = uniform)
         sta zp_tmp
@@ -82,6 +100,7 @@
         lda vs_cpl,x
         and #1
         bne ?read                    ; one window for every column -> offset 0
+ .endif
         lda vs_x1h,x                 ; xa = max(x1, 0), as spr_one rebuilds it
         bmi ?xa0
         lda vs_x1l,x
@@ -103,11 +122,15 @@
         lda en_t+1
 ?idx    asl
         bcs ?yes                     ; > 127 columns in: cannot happen, be safe
-        clc
-        adc zp_tmp
+        adc zp_tmp                   ;   (C = 0 past it: no clc)
         sta zp_tmp
         bcc ?read
         inc zp_tmp+1
+ .if 1
+        bra ?read
+?uni    asl                          ; (the uniform block: bit 0 back to 0)
+        sta zp_tmp
+ .endif
 ?read   ldy #0
         lda (zp_tmp),y               ; window top
         cmp #255
@@ -135,6 +158,7 @@
 ?no     lda #0
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_aimcol -- roll P_GunShot's INACCURATE aim into en_col. Parked in the DROP
@@ -166,7 +190,11 @@
     .if * > ESEEN_END+1
         ert 'en_seen outgrew ESEEN_BASE..ESEEN_END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org EAIM_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_aimcol
         lda RANDOM                   ; POKEY's LFSR, this port's P_Random
         sta en_t
@@ -194,6 +222,7 @@
         sta en_ch                    ;   compensates the 256-angle grid the player
         rts                          ;   aims on, and a pellet's angle is random
 .endp                                ;   anyway. Widening it here would hand the
+        .endseg
                                      ;   shotgun 19% pellet loss at 512 units where
                                      ;   DOOM has 36% (tools/_verify_gunspread.py).
 
@@ -204,10 +233,14 @@
 ;   MF_DROPPED (bn_drop) halves the amount, which is p_inter.c's
 ;   P_GiveAmmo(am_clip, 0) = clipammo[]/2: an enemy's clip is 5, not 10.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > EAIM_END+1
         ert 'en_aimcol outgrew EAIM_BASE..EAIM_END (memory_map.inc)'
     .endif
+ .endif
         org GB_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc give_bonus
         lda BN_AMT,y
         ldx bn_drop
@@ -228,8 +261,7 @@
 ?cap0   sta bn_cap
         lda PSTATE,x                 ; counters: health/armor/ammo
         cmp bn_cap
-        bcs ?no                      ; already full -> not usable
-        clc
+        bcs ?no                      ; already full -> not usable (C = 0 past it)
         adc bn_qty
         bcs ?cap                     ; wrapped a byte
         cmp bn_cap
@@ -263,6 +295,7 @@
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; wp_give -- P_GiveWeapon (p_inter.c), THE WHOLE OF IT IN ONE PLACE. Tail-called
@@ -299,6 +332,7 @@
 ;   (weapon, owned, counter, MF_DROPPED, backpack) cases, on the shipped bytes
 ;   and through snd_bonus, by tools/tests/_verify_wpgive.py.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_give
         lda PSTATE+PS_WEAPONS        ; DID THIS PICKUP ADD ANYTHING? the set with
         ora BN_AMT,y                 ;   this weapon in it, EORed with the set
@@ -345,12 +379,14 @@
         tay                          ; the bonus id back in Y for snd_bonus
         rts                          ; C = gaveweapon || gaveammo
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; spr_take -- spr_pickup found something under the player: sp_ptr = its record,
 ;   sp_i = its index, sp_pick = which flag bit matched. Lives here because
 ;   adding the second path pushed spr_pickup past its block.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_take
         lda sp_pick
         and #F_DROP
@@ -396,12 +432,14 @@
         jmp thing_kill
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; spr_drop -- the player is standing on a corpse that carries a drop.
 ;   sp_ptr = its record, sp_i = its index. The BODY is not removed -- only the
 ;   drop bit is cleared, so you cannot farm the same zombieman twice.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_drop
         ldy sp_i
         lda #<TH_KIND
@@ -419,8 +457,7 @@
 ?give   lda #$80                     ; $80 and not 1: wp_give tests this with BIT
         sta bn_drop                  ;   (see there), give_bonus with a plain BEQ
         jsr pickup_bonus             ; C=1 = it was usable
-        ldx #0
-        stx bn_drop                  ; (ldx/stx leave C alone)
+        stz bn_drop                  ; (stz leaves C alone)
         bcc ?out                     ; ammo full -> leave it on the body
         lda sp_i                     ; rebuild sp_ptr: pickup_bonus reaches into
         jsr en_thing.en_th2          ;   wp_give/wp_select and must not be
@@ -430,6 +467,7 @@
         sta (sp_ptr),y
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pl_armset -- P_GiveArmor's other half: Y = the bonus id give_bonus just
@@ -443,7 +481,11 @@
 ;   the coldest thing in the block -- three armour pickups a level.
 ;--------------------------------------------------------------
 plarm_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLARM_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_armset
         tya
         sec
@@ -455,9 +497,13 @@ plarm_resume = *
 ?put    sta pl_armt
 ?out    rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLARM_END+1
         ert 'pl_armset outgrew PLARM_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org plarm_resume
 
     .if * > GB_END+1

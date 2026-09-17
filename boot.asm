@@ -171,6 +171,8 @@ parse_seg
         beq do_run
 
 data_seg
+        lda #0
+        sta under_rom
         lda seg_lo
         sta zp_dest
         lda seg_hi
@@ -182,10 +184,7 @@ data_seg
         ; per-byte cost is irrelevant; SIO in between always runs with the ROM
         ; back in. (The engine later uses that RAM for cold code -- see the
         ; UNDER-ROM section of memory_map.inc.)
-        lda #0
-        sta under_rom
-        lda seg_hi
-        cmp #$C0
+        cmp #$C0                     ; (A = seg_hi from the copy above)
         bcc ?lp
         inc under_rom
 ?lp     jsr get_byte

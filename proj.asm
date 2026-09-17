@@ -45,8 +45,12 @@
 ; The fire tails, out of the packed ENEMY block: en_rocket/en_plasma keep
 ; their damage roll and jmp here.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJSP_BASE
+ .endif
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_plasma2
         pha                          ; the roll, while pj_pick eats A
         jsr pj_pick                  ; which bolt is this shot?
@@ -58,7 +62,11 @@
         jmp pj_save
 ?busy   inc pj_hold                  ; EVERY SLOT IS BUSY (the trigger refires
         pla                          ;   every 3 tics against a ~7 VBLANK frame,
+  .if 1
+        jsr pj_aim3                  ;   (the same three rays pj_aim casts)
+  .else
         jsr en_shoot                 ;   so a burst outruns three bolts): find
+  .endif
         dec pj_hold                  ;   who this shot would hit, hurting nobody
         lda #$FF
         ldx en_best
@@ -79,10 +87,12 @@
         pla
         jmp ?new
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pj_rspawn / pj_pspawn -- arm the shared missile for this shot's look.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_rspawn
  .if 1
         lda #SFX_BAREXP              ; MT_ROCKET deathsound (info.c:1981) -- and
@@ -139,7 +149,9 @@
         jmp pj_hit
  .endif
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_pspawn
         lda #SFX_FIRXPL              ; MT_PLASMA deathsound (info.c:2007), and
         sta pj_bsnd                  ;   the flag that keeps pj_hit's A_Explode
@@ -167,14 +179,19 @@
         sta pj_bt2
         jmp pj_go
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJSP_END+1
         ert 'proj.asm spawn tails outgrew PJSP_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; pj_go (part A) -- position, target, deltas, the ball's shrink loop.
 ;--------------------------------------------------------------
         org PJGO_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_go
  .if 1
         rep #$20                     ; ---- 16-bit A: launch point, target and the
@@ -300,8 +317,10 @@
         jmp ?red
  .endif
 .endp
+        .endseg
 
 ; m_prod = A * pj_f (umul16, high half 0)
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_mul
  .if 1
         sta m_a
@@ -320,6 +339,7 @@
         jmp umul16
  .endif
 .endp
+        .endseg
 
 ; m_prod = -m_prod (16-bit)
  .if 1
@@ -348,6 +368,7 @@
 ;   was never drawn again. Which shots broke depended on the FIRING DIRECTION
 ;   (only negative legs are affected) and on the operands -- exactly the "some
 ;   times you see the rocket, sometimes not, and I cannot tell you when".
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_leg
  .if 1
         sty pj_sgn
@@ -375,8 +396,10 @@
 ?p      rts
  .endif
 .endp
+        .endseg
 
 ; A = |A| (the deltas fit a byte once pj_go's shrink loop is done)
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_abs
  .if 1
         bpl ?pos
@@ -391,8 +414,10 @@
 ?pos    rts
  .endif
 .endp
+        .endseg
 
 ; |m_a(16)| with A = the high byte on entry; Z=1 iff the result is < 256.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (callers are bank-$01 code)
 .proc pj_a16
         sta m_a+1
         bpl ?p
@@ -400,6 +425,7 @@
 ?p      lda m_a+1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pj_thit -- p_map.c PIT_CheckThing, the MF_MISSILE half, for the rocket where
@@ -432,6 +458,7 @@ pjth_resume = *
 ;   record pointer, but only for the few candidates the health byte lets
 ;   through -- the sweep runs once per SUB-STEP, up to five a frame per
 ;   bolt, and the old form was most of a flying frame's budget.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_thit
  .if 1
         stx pj_ti                    ; the caller's counter; X = the cursor
@@ -442,13 +469,13 @@ pjth_resume = *
         ldx pj_ti                    ; swept them all: nothing in the way
         clc
         rts
-?try    lda.l $010000+TH_HPL,x       ; shootable at all? (a decoration has no
+?try    lda.l EXT_BASE+TH_HPL,x       ; shootable at all? (a decoration has no
         bne ?alv                     ;   health, and PIT_CheckThing lets a
-        lda.l $010000+TH_HPH,x       ;   non-shootable thing through)
+        lda.l EXT_BASE+TH_HPH,x       ;   non-shootable thing through)
         beq ?nx
-?alv    lda.l $010000+TH_STATE,x     ; already dying -> its chain owns it
+?alv    lda.l EXT_BASE+TH_STATE,x     ; already dying -> its chain owns it
         bne ?nx
-        lda.l $010000+TH_RAD,x       ; blockdist = its radius + the rocket's
+        lda.l EXT_BASE+TH_RAD,x       ; blockdist = its radius + the rocket's
         clc
         adc #PJ_ROCKR
         sta pj_bd                    ; (pj_bd+1 is a permanent 0: the 16-bit
@@ -496,16 +523,16 @@ pjth_resume = *
         ldx pj_ti                    ; swept them all: nothing in the way
         clc
         rts
-?try    lda.l $010000+TH_HPL,x       ; shootable at all? (a decoration has no
+?try    lda.l EXT_BASE+TH_HPL,x       ; shootable at all? (a decoration has no
         bne ?alv                     ;   health, and PIT_CheckThing lets a
-        lda.l $010000+TH_HPH,x       ;   non-shootable thing through). Two lda.l
+        lda.l EXT_BASE+TH_HPH,x       ;   non-shootable thing through). Two lda.l
         beq ?nx                      ;   and not an ora.l: lda long,X is the one
                                      ;   indexed long read the port's simulators
                                      ;   carry (tools/sim6502.py), and a live
                                      ;   thing skips the high byte entirely
-?alv    lda.l $010000+TH_STATE,x     ; already dying -> its chain owns it
+?alv    lda.l EXT_BASE+TH_STATE,x     ; already dying -> its chain owns it
         bne ?nx
-        lda.l $010000+TH_RAD,x       ; blockdist = its radius + the rocket's
+        lda.l EXT_BASE+TH_RAD,x       ; blockdist = its radius + the rocket's
         clc
         adc #PJ_ROCKR
         sta pj_bd
@@ -554,10 +581,12 @@ pjth_resume = *
         rts
  .endif
 .endp
+        .endseg
 ; pj_orup -- pj_any = OR of the eight pj_ons: pj_mirr's tail, so it is fresh
 ;   the moment any slot's mirror changes, and spr_chasec's one-load "is
 ;   ANYTHING flying" gate. The ldx pj_cur puts back the X every pj_save
 ;   caller holds (pj_save promises X preserved, and X is always pj_cur there).
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_orup
         ldx #PJ_NSLOT-1
         lda #0
@@ -568,6 +597,7 @@ pjth_resume = *
         ldx pj_cur
         rts
 .endp
+        .endseg
     .if * > PJTHIT_END+1
         ert 'pj_thit + pj_orup outgrew PJTHIT_BASE..END (memory_map.inc)'
     .endif
@@ -576,6 +606,7 @@ pjth_resume = *
 ;--------------------------------------------------------------
 ; pj_go2 -- k7 row, the x2 speed scale, sign, arm the flight.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_go2
         lda pj_dx
         jsr pj_abs
@@ -645,6 +676,7 @@ pjth_resume = *
         sta pj_on
         jmp pj_zaim                  ; the z leg (its own island), and it ends
 .endp                                ;   `jmp pj_leaf` -- seeding pj_ss + the
+        .endseg
                                      ;   record NOW, because the draw hook runs
                                      ;   before the first pj_frame. Hooking the
                                      ;   TAIL is what kept this block, which has
@@ -658,20 +690,26 @@ pjth_resume = *
 ;   (movers, the imp's ball, then this missile) -- and the once-per-level
 ;   id fetch, both out of the packed flight island.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJLV_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_frameb
         jsr mv_frameb
         jmp pj_frameN
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_relvl
         sta pj_lvl                   ; new level: forget every bolt (pj_clr at
         lda #0                       ;   the tail), learn the sprite ids, park
                                      ;   sentinel 254 as "not a thing" (255 is
                                      ;   the ball's)
-        sta.l $010000+TH_HPL+TH_NOTHING
-        sta.l $010000+TH_HPL+$100+TH_NOTHING
-        sta.l $010000+TH_STATE+TH_NOTHING
-        sta.l $010000+TH_KIND+TH_NOTHING    ; en_kfill stops at the thing count, so
+        sta.l EXT_BASE+TH_HPL+TH_NOTHING
+        sta.l EXT_BASE+TH_HPL+$100+TH_NOTHING
+        sta.l EXT_BASE+TH_STATE+TH_NOTHING
+        sta.l EXT_BASE+TH_KIND+TH_NOTHING    ; en_kfill stops at the thing count, so
                                      ;   254 is uninitialised SRAM on the metal
                                      ;   (the sim zeroes it) -- nonzero sends
                                      ;   wrot_idle down the monster path and
@@ -693,6 +731,8 @@ pjth_resume = *
                                      ;   it ran into thr_comp ($8C9D) when they
                                      ;   were here, and PJLV_END did not notice.
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; pj_capdbl -- pj_go2's tail on pj_cap (A = pj_ctab's entry for this shot's
@@ -713,7 +753,9 @@ pjth_resume = *
 ;   ert guards can see (check_xex.py is what says so).
 ;--------------------------------------------------------------
 pjcap_resume = *
+        .endseg
         org PJCAP_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_capdbl
         ldx pj_bsnd                  ; the deathsound is what says "rocket"
         cpx #SFX_BAREXP              ;   (MT_PLASMA has no A_Explode -- pj_hit)
@@ -722,13 +764,20 @@ pjcap_resume = *
 ?put    sta pj_cap
         rts
 .endp
+        .endseg
     .if * > PJCAP_END+1
         ert 'pj_capdbl outgrew PJCAP_BASE..END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org pjcap_resume
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJLV_END+1
         ert 'pj_frameb/pj_relvl outgrew PJLV_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org PJFR_BASE
 PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
@@ -737,6 +786,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
                                      ;   min(dt_vbl, pj_cap) is always dt_vbl and
                                      ;   the missile flies at its true 14
                                      ;   units/VBLANK. See pj_ctab.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_frame                       ; ONE bolt, the one pj_load just swapped in
  .if 1
         lda pj_on                    ;   (the level check moved to pj_frameN --
@@ -893,6 +943,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         jmp pj_burst
  .endif
 .endp
+        .endseg
     .if * > PJFR_END+1
         ert 'pj_frame outgrew PJFR_BASE..END (memory_map.inc)'
     .endif
@@ -908,6 +959,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;   The block is full to the byte, so both tails share pj_gone.
 ;--------------------------------------------------------------
         org PJF2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_burst
         lda pj_bsnd
         jsr snd_qp_pj                ; barexp / firxpl AT the impact (STEREO:
@@ -921,6 +973,8 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         sta pj_ttl
         jmp pj_leaf                  ; the record parks WHERE it burst
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_gone                        ; the missile is done (both tails)
  .if 1
         stz pj_on
@@ -931,6 +985,8 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         rts
  .endif
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_btick
         sec                          ; this frame ate dt_vbl VBLANKs of the frame
         lda pj_ttl                   ;   clock -- C=0 (it ran past) or Z=1 (it
@@ -951,6 +1007,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ?set    sta pj_ttl
 ?out    rts
 .endp
+        .endseg
     .if * > PJF2_END+1
         ert 'pj_burst/pj_btick outgrew PJF2_BASE..END (memory_map.inc)'
     .endif
@@ -961,6 +1018,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;   so borrow them, ball-style.
 ;--------------------------------------------------------------
         org PJF3_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_leaf
  .if 1
         pei (zp_px)                  ; locate_floor reads the player's zp_px/py:
@@ -1021,6 +1079,8 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         ; fall through into the record refresh
  .endif
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_rec_up
  .if 1
         rep #$20                     ; ---- 16-bit A (idempotent from pj_leaf)
@@ -1055,6 +1115,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         rts
  .endif
 .endp
+        .endseg
     .if * > PJF3_END+1
         ert 'pj_leaf outgrew PJF3_BASE..END (memory_map.inc)'
     .endif
@@ -1088,6 +1149,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;   `jmp pj_leaf` and now ends `jmp pj_zaim`, which ends `jmp pj_leaf` itself.
 ;--------------------------------------------------------------
         org PJZ_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_zaim
  .if 1
         stz pj_zf
@@ -1159,17 +1221,58 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ?done   jmp pj_zaim2                 ; the other island, 2 KB off: a jmp, not a
  .endif
 .endp                                ;   branch
+        .endseg
     .if * > PJZ_END+1
         ert 'pj_zaim outgrew PJZ_BASE..END (memory_map.inc)'
     .endif
 
         org PJZ2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_zaim2                       ; dz (shrunk) -> the per-sub-step z leg
         ldx #0                       ; the sign FIRST: pj_leg tail-jumps into
         lda pj_dz+1                  ;   umul16, whose qsmul eats X and Y
         bpl ?p
         dex
 ?p      stx pj_sze
+ .if 1
+        ; BUG FIX 2026-09-15: dz is NOT a byte. pj_go's loop shrinks until dx
+        ; and dy fit [-127,127]; dz only gets the same number of halvings, so a
+        ; monster high above and close has |dz| > 128 -- and pj_abs/pj_leg took
+        ; the LOW BYTE with its own bit 7 as the sign (150 climbed like 106, 300
+        ; like 44). |dz| goes in as a word now, and the x2 step is clamped at
+        ; $7FFF (127 u/VB) where the old 16-bit product silently wrapped.
+        ; Bit-identical to the old path for every |dz| <= 128 whose step fit.
+        rep #$20
+        .LONGA ON
+        lda pj_dz
+        bpl ?ap
+        eor #$FFFF
+        inc @
+?ap     sta m_a
+        sep #$20
+        .LONGA OFF
+        stz m_b+1
+        lda pj_f
+        sta m_b
+        jsr umul16                   ; m_prod = |dz| * k7 (umul16 eats X/Y: the
+        rep #$20                     ;   sign is already in pj_sze)
+        .LONGA ON
+        lda m_prod+2
+        bne ?big
+        lda m_prod
+        cmp #$4000
+        bcc ?fit
+?big    lda #$3FFF
+?fit    asl @                        ; x2, as pj_leg
+        ldy pj_sze
+        bpl ?pos
+        eor #$FFFF
+        inc @
+?pos    sta pj_sz
+        sep #$20
+        .LONGA OFF
+        jmp pj_leaf
+ .else
         lda pj_dz
         jsr pj_abs
         ldy pj_dz+1
@@ -1179,7 +1282,10 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         lda m_prod+1
         sta pj_sz+1
         jmp pj_leaf
+ .endif
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_zstep                       ; ONE sub-step of the z leg (pj_frame)
         clc
         lda pj_zf
@@ -1193,11 +1299,80 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         sta pj_z+1
         rts
 .endp
+        .endseg
 pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
                                      ;   inside pj_zaim, at the launch
     .if * > PJZ2_END+1
         ert 'pj_zaim2/pj_zstep outgrew PJZ2_BASE..END (memory_map.inc)'
     .endif
+
+;--------------------------------------------------------------
+; pj_aim3 -- BUG FIX 2026-09-15 ("ked je imp nado mnou na plosine a strelim
+;   raketu, raketa neleti za nim hore"; plasma looked fine only because a
+;   stream of bolts catches the monster on the crosshair now and then).
+;   p_mobj.c:949 P_SpawnPlayerMissile does NOT give up on the first ray:
+;       slope = P_AimLineAttack (source, an, 16*64*FRACUNIT);
+;       if (!linetarget) { an += 1<<26; ...again;
+;           if (!linetarget) { an -= 2<<26; ...again; }
+;           if (!linetarget) { an = source->angle; slope = 0; } }
+;   The port only cast the first one (the aim cell at SCREEN_HALF), so a
+;   monster a few degrees off the crosshair got no victim, pj_zaim kept dz = 0
+;   and the missile flew level under it. 1<<26 is 5.625 deg, and SCREEN_HALF is
+;   the focal length: 80*tan(5.625 deg) = 7.9 columns at full size. The view
+;   sizes keep the 90 deg FOV and scale the projection (viewsize.asm), so the
+;   offset scales the same way: *3/4 with vw_q34, >> vw_sh. +angle = LEFT =
+;   a lower column.
+;   IN: A = damage, pj_hold set, the aim cell on the crosshair (en_gunshot /
+;   en_bfg2 put it there). OUT: X = en_best with N set from it, the aim cell
+;   back on the crosshair. A miss changes nothing but en_best (en_reach bails).
+;--------------------------------------------------------------
+PJ_AIMOFF equ 8                      ; full size; 6 at the *3/4 sizes
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc pj_aim3
+        jsr en_shoot                 ; the facing angle
+        ldx en_best
+        bpl ?out
+        lda #PJ_AIMOFF               ; the 5.625 deg offset at this view size
+        ldx vw_q34
+        beq ?q
+        lda #PJ_AIMOFF*3/4
+?q      ldx vw_sh
+        beq ?sh0
+?sh     lsr @
+        dex
+        bne ?sh
+?sh0    sta pj_aoff
+        lda #SCREEN_HALF             ; an += 1<<26: to the LEFT
+        sec
+        sbc pj_aoff
+        jsr ?try
+        bpl ?out
+        lda #SCREEN_HALF             ; an -= 2<<26: the same to the RIGHT
+        clc
+        adc pj_aoff
+        jsr ?try
+?out    php                          ; (N = the verdict, X = en_best)
+        lda #SCREEN_HALF             ; the aim cell back on the crosshair
+        jsr ?cell
+        plp
+        rts
+?try    jsr ?cell
+        lda en_dmg                   ; en_shoot stored it on the first call
+        jsr en_shoot
+        ldx en_best
+        rts
+?cell   sta en_col                   ; A = the column -> en_col, en_cl/en_ch = +-1
+        dec @
+        sta en_cl
+        inc @
+        inc @
+        sta en_ch
+        rts
+.endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a
+pj_aoff dta 0                        ; pj_aim3's column offset for this shot
+        .endseg
 
 ;--------------------------------------------------------------
 ; THE SLOT MACHINERY (2026-08-09). Nothing below the context swap knows there
@@ -1207,7 +1382,11 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
 ;   bolt per frame -- against a flight loop that runs up to five sub-steps and
 ;   a PIT_CheckThing sweep per bolt, they are noise.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJSLT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_slot                        ; X = slot -> zp_ptr = its bank $01 block
         txa                          ;   (zp_ptr+2 is parked on MAP_EXT_BANK for
         asl                          ;    the whole game, like every other
@@ -1222,11 +1401,16 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         sta zp_ptr+1                 ;   bit (7*64 = $1C0, so it never needs two)
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJSLT_END+1
         ert 'pj_slot outgrew PJSLT_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org PJLD_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_load                        ; X = slot -> the context. Preserves X.
  .if 1
         jsr pj_slot
@@ -1251,11 +1435,13 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         rts
  .endif
 .endp
+        .endseg
     .if * > PJLD_END+1
         ert 'pj_load outgrew PJLD_BASE..END (memory_map.inc)'
     .endif
 
         org PJSV_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_save                        ; X = slot <- the context. Preserves X.
  .if 1
         jsr pj_slot
@@ -1280,11 +1466,13 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         jmp pj_mirr
  .endif
 .endp
+        .endseg
     .if * > PJSV_END+1
         ert 'pj_save outgrew PJSV_BASE..END (memory_map.inc)'
     .endif
 
         org PJMR_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_mirr                        ; X = slot: what spr_chasec reads per
         lda pj_on                    ;   SUBSECTOR, kept in fast base RAM so the
         sta pj_ons,x                 ;   walk never unpacks a slot to find out
@@ -1294,11 +1482,16 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         sta pj_ssh,x
         jmp pj_orup                  ; ...and refresh pj_any (X comes back as
 .endp                                ;   pj_cur, which is what X holds here)
+        .endseg
     .if * > PJMR_END+1
         ert 'pj_mirr outgrew PJMR_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJFN_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_frameN                      ; the frame hook: every bolt, in turn
         lda current_level            ; the level check is HERE and not in
         cmp pj_lvl                   ;   pj_frame any more: pj_relvl has to run
@@ -1306,12 +1499,25 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         jsr pj_relvl                 ;   forgets every slot, not just one
 ?go     jmp pj_frameN2
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJFN_END+1
         ert 'pj_frameN outgrew PJFN_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org PJFN2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_frameN2
+ .if 1
+        lda pj_any                   ; nothing flying (the usual frame): the scan
+        bne ?scan                    ;   below would find every slot idle and only
+        ldx #PJ_NSLOT-1              ;   leave pj_cur on the last one -- do that
+        stx pj_cur                   ;   and go (pj_orup keeps pj_any exact after
+        rts                          ;   every pj_save; pj_clr zeroes both)
+?scan
+ .endif
         ldx #0
 ?lp     stx pj_cur
         lda pj_ons,x                 ; idle: not worth 62 bytes of copying
@@ -1325,11 +1531,13 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         bne ?lp
         rts
 .endp
+        .endseg
     .if * > PJFN2_END+1
         ert 'pj_frameN2 outgrew PJFN2_BASE..END (memory_map.inc)'
     .endif
 
         org PJDR_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_draw1                       ; X = slot, and its leaf is the one the walk
         stx pj_cur                   ;   is in: unpack it and project it
         jsr pj_load
@@ -1351,11 +1559,13 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         sta sp_ptr+1
         jmp spr_proj
 .endp
+        .endseg
     .if * > PJDR_END+1
         ert 'pj_draw1 outgrew PJDR_BASE..END (memory_map.inc)'
     .endif
 
         org PJPK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_pick                        ; the slot a NEW shot gets, context loaded.
         ldx #PJ_NSLOT-1              ;   Z=1 = it is somebody's LIVE bolt (every
 ?lp     lda pj_ons,x                 ;   slot was busy), so the caller has to
@@ -1369,11 +1579,13 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         cmp #1
         rts
 .endp
+        .endseg
     .if * > PJPK_END+1
         ert 'pj_pick outgrew PJPK_BASE..END (memory_map.inc)'
     .endif
 
         org PJRK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_rocket2
         pha                          ; the roll, while pj_pick eats A
         jsr pj_pick
@@ -1386,32 +1598,43 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
         ldx pj_cur                   ;   new target)
         jmp pj_save
 .endp
+        .endseg
     .if * > PJRK_END+1
         ert 'en_rocket2 outgrew PJRK_BASE..END (memory_map.inc)'
     .endif
 
         org PJCLR_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_clr                         ; a new level: forget every bolt
-        lda #0
-        sta pj_on
-        sta pj_any                   ; ...and the walk's gate with them
+        stz pj_on
+        stz pj_any                   ; ...and the walk's "anything flying" flag
         ldx #PJ_NSLOT-1
 ?z      sta pj_ons,x
         dex
         bpl ?z
         rts
 .endp
+        .endseg
     .if * > PJCLR_END+1
         ert 'pj_clr outgrew PJCLR_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJMIR_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 pj_ons  dta 0,0,0,0,0,0,0,0          ; per slot: pj_on, and the leaf it is in --
 pj_ssl  dta 0,0,0,0,0,0,0,0          ;   the only projectile state the render
 pj_ssh  dta 0,0,0,0,0,0,0,0          ;   walk ever reads (PJ_NSLOT of each)
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJMIR_END+1
         ert 'the pj draw mirrors outgrew PJMIR_BASE..END (memory_map.inc)'
     .endif
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; spr_chasec -- spr_add's chase hook, retargeted a second time (sprites.asm
@@ -1425,7 +1648,9 @@ pj_ssh  dta 0,0,0,0,0,0,0,0          ;   walk ever reads (PJ_NSLOT of each)
 ;   required.
 ;--------------------------------------------------------------
 sprchc_resume = *
+        .endseg
         org SPRCHC_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_chasec
         jsr spr_chaseb
         lda pj_any                   ; nothing flying anywhere (the usual
@@ -1449,14 +1674,22 @@ sprchc_resume = *
         bpl ?lp
 ?out    rts
 .endp
+        .endseg
 pj_any  dta 0                        ; OR of the eight pj_ons (pj_orup): 0 = no
                                      ;   bolt flying anywhere. Lives with its
                                      ;   only per-frame reader now.
     .if * > SPRCHC_END+1
         ert 'spr_chasec + pj_any outgrew SPRCHC_BASE..END (memory_map.inc)'
     .endif
-        org sprchc_resume
+ .if 1                                ; DRAC_PLAN 3a: sprchc_resume was taken inside
+ .else                                ;   the PJ block, which is segment D0 now --
+        org sprchc_resume             ;   nothing follows before the next org
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJHK_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; THE PER-BOLT CONTEXT (2026-08-09). One shot's whole flight, 31 bytes, and
@@ -1554,9 +1787,14 @@ pj_ctab dta PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB
         dta PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB
 pj_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
                                      ;   sprite id, flags 0
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJHK_END+1
         ert 'spr_chasec + pj vars outgrew PJHK_BASE..END (memory_map.inc)'
     .endif
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 pjhk_resume = *
 ;--------------------------------------------------------------
@@ -1567,11 +1805,17 @@ pjhk_resume = *
 ;   victim's centre, or -- with nothing under the crosshair -- the wall point
 ;   sh_trace finds, exactly as before.
 ;--------------------------------------------------------------
+        .endseg
         org PJAIM_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_aim
  .if 1
         inc pj_hold
+  .if 1
+        jsr pj_aim3                  ; en_shoot + DOOM's two 5.625 deg retries
+  .else
         jsr en_shoot
+  .endif
         dec pj_hold
         lda en_dmg                   ; the roll travels with the rocket
         sta pj_dmg
@@ -1624,6 +1868,7 @@ pjhk_resume = *
         jmp sh_trace                 ;   stopped
  .endif
 .endp
+        .endseg
     .if * > PJAIM_END+1
         ert 'pj_aim outgrew PJAIM_BASE..END (memory_map.inc)'
     .endif
@@ -1643,7 +1888,11 @@ pjhk_resume = *
 ;   (it only skips what is already dying, en_bthings). No pain grunt: the
 ;   barexp is on the same one digi channel and would drown it anyway.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PJHIT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_hit
  .if 1
         lda pj_vic
@@ -1658,9 +1907,9 @@ pjhk_resume = *
                                      ;   too few things for it to show.
         sta en_bi
         tax
-        lda.l $010000+TH_HPL,x       ; still alive? Two lda.l, as pj_thit reads
+        lda.l EXT_BASE+TH_HPL,x       ; still alive? Two lda.l, as pj_thit reads
         bne ?alv                     ;   them: the health word is two page arrays
-        lda.l $010000+TH_HPH,x       ;   in bank $01 (no [zp_ptr] re-aiming --
+        lda.l EXT_BASE+TH_HPH,x       ;   in bank $01 (no [zp_ptr] re-aiming --
         beq ?blast                   ;   en_bhit and en_bthings aim their own)
 ?alv    lda pj_dmg                   ; already dead -> no second death chain
         jsr en_bhit                  ; P_DamageMobj + the voice + the chain
@@ -1741,13 +1990,22 @@ pjhk_resume = *
 ?out    rts
  .endif
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
     .if [SFX_RXPLOD&1]=0 .or [SFX_BAREXP&1]<>0 .or [SFX_FIRXPL&1]<>0
         ert 'pj_hit dispatches on bit0: SFX_RXPLOD must be the ONLY odd id of the three'
     .endif
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJHIT_END+1
         ert 'pj_hit outgrew PJHIT_BASE..END (memory_map.inc)'
     .endif
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org pjhk_resume
+ .endif
 
 ;==============================================================
 ; PUFF (2026-08-05) -- P_SpawnPuff, "ked strelim do steny, nic nevidno".
@@ -1827,6 +2085,7 @@ pf_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ;--------------------------------------------------------------
 pf_resume = *
         org SHREF_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_refine
  .if 1
         stz sh_lo                    ; the wall is somewhere in [0, sh_hi], and
@@ -1921,6 +2180,7 @@ pf_resume = *
         jmp sh_end                   ; C=1: a wall was found
  .endif
 .endp
+        .endseg
 ; the seven pellets' impact points, parked with sh_refine: the puff block itself
 ; went full the moment one puff became seven.
 pf_px   dta a(0),a(0),a(0),a(0),a(0),a(0),a(0)
@@ -1947,6 +2207,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ;   puff, so there is nothing to do. A shot that hit nothing gets the wall
 ;   traced and the puff put there.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pf_shot
  .if 1
         lda pf_on
@@ -2202,6 +2463,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         jmp pf_leaf
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pf_gore -- PTR_ShootTraverse's THING branch (p_map.c:1000-1010): the shot
@@ -2227,6 +2489,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ;--------------------------------------------------------------
 pfg_resume = *
         org GORE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pf_gore
  .if 1
         lda en_kind                  ; MF_NOBLOOD -> a puff: kind 0 (a shootable
@@ -2341,6 +2604,7 @@ pfg_resume = *
 ?out    rts
  .endif
 .endp
+        .endseg
     .if * > GORE_END+1
         ert 'pf_gore outgrew GORE_BASE..GORE_END (memory_map.inc)'
     .endif
@@ -2350,6 +2614,7 @@ pfg_resume = *
 ; pf_leaf -- which subsector the puff hangs in, so spr_chased knows when to
 ;   project it. locate_floor reads zp_px/zp_py, so borrow them (pj_leaf's dance).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pf_leaf
  .if 1
         pei (zp_px)                  ; locate_floor reads zp_px/zp_py: park both
@@ -2409,11 +2674,13 @@ pfg_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pf_frameb -- the frame loop's projectile call, retargeted once more: the
 ;   missile's chain first (which starts with the movers), then the puff clock.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pf_frameb
  .if 1
         jsr pj_frameb
@@ -2423,10 +2690,10 @@ pfg_resume = *
         sta pf_lvl
         lda #0
         sta pf_on
-        sta.l $010000+TH_HPL+TH_NOTHING     ; sentinel 253: health 0 so en_shoot skips
-        sta.l $010000+TH_HPL+$100+TH_NOTHING ;  it, state 0 so spr_dyn draws it live,
-        sta.l $010000+TH_STATE+TH_NOTHING   ;   kind 0 so wrot_idle does not send it
-        sta.l $010000+TH_KIND+TH_NOTHING    ;   down the monster path (proj.asm's note)
+        sta.l EXT_BASE+TH_HPL+TH_NOTHING     ; sentinel 253: health 0 so en_shoot skips
+        sta.l EXT_BASE+TH_HPL+$100+TH_NOTHING ;  it, state 0 so spr_dyn draws it live,
+        sta.l EXT_BASE+TH_STATE+TH_NOTHING   ;   kind 0 so wrot_idle does not send it
+        sta.l EXT_BASE+TH_KIND+TH_NOTHING    ;   down the monster path (proj.asm's note)
         lda THINGS_BASE+24
         sta pf_id
         lda THINGS_BASE+25
@@ -2460,10 +2727,10 @@ pfg_resume = *
         sta pf_lvl
         lda #0
         sta pf_on
-        sta.l $010000+TH_HPL+TH_NOTHING     ; sentinel 253: health 0 so en_shoot skips
-        sta.l $010000+TH_HPL+$100+TH_NOTHING ;  it, state 0 so spr_dyn draws it live,
-        sta.l $010000+TH_STATE+TH_NOTHING   ;   kind 0 so wrot_idle does not send it
-        sta.l $010000+TH_KIND+TH_NOTHING    ;   down the monster path (proj.asm's note)
+        sta.l EXT_BASE+TH_HPL+TH_NOTHING     ; sentinel 253: health 0 so en_shoot skips
+        sta.l EXT_BASE+TH_HPL+$100+TH_NOTHING ;  it, state 0 so spr_dyn draws it live,
+        sta.l EXT_BASE+TH_STATE+TH_NOTHING   ;   kind 0 so wrot_idle does not send it
+        sta.l EXT_BASE+TH_KIND+TH_NOTHING    ;   down the monster path (proj.asm's note)
         lda THINGS_BASE+24
         sta pf_id
         lda THINGS_BASE+25
@@ -2499,6 +2766,7 @@ pfg_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; spr_chased -- spr_add's chase hook, retargeted a third time (sprites.asm
@@ -2506,11 +2774,52 @@ pfg_resume = *
 ;--------------------------------------------------------------
 pfh_resume = *
         org PFHK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_chased
  .if 1
-        jsr spr_chasec
-        lda pf_on
-        beq ?out
+        jsr spr_chase                ; the monsters (enemy_ai.asm) ...
+        lda bl_on                    ; --- spr_chaseb (ball.asm) INLINED: the
+        beq ?cb_out                  ;   imp's fireball, when it is in this leaf
+        lda zp_nid
+        cmp bl_ss
+        bne ?cb_out
+        lda zp_nid+1
+        and #$7F
+        cmp bl_ss+1
+        bne ?cb_out
+        lda sp_n
+        cmp #VIS_MAX
+        bcs ?cb_out
+        lda #TH_NOTHING              ; vs_th: not a thing
+        sta sp_i
+        lda #<bl_rec
+        sta sp_ptr
+        lda #>bl_rec
+        sta sp_ptr+1
+        jsr spr_proj
+?cb_out lda pj_any                   ; --- spr_chasec INLINED: nothing flying
+        beq ?cc_out                  ;   anywhere (the usual frame): one load
+        ldx #PJ_NSLOT-1              ;   instead of an 8-slot scan
+?cc_lp  lda pj_ons,x
+        beq ?cc_nx
+        lda zp_nid
+        cmp pj_ssl,x
+        bne ?cc_nx
+        lda zp_nid+1
+        and #$7F
+        cmp pj_ssh,x
+        bne ?cc_nx
+        lda sp_n
+        cmp #VIS_MAX
+        bcs ?cc_nx
+        jsr pj_draw1
+        ldx pj_cur                   ; (pj_draw1 goes through spr_proj)
+?cc_nx  dex
+        bpl ?cc_lp
+?cc_out                              ; --- and the puffs (2026-09-15: the chain
+        lda pf_on                    ;   spr_chased/c/b was three nested jsr/rts
+        beq ?out                     ;   per subsector; spr_chasec/spr_chaseb
+                                     ;   stay in their files as reference text)
         lda zp_nid
         cmp pf_ss
         bne ?out
@@ -2585,6 +2894,7 @@ pfh_resume = *
 ?out    rts
  .endif
 .endp
+        .endseg
     .if * > PFHK_END+1
         ert 'spr_chased outgrew PFHK_BASE..PFHK_END (memory_map.inc)'
     .endif

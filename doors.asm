@@ -54,6 +54,7 @@
 ;   Homed HERE and not in collision.asm because collision's two blocks are the
 ;   ones that needed the bytes back.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc m_x4
  .if 1
 	rep #$20
@@ -76,7 +77,9 @@
  .endif
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc m_x8
  .if 1
 	rep #$20
@@ -95,6 +98,7 @@
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 
@@ -119,6 +123,7 @@
 ; runs per crossed seg on a USE press, the other once per press).
 di_resume = *
         org DOORIDX_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_index_of                  ; m_a = sector id -> A = door index, or $FF
         ldx MAP_HNDOOR               ; this LEVEL's door count (0 -> straight out)
         beq ?no
@@ -133,7 +138,9 @@ di_resume = *
 ?yes    txa
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_toggle                    ; A = door index -> DR toggle its state
         tax
         lda.l DOOR_STATE,x
@@ -148,6 +155,7 @@ di_resume = *
         sta.l DOOR_STATE,x
         rts
 .endp
+        .endseg
     .if * > CLIP_BASE
         ert 'door_index_of/door_toggle overran $06B7-$06FF and would clobber CLIP_BASE'
     .endif
@@ -157,6 +165,7 @@ di_resume = *
 ; init_doors -- all doors closed (cur = ceil = floor) AND build the per-level
 ;   tables the frame loop reads: sector pointer, open_ceil, sector id.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc init_doors
  .if 1
         stz DOOR_TRIGPREV
@@ -225,6 +234,7 @@ di_resume = *
 ?nodoors
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; update_doors -- advance every door by the TIME the last frame took.
@@ -245,6 +255,7 @@ di_resume = *
 ;   both scale their motion by it, so DOOM's 35 Hz tic rate survives any frame
 ;   rate (5 fps on a stock 800XL, far more on a Rapidus).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc frame_dt
         lda RTCLOK3                  ; RTCLOK3 wraps at 256 -- so does the subtract,
         sec                          ;   so only a frame longer than 5 s confuses it
@@ -255,6 +266,15 @@ di_resume = *
         bcc ?ok
         lda #DOOR_DTMAX
 ?ok     sta dt_vbl
+ .if 1
+        tax                          ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
+        lda RTCLOK3                  ;   frame: update_movers doubles it (PLATSPEED*4)
+        sta fps_last                 ;   and update_doors uses it as it is. A TABLE
+        lda dsq_hi,x                 ;   (dt_vbl <= DOOR_DTMAX: 65 words, segment
+        sta DOOR_STEP                ;   D0 below) for the product umul16 computed
+        lda dsq_lo,x                 ;   at ~90 cycles a frame
+        sta DOOR_FADD
+ .else
         lda RTCLOK3
         sta fps_last
         lda dt_vbl                    ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
@@ -274,8 +294,21 @@ di_resume = *
         sta DOOR_STEP
         lda m_prod
         sta DOOR_FADD
+ .endif
         jmp plr_steps                ; + the player's speed/turn for this frame
 .endp
+        .endseg
+        .segment D0                  ; frame_dt's dt_vbl * DOOR_SPEED_Q8 table
+dsq_lo  .rept DOOR_DTMAX+1, #
+        dta <[#*DOOR_SPEED_Q8]
+        .endr
+dsq_hi  .rept DOOR_DTMAX+1, #
+        dta >[#*DOOR_SPEED_Q8]
+        .endr
+    .if DOOR_DTMAX*DOOR_SPEED_Q8 > 65535
+        ert 'frame_dt: dt_vbl*DOOR_SPEED_Q8 no longer fits the dsq table words'
+    .endif
+        .endseg
 
 ;--------------------------------------------------------------
 ; plr_steps -- PLR_STEP/TRN_STEP for this frame: the ORIGINAL fixed per-frame
@@ -288,6 +321,7 @@ di_resume = *
 ;--------------------------------------------------------------
 plrs_resume = *
         org PSTEP_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc plr_steps
         lda #SPD
         sta PLR_STEP
@@ -310,9 +344,8 @@ plrs_resume = *
         cmp #$0C                     ;   like G_BuildTiccmd's else branch
         beq ?arm
         ldx trn_held                 ; 0 = the press started THIS frame, i.e. it
-        beq ?first                   ;   has already turned its one slow BAM
-        bne ?full                    ; (always: turnheld is 0 or 1)
-?first  inx                          ; turnheld = 1 -> full speed from here on
+        bne ?full                    ;   has already turned its one slow BAM
+        inx                          ; turnheld = 1 -> full speed from here on
         ; --- TURN = TURN + TURN_FADD/256 BAM per frame, carried as a Q8 fraction
         ;     so the sub-BAM part is not lost (the DOOR_STEP/DOOR_FADD pattern
         ;     right above). Still PER FRAME, i.e. still frame-rate dependent --
@@ -340,6 +373,7 @@ plrs_resume = *
         jmp move_player              ;   step, because move_player's halfway
 ?out    rts                          ;   collision probe only holds for step<=24
 .endp                                ;   (gap 12 < PLAYER_R). frame_dt tail-calls
+        .endseg
                                      ;   us AFTER the frame's first move_player
                                      ;   and BEFORE check_triggers, so a crossing
                                      ;   still sees the whole frame's travel.
@@ -351,6 +385,7 @@ plrs_resume = *
 ;   horizontal step never moves them -- keep what pl_airmove set. Parked in
 ;   plr_steps' block: it outgrew the FALL block (bsp_main_player.asm).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc skipx_ref
         lda pl_air
         bne ?out
@@ -361,11 +396,13 @@ plrs_resume = *
         sta cur_floor+1
 ?out    rts
 .endp
+        .endseg
     .if * > PSTEP_END+1
         ert 'plr_steps/skipx_ref outgrew PSTEP_BASE..END (memory_map.inc)'
     .endif
         org plrs_resume
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc update_doors
         lda DOOR_NACT                ; nothing is moving -> the whole scan is skippable
         bne ?go
@@ -523,6 +560,7 @@ plrs_resume = *
         sta (zp_ptr),y
         jmp ?next
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; door_at_point -- descend to the subsector at (zp_px,zp_py); return A = index of
@@ -544,6 +582,7 @@ plrs_resume = *
 ;--------------------------------------------------------------
 ul_resume = *
         org USELOC_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_locate
         lda MAP_HROOT                 ; root node index (map header, per level)
         sta zp_nid
@@ -585,6 +624,7 @@ ul_resume = *
  .endif
 ?leaf   rts
 .endp
+        .endseg
     .if * > USELOC_END+1
         ert 'use_locate outgrew USELOC_BASE..END (memory_map.inc)'
     .endif
@@ -595,7 +635,11 @@ ul_resume = *
 ;     exactly where SQ2H_UROM wanted to live. All four fire once per USE
 ;     press, so win2 prices them at nothing (DAPUSE_BASE, 2026-08-31).
 dap_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org DAPUSE_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_at_point
         jsr use_locate
  .if 1
@@ -675,6 +719,7 @@ dap_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 
 
@@ -691,6 +736,7 @@ dap_resume = *
 ;   A door is reported immediately (specials win); blocking is only reported
 ;   after the whole leaf, so a door line in the same leaf still wins.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_leaf
         jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
                                      ;   (the body is parked in the POWER block:
@@ -797,6 +843,7 @@ dap_resume = *
 ?fired  lda #$FE                     ; a switch fired (its sound is queued):
         rts                          ;   stop the ray; try_use skips the toggle
 .endp
+        .endseg
 
 
 ;--------------------------------------------------------------
@@ -807,6 +854,7 @@ dap_resume = *
 ;   times left the ray 14 units short of USERANGE -- 1.8 % of the sweep in
 ;   tools/_verify_useray.py missed a door DOOM opens (97.9 % vs 99.6 %).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_sample
         sta m_ma                     ; keep n (smul_14 eats m_a)
  .if 1
@@ -878,6 +926,7 @@ dap_resume = *
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; try_use -- DOOM P_UseLines (p_map.c). Walk a ray USERANGE units forward, visit
@@ -893,6 +942,7 @@ dap_resume = *
 ;   whole ray), so consecutive duplicates are skipped and both ray endpoints stay
 ;   loop constants.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc try_use
  .if 1
 	rep #$20
@@ -1034,9 +1084,13 @@ dap_resume = *
 ?swit   rts                          ; (also the EXIT switch's silent stop --
                                      ;   snd_q_nowayx plays ITS click)
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > DAPUSE_END+1
         ert 'door_at_point..try_use outgrew DAPUSE_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org dap_resume
 
 ;--------------------------------------------------------------
@@ -1052,6 +1106,7 @@ dap_resume = *
 ;--------------------------------------------------------------
 udg_resume = *
         org USEDOORGO_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_door_go
         tax
         lda MAP_DOORLOCK,x           ; (under-ROM read: USE runs after rom_out)
@@ -1084,6 +1139,7 @@ udg_resume = *
         jmp snd_door_toggle          ; DR: the normal toggle + open/close SFX
 ?locked jmp door_keymsg              ; no key -> the PD_*K line + "uh-uh",
 .endp                                ;   nothing moves (tail-parked: this
+        .endseg
                                      ;   block has 4 B of slack)
     .if * > USEDOORGO_END+1
         ert 'use_door_go outgrew USEDOORGO_BASE..END (memory_map.inc)'
@@ -1098,6 +1154,7 @@ udg_resume = *
 ;--------------------------------------------------------------
 dkm_resume = *
         org DKEYMSG_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_keymsg
         lda MAP_DOORLOCK,x           ; a key bit refused the door?
         and #7
@@ -1106,6 +1163,7 @@ dkm_resume = *
         jsr msg_set.msg_arm
 ?nw     jmp snd_q_noway              ; ...and the "uh-uh" either way
 .endp
+        .endseg
     .if * > DKEYMSG_END+1
         ert 'door_keymsg outgrew DKEYMSG_BASE..END (memory_map.inc)'
     .endif
@@ -1131,7 +1189,11 @@ dkm_resume = *
 ;   fired. Preserves zp_sptr/zp_segcnt (use_leaf's loop); clobbers A/X/Y+zp_ptr.
 ;--------------------------------------------------------------
 swf_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SWFIRE_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc switch_match
  .if 1
         stz sw_hit
@@ -1200,13 +1262,18 @@ swf_resume = *
 ?done   lda sw_hit
         beq ?no
         jsr sw_swap                  ; P_ChangeSwitchTexture (SW1 -> SW2)
-        lda #SFX_SWTCHN              ; the click is AT the player -- and it wins
-        sta snd_pending              ;   the single sound slot
-        sec
+ .if 1
+        bcc ?nosw                    ; BUG FIX 2026-09-15: p_switch.c plays sfx_swtchn
+ .endif                               ;   only when a SWITCH TEXTURE flipped (sw_swap
+        lda #SFX_SWTCHN              ;   C=1). E3M1's lift "door" (62 on BIGDOOR7)
+        sta snd_pending              ;   has none, and the click overwrote its
+?nosw   sec                          ;   sfx_pstart in the single sound slot
         rts
 ?no     clc
         rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 sw_hit  dta 0
 
 ;--------------------------------------------------------------
@@ -1215,6 +1282,8 @@ sw_hit  dta 0
 ;   wall byte, then the lower (62 sits on lift fronts' lower texture). An SR
 ;   button (sw_fl b12 clear) arms the one button slot to flip back after
 ;   BUTTONTIME (update_button); S1 stays pressed forever.
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sw_swap
         ldy #SEG_WALL
         jsr ?try
@@ -1271,12 +1340,14 @@ sw_hit  dta 0
 ?nosw   clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; trig_fire -- run the trigger record at zp_ptr: DOOR actions go to the door
 ;   state machine, the rest is a floor/plat for mv_start. Shared by
 ;   check_triggers (walkover) and switch_match (USE). Preserves mv_i/zp_ptr.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc trig_fire
         ldy #13
         lda (zp_ptr),y
@@ -1352,9 +1423,13 @@ tl_once ldy #13                      ; (trig_light comes back in here)
         jmp mv_used_set
 ?out    rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SWFIRE_END+1
         ert 'switch_match/trig_fire outgrew SWFIRE_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org swf_resume
 
 
@@ -1369,6 +1444,7 @@ tl_once ldy #13                      ; (trig_light comes back in here)
 ;--------------------------------------------------------------
 tl_resume = *
         org TRIGLT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc trig_light
  .if 1
 	ldy #12
@@ -1416,6 +1492,7 @@ tl_back jmp trig_fire.tl_once        ; and spend the W1 bit
 ?w	sep #$20
 	bra tl_back
 .endp
+        .endseg
     .if * > TRIGLT_END+1
         ert 'trig_light outgrew TRIGLT_BASE..END (memory_map.inc)'
     .endif
@@ -1448,6 +1525,7 @@ tl_back jmp trig_fire.tl_once        ; and spend the W1 bit
 ;--------------------------------------------------------------
 gm_resume = *
         org GUNMATCH_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc gun_seg_p                      ; C=1 if zp_sptr is EITHER face of the 46
         pha                          ;   line. A survives (try_use still needs it)
         ldy #26                      ; the header's two seg record addresses. Both
@@ -1491,6 +1569,7 @@ gm_resume = *
  .endif
         rts
 .endp
+        .endseg
     .if * > GUNMATCH_END+1
         ert 'gun_seg_p outgrew GUNMATCH_BASE..END (memory_map.inc)'
     .endif
@@ -1498,6 +1577,7 @@ gm_resume = *
 
 gf_resume = *
         org GUNFIRE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc gun_match                      ; fire it: the record index is in the header too
         jsr gun_seg_p
         bcc ?out
@@ -1514,6 +1594,7 @@ gf_resume = *
         sta en_snd_q                 ;   voice (SND_NV = 4)
 ?out    rts
 .endp
+        .endseg
     .if * > GUNFIRE_END+1
         ert 'gun_match outgrew GUNFIRE_BASE..END (memory_map.inc)'
     .endif
@@ -1540,6 +1621,7 @@ gf_resume = *
 ;--------------------------------------------------------------
 dfo_resume = *
         org DFORCE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_force_open
         ldy #13                      ; TRIGGER-RECORD entry: zp_ptr = the record
         lda (zp_ptr),y
@@ -1598,6 +1680,7 @@ dfo_go                               ; no-record entry: open, never close
 ?outp   pla                          ; the early exit has to balance it
         rts
 .endp
+        .endseg
     .if * > DFORCE_END+1
         ert 'door_force_open outgrew the DFORCE hole (memory_map.inc)'
     .endif
@@ -1609,6 +1692,7 @@ dfo_go                               ; no-record entry: open, never close
 ;--------------------------------------------------------------
 btu_resume = *
         org BTNUPD_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc update_button
         lda btn_timer
         bne ?run
@@ -1669,6 +1753,7 @@ btu_resume = *
         sta snd_pending
 ?out    rts
 .endp
+        .endseg
 btn_timer dta 0                      ; VBLANKs left (0 = idle)
 btn_ptr   dta 0,0                    ; seg record holding the flipped byte
 btn_y     dta 0                      ; which byte (SEG_WALL / SEG_LOW)
@@ -1692,6 +1777,7 @@ sw_fl     dta 0
 ;--------------------------------------------------------------
 sda_resume = *
         org SNDDIST_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_q_door_at
         sta sda_id
         stx sda_x
@@ -1771,7 +1857,7 @@ sda_resume = *
         sbc #>1200
  .endif
         bcs ?silent
-        jsr snd_setpan               ; STEREO: which ear gets this door
+        jsl snd_setpan_w0               ; STEREO: which ear gets this door
         ldx sda_id                   ; PLAY it, do not queue it: snd_pending is
         jsr snd_play                 ;   one byte and spr_pickup runs later in
                                      ;   the same frame -- the key's ITEMUP
@@ -1787,6 +1873,7 @@ sda_resume = *
 ?silent ldx sda_x
         rts
 .endp
+        .endseg
 sda_id  dta 0
 sda_x   dta 0
     .if * > SNDDIST_END+1
@@ -1815,6 +1902,7 @@ spn_resume = *
 ;   the door: sda_sx/sda_sy = player - soundorg, words. The variables stay
 ;   here; the code and its tables live in the bigger hole.
  .else
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_setpan
         ldx #0
         lda sda_sx+1                 ; bit7: the door is EAST of the player
@@ -1841,6 +1929,7 @@ spn_resume = *
         sta snd_side                 ; snd_play hands it to the voice + resets
         rts
 .endp
+        .endseg
 pan_tab dta $80,$40,$40,$80          ; door SW of the player, facing E/N/W/S
         dta $40,$40,$80,$80          ;   ... NW
         dta $80,$80,$40,$40          ;   ... SE
@@ -1886,7 +1975,10 @@ snd_side dta 0                       ; the NEXT snd_play's pan; 0 = centre
 ; HIGH region stopped needing when SSECTORS left for the Rapidus EXT bank.
 ;==============================================================
 crush_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org CRUSH_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; crush_pre -- A = the whole-unit ceiling step door X takes this frame.
@@ -1899,6 +1991,7 @@ crush_resume = *
 ;   it -- the alternative is a second 16-bit accumulate per door per frame, and
 ;   nobody can see 3.2 units a frame against 3.5 on a ceiling.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc crush_pre
         sta DOOR_DELTA
         lda MAP_DOORLOCK,x           ; (under-ROM read: the frame loop banks the
@@ -1917,6 +2010,7 @@ crush_resume = *
 ?out    lda.l DOOR_STATE,x
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; door_crush -- the descending ceiling has caught the player (update_doors'
@@ -1929,6 +2023,7 @@ crush_resume = *
 ;   rates is the same picture and costs no state.
 ;   OUT: C=1 = go on moving (a fast crusher), C=0 = leave the ceiling alone.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_crush
         lda MAP_DOORLOCK,x
         and #CRUSH_BIT
@@ -1949,6 +2044,7 @@ crush_resume = *
 ?stop   clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; door_end -- door X has arrived at one end of its travel.
@@ -1962,6 +2058,7 @@ crush_resume = *
 ;   of a running crusher -- the door scan plus door_at_point's one BSP descent,
 ;   and any moving door already pays both.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_end
         pha
         lda MAP_DOORLOCK,x
@@ -1981,6 +2078,7 @@ crush_resume = *
         sta.l DOOR_WAIT,x
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; trig_crush -- a crusher line was crossed (trig_fire, off the record's dst).
@@ -1994,6 +2092,7 @@ crush_resume = *
 ;   remembers that and this does not; the cost is one wrong half-cycle, once,
 ;   on a machine that then repeats for ever.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc trig_crush
         cmp #3
         beq ?halt
@@ -2020,6 +2119,7 @@ crush_resume = *
         beq ?out                     ; (always)
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; crush_things -- P_ChangeSector(sector, true) for the crusher whose door index
@@ -2043,6 +2143,7 @@ crush_resume = *
 ;   Preserves X and m_ma (the ceiling ?move is about to store) and rebuilds
 ;   zp_ptr, which door_at_point clobbers.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc crush_things
         lda MAP_DOORLOCK,x
         and #CRUSH_BIT
@@ -2168,10 +2269,16 @@ crush_resume = *
         sta zp_ptr+1
         rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ct_d    dta 0                        ; the door being crushed under
 ct_m    dta 0,0                      ; m_ma across the sweep
 ct_p    dta 0,0,0,0                  ; the player's probe point across it
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > CRUSH_END+1
         ert 'the crusher block outgrew CRUSH_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org crush_resume

@@ -178,6 +178,18 @@ BLT_NSTENCIL    equ $06        ; nibble stencil (HR)
 BLT_NEXT        equ $08        ; chain to next BCB
 
 ;--------------------------------------------------------------
+; BCB byte 18 (ZOOM): zx = bits 0-2, zy = bits 4-6, each "repeat count - 1".
+; The blitter reads WIDTH source bytes and writes each one (zx+1) times,
+; stepping DST_STEPX between them (alt-src vbxe.cpp:3110) -- so a source that
+; is half the destination's width comes out at the right size with no second
+; copy of the graphic. The boot menu draws its 160-wide patches into the
+; 320-wide title picture with this (menu.asm mn_sdraw). It works in the
+; stencil modes too: the zoom loop is inside the `if (c)` test.
+;--------------------------------------------------------------
+BLT_ZOOM_1X     equ $00
+BLT_ZOOM_2X     equ $01        ; zx = 2, zy = 1
+
+;--------------------------------------------------------------
 ; BCB layout (21 bytes total)
 ;   0-2   src addr (3 bytes)
 ;   3-4   src step Y

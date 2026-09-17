@@ -89,6 +89,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ;   (ai_pdist just refreshed both, and ai_ad >= 60). Arms the ball + queues
 ;   sfx_firsht. Clobbers A/X/Y, m_a/m_b/m_prod, sp_ptr (render scratch).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ball_spawn
         lda bl_on
         bne ?out                     ; the slot is taken: the thrower just animates
@@ -194,6 +195,11 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         lda bl_dz+1
         sbc bl_z+1
         sta bl_dz+1
+ .endif
+ .if 1
+        jsr bl_spread                ; the blur sphere turns the aim (powerups.asm)
+ .else
+        ;nothing
  .endif
 ?red    lda bl_dx                    ; shrink until BOTH deltas fit [-127,127]:
         clc                          ;   v+127 lands in [0,254] exactly then.
@@ -359,21 +365,25 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         sta m_prod+1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; mv_frameb -- the main loop's mv_frame call, retargeted here: movers first,
 ;   then the ball's tic. Zero growth in the $2000 segment.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mv_frameb
         jsr mv_frame
         jmp ball_frame               ; (its own block -- BALLF)
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; spr_chaseb -- spr_add's chase hook, retargeted: the tracked chasers first,
 ;   then the ball, projected from the leaf ball_frame located it in. Same
 ;   contract as spr_chase: zp_nid = the subsector being collected.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_chaseb
         jsr spr_chase
         lda bl_on
@@ -401,6 +411,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
  .endif
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; bl_boom -- P_ExplodeMissile's OTHER half, for a missile whose death chain
@@ -423,6 +434,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ;   through en_bdist now, so a cyberdemon's own rocket cannot splash a
 ;   cyberdemon, which is p_map.c verbatim.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bl_boom
         lda at_boom-ATM_LO,x
         beq ?no                      ; a fireball: the burst is cosmetic
@@ -434,6 +446,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         jmp en_boomat
 ?no     rts
 .endp
+        .endseg
 
     .if * > BALL_END+1
         ert 'ball.asm (spawn half) outgrew BALL_BASE..END (memory_map.inc)'
@@ -447,6 +460,7 @@ blabs_resume = *
 ;   touches no ball state, and it is called four times from ?aim -- so it was
 ;   the cheapest thing in the block to move out.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bl_abs
         bpl ?pos
         eor #$FF
@@ -458,6 +472,7 @@ blabs_resume = *
  .endif
 ?pos    rts
 .endp
+        .endseg
     .if * > BLABS_END+1
         ert 'bl_abs outgrew BLABS_BASE..BLABS_END (memory_map.inc)'
     .endif
@@ -472,6 +487,7 @@ blsub_resume = *
 ;   it -- bl_ttl is decremented per SUB-STEP, so a rocket lives 2.5 s instead of
 ;   5 -- and at 700 u/s that is still 1750 units, wider than any DOOM 1 arena.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bl_subs
         ldx dt_vbl
         ldy bl_a
@@ -482,6 +498,7 @@ blsub_resume = *
         tax
 ?done   rts
 .endp
+        .endseg
     .if * > BLSUBS_END+1
         ert 'bl_subs outgrew BLSUBS_BASE..END (memory_map.inc)'
     .endif
@@ -520,6 +537,7 @@ blsub_resume = *
 ;--------------------------------------------------------------
 blp_resume = *
         org BLPICK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bl_pick
         ldx ai_k                     ; the SHOOTER's kind -> its attack action
         ldy mk_atk,x                 ;   -> where the .things header keeps that
@@ -538,6 +556,7 @@ blp_resume = *
         lda bl_id
         rts
 .endp
+        .endseg
     .if * > BLPICK_END+1
         ert 'bl_pick outgrew BLPICK_BASE..END (memory_map.inc)'
     .endif
@@ -553,6 +572,7 @@ attab_resume = *
 
 blr_resume = *
         org BLROLL_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bl_roll
         ldx ai_k
         lda mk_atk,x
@@ -572,6 +592,7 @@ blr_resume = *
         sta bl_dmg
         rts
 .endp
+        .endseg
     .if * > BLROLL_END+1
         ert 'bl_roll outgrew BLROLL_BASE..END (memory_map.inc)'
     .endif
@@ -584,6 +605,7 @@ blr_resume = *
 ;==============================================================
         org BALLF_BASE
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ball_frame
         lda current_level            ; new level: forget the ball, learn its
         cmp bl_lvl                   ;   BAL1 id, and park index 255 as "no
@@ -591,10 +613,10 @@ blr_resume = *
         sta bl_lvl                   ;   state 0 (spr_dyn draws it live)
         lda #0
         sta bl_on
-        sta.l $010000+TH_HPL+TH_NOTHING
-        sta.l $010000+TH_HPL+$100+TH_NOTHING
-        sta.l $010000+TH_STATE+TH_NOTHING
-        sta.l $010000+TH_KIND+TH_NOTHING    ; en_kfill fills TH_KIND only up to the
+        sta.l EXT_BASE+TH_HPL+TH_NOTHING
+        sta.l EXT_BASE+TH_HPL+$100+TH_NOTHING
+        sta.l EXT_BASE+TH_STATE+TH_NOTHING
+        sta.l EXT_BASE+TH_KIND+TH_NOTHING    ; en_kfill fills TH_KIND only up to the
                                      ;   thing COUNT, so 255 is uninitialised
                                      ;   SRAM: nonzero and wrot_idle takes the
                                      ;   ball down the monster path, into a
@@ -608,8 +630,9 @@ blr_resume = *
 ?out    rts
 ?run    cmp #2                       ; 2..4 = the burst is playing: 6 DOOM tics
         bcc ?fly0                    ;   (9 VB) per frame, C -> D -> E -> gone
-        sec                          ;   (info.c S_TBALLX1..3), parked where it
-        lda bl_ttl                   ;   died -- no movement, no hit test.
+        lda bl_ttl                   ;   (info.c S_TBALLX1..3), parked where it
+                                     ;   died -- no movement, no hit test. C = 1
+                                     ;   past the bcc: the sbc needs no sec
         sbc dt_vbl                    ; DOWN BY dt_vbl, not by one: this runs once
         sta bl_ttl                   ;   a FRAME and a frame is 4-6 VBLANKs, so
         bcc ?nx                      ;   a `dec` stretched the 27-VBLANK burst
@@ -667,6 +690,43 @@ blr_resume = *
         bne ?fly
         jmp ?gone                    ; flew its 5 s: vanish (DOOM balls only
 
+ .if 1
+?fly    rep #$20                     ; ---- 16-bit A: |x - px| < 22 and |y - py|
+        .LONGA ON                    ;   < 22 (radius 6 + 16), each one subtract,
+        sec                          ;   one negate in A and one compare -- the
+        lda bl_x                     ;   ?a16 + high-byte tests collapsed, as in
+        sbc zp_px                    ;   pj_frame (|d| >= 256 fails the compare
+        bpl ?ax                      ;   here just as it failed the hi test)
+        eor #$FFFF
+        inc @
+?ax     cmp #22
+        bcs ?miss16
+        sec                          ; |dy| < 22
+        lda bl_y
+        sbc zp_py
+        bpl ?ay
+        eor #$FFFF
+        inc @
+?ay     cmp #22
+        bcs ?miss16
+        sec                          ; z: feet <= ball <= feet+56, feet =
+        lda bl_z                     ;   zp_pz - EYE(41) -> 0 <= z-pz+41 <= 56
+        sbc zp_pz
+        clc
+        adc #41
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        xba
+        bne ?miss
+        lda m_a
+        cmp #57
+        bcs ?miss
+        jsr pl_thrust                ; P_DamageMobj, both halves: the shove first
+        jmp ?burst
+?miss16 sep #$20                     ; (falls into ?miss below)
+        .LONGA OFF
+ .else
 ?fly    sec                          ;   die on impact; this is a runaway guard)
         lda bl_x                     ; the player? |dx| < 22 (radius 6 + 16)
         sbc zp_px
@@ -734,6 +794,7 @@ blr_resume = *
                                      ;   from a baron. The pain grunt queues
                                      ;   inside en_plr_hurt.
         jmp ?burst
+ .endif
 
  .if 1
 ?miss   phx                          ; sub-step counter, on the stack (plx keeps
@@ -926,6 +987,7 @@ blr_resume = *
         adc #0
 ?ap     rts
 .endp
+        .endseg
 
     .if * > BALLF_END+1
         ert 'ball_frame outgrew BALLF_BASE..END (memory_map.inc)'
@@ -968,6 +1030,7 @@ blr_resume = *
 ;--------------------------------------------------------------
 bw_resume = *
         org BLWALL_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bl_wall
         ldx #3                       ; bl_x/bl_y are four contiguous bytes and so
 ?cp     lda bl_x,x                   ;   are coll_cx/coll_cy: one loop at 10 B
@@ -975,17 +1038,25 @@ bw_resume = *
         dex                          ;   -- which is what makes this fit the hole
         bpl ?cp
  .if 1
-        stz coll_seg.cs_hmin	
+        pha                          ; (DRAC_PLAN 2b) cs_hmin is an operand byte
+        lda #0                       ;   inside coll_seg, which runs in bank $01:
+        sta.l B1CODE_BASE+coll_seg.cs_hmin ; a long store (no long stz), A kept.
+        pla                          ;   Not phk/plb: an NMI in that window ran
+                                     ;   rom_nmi with DBR = $01
  .else
         lda #0                       ; a fireball's clearance, not the player's
         sta coll_seg.cs_hmin
  .endif
         jsr coll_plr       
         ldx #PLAYER_H                ; ...back before anything else can read it
-        stx coll_seg.cs_hmin
+        pha                          ; (long store again; A holds coll_plr's
+        txa                          ;   answer for the lsr, so save it)
+        sta.l B1CODE_BASE+coll_seg.cs_hmin
+        pla
         lsr                          ; A is exactly 0 or 1 -> C = "blocked"
         rts
 .endp
+        .endseg
     .if * > BLWALL_END+1
         ert 'bl_wall outgrew BLWALL_BASE..END (memory_map.inc)'
     .endif

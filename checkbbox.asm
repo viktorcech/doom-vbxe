@@ -39,6 +39,7 @@
 ;--------------------------------------------------------------
 
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc check_bbox
  .if 1
         ; NOTE the LONG indirect [zp_nodeptr],y: NODES live in the Rapidus EXT
@@ -55,6 +56,9 @@
         lda [zp_nodeptr],y           ; top
         sbc zp_py
         sta cb_top
+ .if 1
+        sta m_a                      ; ... and cb_corners' first FMUL argument while
+ .endif                               ;   A is 16-bit anyway (2026-09-15, -10/call)
         iny
         iny
         sec
@@ -99,6 +103,9 @@
         ;     tests in the worst case, but every test is now one 16-bit add.
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
+        ; (2026-09-15: running these sweeps corner 3 -> 0 with dex/dex/bpl was
+        ;  MEASURED +7.8k cyc/frame -- same verdicts, but the order decides how
+        ;  soon the early exits fire. Keep 0 -> 3.)
         ldx #0
 ?sdl    clc                          ; X + Z, signed (V fixes the sign)
         lda cb_X,x
@@ -156,7 +163,14 @@
         phy
         jsr screenx_signed           ; m_xs = unclamped signed column (clobbers X)
         ply
-        rep #$20
+        lda m_xs+1                   ; EARLY KEEP (2026-09-14): this corner's column
+        bne ?sl16                    ;   lies inside [lo,hi], so if it is ON screen
+        ldx m_xs                     ;   and still open, the all-solid test below
+        cpx #SCREEN_WIDTH            ;   cannot pass -- the answer is KEEP without
+        bcs ?sl16                    ;   projecting the remaining corners (each
+        lda solid_arr,x              ;   ~600 cycles). Off-screen corners say
+        beq ?keep                    ;   nothing, so they fall through as before.
+?sl16   rep #$20
         .LONGA ON
         sec                          ; cb_lo = min(cb_lo, m_xs)  (signed16)
         lda m_xs
@@ -196,12 +210,20 @@
         bcc ?xbok
 ?xbmax  lda #SCREEN_WIDTH-1
 ?xbok   sta cb_xb
+ .if 1
+?sc     lda solid_arr,x              ; occlusion: every column in [xa,xb] already solid?
+        beq ?keep                    ; an open column -> visible -> keep
+        cpx cb_xb                    ; C = (x >= xb), and inx leaves C alone. xa <= xb
+        inx                          ;   (lo <= hi, both clamped into the screen), so
+        bcc ?sc                      ;   the first x with C=1 IS xb: same exit, -2/col
+ .else
 ?sc     lda solid_arr,x              ; occlusion: every column in [xa,xb] already solid?
         beq ?keep                    ; an open column -> visible -> keep
         cpx cb_xb
         beq ?cull                    ; spanned [xa,xb] all solid -> occluded -> cull
         inx
         bra ?sc
+ .endif
 ?cull   lda #1
         rts
 ?keep   lda #0
@@ -391,6 +413,7 @@
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; cb_corners -- the four bbox corners in view space: cb_X[i]/cb_Z[i], plus
@@ -424,6 +447,7 @@ cbc_resume = *
 ; results, all of them halves before. fmul_cos/fmul_sin are 8-bit code, so the
 ; mode goes back for each call and comes straight out again into the next
 ; argument. M only; X/Y stay 8-bit (sound.asm:316).
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cb_corners
  .if 1
         ; 2026-09-09 (drac030 style): the four coordinates arrive PLAYER-
@@ -432,63 +456,79 @@ cbc_resume = *
         ; costs more than the two 8-bit moves (12 vs 14 cycles). The 16-bit
         ; work is the corner emit: two adds and the near test on the adc's own
         ; flags.
+  .if 1                               ; --- top: cos, then sin --- (m_a = cb_top was
+  .else                               ;   stored by check_bbox in its 16-bit window)
         lda cb_top                   ; --- top: cos, then sin ---
         sta m_a
         lda cb_top+1
         sta m_a+1
+  .endif
         jsr fmul_cos
+        ; (2026-09-15: where a result copy and the next "rebuild m_a" copy sit
+        ;  side by side they share ONE 16-bit window -- 23 cycles for the pair,
+        ;  the lone copies stay 8-bit at their 14)
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_prod
-        lda m_res+1
-        sta m_prod+1
         lda cb_top
         sta m_a
-        lda cb_top+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_prod+2
-        lda m_res+1
-        sta m_prod+3
         lda cb_bottom                ; --- bottom: cos, then sin ---
         sta m_a
-        lda cb_bottom+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_ma
-        lda m_res+1
-        sta m_ma+1
         lda cb_bottom
         sta m_a
-        lda cb_bottom+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta m_ma+2
-        lda m_res+1
-        sta m_ma+3
-        stz cb_cnt
         lda cb_left                  ; --- left: sin, then cos -> corners 0, 2 ---
         sta m_a
-        lda cb_left+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
+        stz cb_cnt
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta cb_lo
-        lda m_res+1
-        sta cb_lo+1
         lda cb_left
         sta m_a
-        lda cb_left+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+  .if 1
+        rep #$20                     ; the copy goes 16-bit straight INTO ?emitT's
+        .LONGA ON                    ;   window (?emitT16 skips its rep): -5/call
+        lda m_res
+        sta cb_hi
+        ldx #0                       ; corner 0 = (left, top)
+        jsr ?emitT16
+        .LONGA OFF                   ; (?emitT returns 8-bit on both exits)
+  .else
         lda m_res
         sta cb_hi
         lda m_res+1
         sta cb_hi+1
         ldx #0                       ; corner 0 = (left, top)
         jsr ?emitT
+  .endif
         ldx #4                       ; corner 2 = (left, bottom)
         jsr ?emitB
         lda cb_right                 ; --- right: sin, then cos -> corners 1, 3 ---
@@ -496,21 +536,31 @@ cbc_resume = *
         lda cb_right+1
         sta m_a+1
         jsr fmul_sin
+        rep #$20
+        .LONGA ON
         lda m_res
         sta cb_lo
-        lda m_res+1
-        sta cb_lo+1
         lda cb_right
         sta m_a
-        lda cb_right+1
-        sta m_a+1
+        .LONGA OFF
+        sep #$20
         jsr fmul_cos
+  .if 1
+        rep #$20                     ; (as corner 0 above)
+        .LONGA ON
+        lda m_res
+        sta cb_hi
+        ldx #2                       ; corner 1 = (right, top)
+        jsr ?emitT16
+        .LONGA OFF
+  .else
         lda m_res
         sta cb_hi
         lda m_res+1
         sta cb_hi+1
         ldx #2                       ; corner 1 = (right, top)
         jsr ?emitT
+  .endif
         ldx #6                       ; corner 3 = (right, bottom)
         ; falls into ?emitB
 ?emitB  rep #$20                     ; ---- 16-bit A: X = sx - cos(y), Z = cx + sin(y),
@@ -525,6 +575,7 @@ cbc_resume = *
         sta cb_Z,x
         bra ?zt                      ; (a branch keeps the adc's N)
 ?emitT  rep #$20                     ; ... same with the TOP row's pair
+?emitT16                             ; (entered here already 16-bit)
         sec
         lda cb_lo
         sbc m_prod
@@ -686,6 +737,7 @@ cbc_resume = *
 ?done   rts
  .endif
 .endp
+        .endseg
     .if * > CBCORN_END+1
         ert 'cb_corners outgrew CBCORN_BASE..END (memory_map.inc)'
     .endif

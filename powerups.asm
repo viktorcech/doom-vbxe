@@ -17,6 +17,10 @@
 ;   26 blur      MF_SHADOW. A_FaceTarget adds (P_Random()-P_Random())<<21 to a
 ;                monster's aim when its target carries it -- TWICE the <<20
 ;                spread A_PosAttack rolls anyway. pw_spread is that sum.
+;                The other two MF_SHADOW sites (2026-09-15): P_SpawnMissile
+;                turns a fireball by <<20 (bl_spread), and R_DrawPSprite draws
+;                the gun and its flash as shadow, blinking out over the last
+;                4*32 tics (weapon.asm wp_shadow).
 ;   27 radsuit   P_PlayerInSpecialSector's ironfeet test (pw_shield).
 ;   28 map       TAKEN and thrown away: there is no automap to reveal.
 ;   29 visor     likewise -- the renderer has no light diminishing at all (see
@@ -42,7 +46,10 @@
 ; ($F789, with en_bthings at $F78A).
 ;==============================================================
 pwm_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PWMAP_BASE
+ .endif
 ;--------------------------------------------------------------
 ; pw_map -- P_GivePower(pw_allmap), in front of pw_give. Y = bonus id, and it
 ;   must come back untouched (snd_bonus reads it), so the test is a cpy.
@@ -51,6 +58,7 @@ pwm_resume = *
 ;   still stores nothing -- this build has no light amp.
 ;   PARKED HERE and not in pw_give: that block ends ON POWER_END.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_map
         cpy #BN_MAP
         bne ?go
@@ -61,9 +69,13 @@ pwm_resume = *
                                      ;   dispatches on Y alone.
 ?go     jmp pw_give
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PWMAP_END+1
         ert 'pw_map outgrew PWMAP_BASE..PWMAP_END (memory_map.inc)'
     .endif
+ .endif
         org pwm_resume
 
 pw_resume = *
@@ -75,6 +87,7 @@ pw_resume = *
 ;   taken; only P_GivePower(pw_allmap) can refuse in DOOM and the map does
 ;   nothing here, so everything is taken.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_give
         cpy #BN_INVIS
         beq ?invis
@@ -152,6 +165,7 @@ pw_resume = *
         sec
         rts
 .endp
+        .endseg
 pw_aidx dta PS_BULLETS, PS_SHELLS, PS_ROCKETS, PS_CELLS
 pw_clip dta 10, 4, 1, 20             ; p_inter.c clipammo[]
 pw_amax dta 200, 50, 50, 255         ; ...and maxammo[] (cells 300 -> a byte)
@@ -173,9 +187,13 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
     .if * > POWER_END+1
         ert 'pw_give outgrew POWER_BASE..POWER_END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PWMAX_BASE               ; 2026-08-11 win2 evacuation: powerups split
+ .endif
                                      ;   four ways (memory_map.inc POWER/PWMAX/
                                      ;   PWTIC/LFSG)
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_max
         pha
         lda PW_FLAGS
@@ -189,16 +207,21 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ?plain  pla
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pw_tic -- ONE DOOM tic of P_PlayerThink's powers[] half. wp_tic calls THIS
 ;   instead of fl_tic and this passes it on: the flash block has no room left
 ;   for another instruction, and both are the same 35 Hz clock anyway.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PWMAX_END+1
         ert 'pw_max outgrew PWMAX_BASE..PWMAX_END (memory_map.inc)'
     .endif
+ .endif
         org PWTIC_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_tic
         jsr fl_ztic                  ; the berserk's red fade, then fl_tic --
                                      ;   the palette-flash counters (weapon.asm)
@@ -214,13 +237,26 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 	dex
 	bpl ?lp
 	lda PW_VISOR                 ; the FOURTH counter, and it cannot join the
-	beq ?nov                     ;   loop above: PW_FLAGS occupies the slot a
-	dec                          ;   fourth u16 would have needed
+  .if 1                               ;   loop above: PW_FLAGS occupies the slot a
+	beq ?nov0                    ;   fourth u16 would have needed
+	dec
+	sta PW_VISOR
+	sep #$20
+	.LONGA OFF
+	jmp pw_vislit                ; tail call (its rts is this proc's)
+	.LONGA ON
+?nov0	sep #$20                     ; NO VISOR (2026-09-15): A = 0 is already
+	.LONGA OFF                   ;   pw_vislit's answer -- it would reload both
+	sta vis_lit                  ;   bytes just to find that out (-16 a tic)
+	rts
+  .else
+	beq ?nov
+	dec
 	sta PW_VISOR
 ?nov	sep #$20
 	.LONGA OFF
-	jsr pw_vislit
-?vdone
+	jmp pw_vislit                ; tail call (its rts is this proc's)
+  .endif
  .else
 ?lp     lda PW_INVIS,x
         ora PW_INVIS+1,x
@@ -235,6 +271,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pw_shield -- X = the sector's damage class (1..4, movers.asm). C=1 = this tic's
@@ -243,6 +280,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   does nothing at all about special 11 (E1M8's finale, class 4). Invulnerability
 ;   is P_DamageMobj's own test, above all of it. Preserves X.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_shield
         lda PW_INVUL
         ora PW_INVUL+1
@@ -262,6 +300,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pw_spread -- m_a:m_a+1 = |the monster's aim error| in ai_fire's units (a full
@@ -271,6 +310,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   port sums r1 + 2*r2 -- SIGNED, so the two rolls can still cancel exactly as
 ;   they do in DOOM. Clobbers A/X and m_b (ai_fire fills m_b right after).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_spread
         jsr ?tri
         sta m_a
@@ -325,6 +365,78 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
  .endif
 ?p      rts
 .endp
+        .endseg
+
+;--------------------------------------------------------------
+; bl_spread -- P_SpawnMissile's "fuzzy player" (p_mobj.c:909): with MF_SHADOW on
+;   the target, an += (P_Random()-P_Random())<<20. ball_spawn aims by VECTOR,
+;   so the turn goes onto bl_dx/bl_dy as the small-angle rotation
+;       dx' = dx - t*dy        dy' = dy + t*dx        t = r * 2pi/4096 rad
+;   with t in Q14 for smul_14: 2pi/4096 * 16384 = 25.13 -> r*25, 0.5 % short.
+;   At the extreme |r| = 255 (22.4 deg) the linear form turns 1 deg less than
+;   the sine would and lengthens the vector by 7.4 %; ?red and k7 normalise
+;   the step right after, so only the heading survives. dz is left alone.
+;   A_FaceTarget's <<21 does NOT reach a missile -- P_SpawnMissile re-aims from
+;   the positions -- so this is the whole missile half; pw_spread is the
+;   hitscan half. Native only (ai_fire -> ball_spawn). Clobbers A/X/Y and
+;   m_a/m_b/m_prod/m_res/m_sign; ball_spawn re-fills m_a/m_b/m_prod in ?aim.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc bl_spread
+        lda PW_INVIS
+        ora PW_INVIS+1
+        beq ?out                     ; visible: no turn
+        lda RANDOM                   ; r = P_Random() - P_Random(), -255..255,
+        sec                          ;   C = no borrow = r >= 0
+        sbc RANDOM
+        rep #$20                     ; ---- 16-bit A. rep and `and` leave C alone
+        .LONGA ON
+        and #$00FF
+        bcs ?pos
+        ora #$FF00                   ; borrowed: r = A - 256
+?pos    sta m_b                      ; t = r*25 = (r*5)*5, |t| <= 6375
+        asl @
+        asl @
+        clc                          ; LOAD-BEARING: |r| <= 255 makes bit 14 the
+        adc m_b                      ;   sign, so the second asl leaves C = 1 for
+        sta m_b                      ;   every negative r
+        asl @
+        asl @
+        clc                          ; (|5r| <= 1275: the same bit, same carry)
+        adc m_b
+        sta m_b                      ; t
+        pha                          ; ...and a copy for the second product
+        lda bl_dy
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jsr smul_14                  ; m_res = t*dy
+        rep #$20
+        .LONGA ON
+        pla
+        sta m_b                      ; smul_14 left |t| there: re-arm it
+        lda m_res
+        pha                          ; t*dy, held until dx has been used
+        lda bl_dx
+        sta m_a
+        sep #$20
+        .LONGA OFF
+        jsr smul_14                  ; m_res = t*dx
+        rep #$21                     ; C = 0
+        .LONGA ON
+        lda m_res
+        adc bl_dy
+        sta bl_dy                    ; dy' = dy + t*dx
+        pla
+        eor #$FFFF                   ; dx' = dx - t*dy = dx + ~(t*dy) + 1
+        sec
+        adc bl_dx
+        sta bl_dx
+        sep #$20
+        .LONGA OFF
+?out    rts
+.endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pw_level -- G_PlayerFinishLevel: "memset (p->powers, 0, sizeof(p->powers))".
@@ -338,6 +450,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   last pickup of the old level would hang over the first frames of the new
 ;   one, and boot would blit whatever strip index random RAM held.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_level
  .if 1
         ldx #6
@@ -354,6 +467,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
         sta PW_FLAGS
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; leaf_segs -- zp_nid -> that leaf's seg run: zp_sptr = the first seg's record,
@@ -368,6 +482,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
         ert 'pw_tic..pw_level outgrew PWTIC_BASE..PWTIC_END (memory_map.inc)'
     .endif
         org LFSG_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc leaf_segs
  .if 1
 	rep #$20
@@ -432,6 +547,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sh_dist -- zp_px/zp_py = USE_PT_A + sh_d*(cos,sin): where the hitscan ray is
@@ -451,6 +567,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   X (0 then 2) is the pass, and it rides the stack across smul_14, which
 ;   clobbers X and Y. Proved bit-identical over 624 (d, sin, cos, origin) cases
 ;   against the two-copy version: tools/tests/_verify_shdist.py.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_dist
         ldx #0                       ; pass 0 = x/cos, pass 2 = y/sin
  .if 1
@@ -517,6 +634,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sprcol_read -- read SPRC_SECTORS sectors with read_ext, in passes of 128,
@@ -528,6 +646,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   Parked HERE and not in load_sprcol: that block is 47 B with one to spare,
 ;   and one absolute jsr costs the caller nothing it was not already spending.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sprcol_read
         ldx #SPRC_PASSES
 ?p      lda #128
@@ -542,6 +661,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
         bne ?p
         rts
 .endp
+        .endseg
 
     .if * > LFSG_END+1
         ert 'leaf_segs+sh_dist outgrew LFSG_BASE..LFSG_END (memory_map.inc)'
@@ -576,7 +696,11 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ; matter (see ZERK_BASE in memory_map.inc).
 ;==============================================================
 zerk_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org ZERK_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 fl_zerk dta 0                        ; bzc: 12 at pickup, 0 = faded out
 fl_zt   dta 0                        ; tics left in the current bzc step
 
@@ -585,6 +709,8 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;   reads, and the red. pw_give's ?zerk calls this INSTEAD of setting the flag
 ;   inline, which is why that block did not have to grow.
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fl_zon
         lda PW_FLAGS
         ora #PWF_BERSERK
@@ -595,6 +721,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
         sta fl_zt
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; fl_ztic -- one DOOM tic of the fade, then fl_tic (the damage/bonus counters).
@@ -603,9 +730,23 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;   every level start (G_PlayerFinishLevel clears powers[]) and the red goes
 ;   with it.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fl_ztic
         lda PW_FLAGS
         and #PWF_BERSERK
+ .if 1
+        bne ?on
+        sta fl_zerk                  ; A = 0 out of the and: no berserk, no red
+?done   jmp fl_tic                   ; the common path FALLS into the tail call
+?on     lda fl_zerk                  ;   instead of an always-taken beq (-3 a tic)
+        beq ?done                    ; already faded out
+        dec fl_zt
+        bpl ?done                    ; only every 64th tic moves bzc
+        lda #63
+        sta fl_zt
+        dec fl_zerk
+        jmp fl_tic
+ .else
         bne ?on
         sta fl_zerk                  ; A = 0 out of the and: no berserk, no red
         beq ?done                    ; (always)
@@ -617,7 +758,9 @@ fl_zt   dta 0                        ; tics left in the current bzc step
         sta fl_zt
         dec fl_zerk
 ?done   jmp fl_tic
+ .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; fl_cnt -- ST_doPaletteStuff's cnt: max(damagecount, bzc). update_flash calls
@@ -625,6 +768,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;   end on an `lda`, because the caller's next instruction is `beq ?bon` and a
 ;   cmp's Z would answer a different question.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fl_cnt
         lda fl_dmg
         cmp fl_zerk
@@ -633,9 +777,13 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ?out    ora #0                       ; ...and A decides Z, not the cmp above
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > ZERK_END+1
         ert 'the berserk red outgrew ZERK_BASE..ZERK_END (memory_map.inc)'
     .endif
+ .endif
         org zerk_resume
 
         org pw_resume
@@ -650,6 +798,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;--------------------------------------------------------------
 vsl_resume = *
         org VISLIT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pw_vislit
         lda PW_VISOR+1
         bne ?von                     ; more than 255 tics left: solid
@@ -663,6 +812,7 @@ vsl_resume = *
 ?vst        sta vis_lit
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_god -- ST_updateFaceWidget's priority 4: CF_GODMODE or pw_invulnerability
@@ -670,6 +820,7 @@ vsl_resume = *
 ;   invulnerability sphere is the only way in -- but it IS one, and the face was
 ;   missing on every sphere until now. C=1 = handled, leave the face alone.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_god
         lda PW_INVUL
         ora PW_INVUL+1
@@ -684,18 +835,28 @@ vsl_resume = *
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_god_gate -- what draw_hud_gate calls instead of hud_face_upd: the god
 ;   face outranks the look-around animation, and hud_face_upd's own block had
 ;   not three bytes left for the test.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_god_gate
+ .if 1
+        lda PW_INVUL                 ; hud_god's test INLINE (2026-09-15): a frame
+        ora PW_INVUL+1               ;   without the sphere goes straight on to
+        jne hud_god                  ;   hud_face_upd, no jsr/clc/rts/bcs (-16);
+        jmp hud_face_upd             ;   with it, hud_god re-tests and sets C=1,
+ .else                                ;   which nobody after draw_hud_gate reads
         jsr hud_god
         bcs ?out
         jmp hud_face_upd
 ?out    rts
+ .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; kb_scan -- ONE keyboard sample per VBLANK, from rom_nmi. read_keys samples
@@ -727,7 +888,10 @@ vsl_resume = *
         org vsl_resume
 
 cht_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org CHEAT_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; cht_scan -- read_keys calls this instead of cht_key. kb_scan (in the VBI) has
@@ -735,6 +899,7 @@ cht_resume = *
 ;   and a second cheat becomes possible. Feeds the one byte to both matchers,
 ;   then consumes it.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cht_scan
         lda kb_new
         cmp #$FF
@@ -747,11 +912,13 @@ cht_resume = *
         sta kb_new
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; cht_dqd -- IDDQD. A = a new key press. Same shape as cht_key, minus the
 ;   held-key test: kb_new IS the edge, so the doubled D matches.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cht_dqd
         ldx dqd_n
         cpx #DQD_LEN                 ; boot RAM must not index past the table
@@ -766,6 +933,8 @@ cht_resume = *
 ?set    stx dqd_n
         rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 dqd_tab dta KEY_I, KEY_D, KEY_D, KEY_Q, KEY_D
 DQD_LEN equ * - dqd_tab
 dqd_n   dta 0
@@ -776,6 +945,8 @@ dqd_n   dta 0
 ;   already reads (hud_god). Not a timer: DOOM's godmode does not run out, so
 ;   this parks PW_INVUL at its maximum instead of counting down to it.
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc dqd_give
         lda #100
         sta PSTATE+PS_HEALTH
@@ -786,7 +957,11 @@ dqd_n   dta 0
         sta hud_dirty
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > CHEAT_END+1
         ert 'the cheat matchers outgrew CHEAT_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org cht_resume

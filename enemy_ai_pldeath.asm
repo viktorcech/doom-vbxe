@@ -13,7 +13,10 @@
 ;   The port takes ANY key rather than only USE, and only once the fall has
 ;   finished, so a key still held from before the death does not skip it.
 ;==============================================================
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLDTH_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; pl_die -- health reached 0. X = the cry, chosen by pl_dieq (its one caller;
@@ -29,6 +32,7 @@
 ;   own, which is the same answer and costs nothing here -- the two bytes it
 ;   saves over `lda #imm / sta snd_pending` are why the block still fits.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_die
         lda pl_dead                  ; already dead: monsters keep shooting the
         bne ?out                     ;   corpse and the nukage keeps burning it.
@@ -38,8 +42,7 @@
         sta pl_vh
         lda #1
         sta pl_keyw                  ; ignore whatever is held right now
-        lda #0
-        sta PSTATE+PS_HEALTH
+        stz PSTATE+PS_HEALTH
         lda #1
         sta hud_dirty                ; the HUD has to show the 0
         jsr snd_play                 ; X = A_PlayerScream / A_XScream, and it
@@ -49,6 +52,8 @@
         jmp wp_enter                 ;   the bottom, WEAPONSPEED px per tic
 ?out    rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; pl_dieq -- the killing blow from en_plr_hurt, the only path that can GIB.
@@ -74,7 +79,9 @@
 ;   negative health across pl_die.
 ;--------------------------------------------------------------
 pldq_resume = *
+        .endseg
         org PLDIEQ_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_dieq
         beq ?plain                   ; A = 0: the blow landed on EXACTLY zero,
         cmp #$9C                     ;   so there is no overkill at all.
@@ -86,15 +93,20 @@ pldq_resume = *
 ?slop   ldx #SFX_SLOP                ; A_XScream (S_PLAY_XDIE2, p_enemy.c:1572)
 ?go     jmp pl_die
 .endp
+        .endseg
     .if * > PLDIEQ_END+1
         ert 'pl_dieq outgrew PLDIEQ_BASE..END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org pldq_resume
+ .endif
 
 ;--------------------------------------------------------------
 ; pl_dthink -- one DOOM tic of P_DeathThink, from wp_think's tic loop so it
 ;   runs at DOOM's rate however many frames the Atari manages.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_dthink
         lda pl_dead
         beq ?out
@@ -104,11 +116,13 @@ pldq_resume = *
         dec pl_vh                    ;   parked it at 7, pl_deadkey never matched
 ?out    rts                          ;   and SPACE fell through to try_use.
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pl_deadkey -- from the frame loop, BEFORE read_keys so the key that restarts
 ;   cannot also be read as USE. Waits for the fall to finish first.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_deadkey
         lda pl_dead
         beq ?out
@@ -117,7 +131,8 @@ pldq_resume = *
         bne ?rel                     ; nothing down -> arm the edge
         lda pl_keyw                  ; a key held from BEFORE the death must not
         bne ?out                     ;   count: wait for a release first, then the
-        jmp pl_restart               ;   next press restarts. (DOOM takes BT_USE
+        jsr pl_restart               ;   next press restarts. (DOOM takes BT_USE
+        rts                          ;   (tail call across the bank line)
  .if 1
 ?rel    stz pl_keyw                  ;   the instant P_DeathThink runs; any key is
                                      ;   easier to hit by accident, hence the edge)
@@ -127,12 +142,14 @@ pldq_resume = *
  .endif
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pl_restart -- PST_REBORN. The port has no save of the level's start state, so
 ;   it reloads the level outright, and clears ps_started so load_things runs its
 ;   BOOT-time PSTATE init again: 100 health, 50 bullets, fist + pistol, no keys.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_restart
  .if 1
         stz pl_dead
@@ -151,6 +168,7 @@ pldq_resume = *
         jmp exit_level.pl_reload     ; reload current_level, then init_level
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sh_leaf -- PTR_ShootTraverse's line half over one subsector: C=1 if any seg of
@@ -169,6 +187,7 @@ pldq_resume = *
 ;   use_shut's "is the opening shut at all", which is the same test try_use
 ;   already trusts.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_leaf
  .if 1
         jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
@@ -188,9 +207,7 @@ pldq_resume = *
         lda zp_sptr
         adc #SEG_SIZE
         sta zp_sptr
-        lda zp_segcnt
-        dec @
-        sta zp_segcnt
+        dec zp_segcnt                ; (one 16-bit RMW, 2026-09-15)
         sep #$20                     ; (sep keeps Z: the count's)
         .LONGA OFF
         bne ?loop
@@ -232,11 +249,13 @@ pldq_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sh_setb -- USE_PT_B = the ray end at length sh_d. The crossing test reads the
 ;   ray out of USE_PT_A/USE_PT_B, so shortening THAT is the binary search.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_setb
  .if 1
         jsr sh_dist
@@ -262,12 +281,14 @@ pldq_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sh_end -- sh_trace's exit, tail-jumped with C = "a wall was found": hand the
 ;   point in zp_px/zp_py to en_bx/en_by and put the player back. Out of the
 ;   ROCKW block, which sh_trace fills to within a dozen bytes.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_end
  .if 1
         php                          ; C has to survive the restore below
@@ -307,6 +328,8 @@ pldq_resume = *
         rts
  .endif
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 sh_sa   dta 0                        ; sh_refine: which side of the blocking seg
                                      ;   the ray START is on (it never moves)
@@ -315,7 +338,11 @@ sh_d    dta a(0)                     ; the ray length sh_dist is evaluating
 sh_lo   dta a(0)                     ; binary search: the longest CLEAR ray...
 sh_hi   dta a(0)                     ;   ...and the shortest BLOCKED one
 
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLDTH_END+1
         ert 'the death block outgrew PLDTH_BASE..PLDTH_END (memory_map.inc)'
     .endif
+ .endif
 

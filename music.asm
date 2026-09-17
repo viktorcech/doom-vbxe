@@ -25,6 +25,19 @@
 ; AUDCTL is not in the stream either; it must stay 0 for the same mixer.
 ;==============================================================
         icl 'music_syms.inc'         ; MUS_BANK0/COUNT/BYTES + one equ per song
+; The songs must sit ABOVE the SDRAM level cache: read_sectors' tee parks every
+; cached ATR sector at PREn_BASE + (sec - PREn_SEC)*128 on its first drive
+; read, and at $550000 (2026-09-11..13) that was E2M5's .sprcol slot -- the
+; first E2M5 load wrote over the songs. Same guard SPRCOL_BANK has.
+    .if [MUS_BANK0<<16] < PRE_END
+        ert 'MUS_BANK0 sits inside the SDRAM level cache (atr_layout.inc PRE_END) -- raise pack_musstream.py MUS_BASE'
+    .endif
+    .if MUS_BANK0 = SPRCOL_BANK
+        ert 'MUS_BANK0 is SPRCOL_BANK -- pack_musstream.py MUS_BASE'
+    .endif
+    .if [MUS_BANK0<<16]+[MUS_CHUNKS*4096] > $F00000
+        ert 'the songs run past the Rapidus SDRAM ($EF:FFFF)'
+    .endif
 
 ; mus_p -- the 24-bit read cursor. Long indirect needs DIRECT PAGE, and zero
 ; page here is FULL (the block at $80 in bsp_main.asm runs past $FF). So it
@@ -43,22 +56,32 @@ mus_resume = *
 ;   bank MUS_BANK0, offset 0. A straight copy of load_weapons (diskio.asm):
 ;   read_ext carries ll_dst/ll_sec forward, and ll_dst wrapping to 0 between
 ;   chunks is how the run detects it crossed into the next 64 KB bank -- which
-;   is why pack_musstream puts the songs at a BANK-ALIGNED $550000 and not at
-;   the first free SDRAM byte.
+;   is why pack_musstream puts the songs at a BANK-ALIGNED MUS_BANK0:0000 and
+;   not at the first free SDRAM byte.
 ;   Boot path: ROM is in and the CPU is in emulation mode here, so this stays
 ;   8-bit throughout (no rep/sep -- they are no-ops with E=1).
+;   2026-09-16: and then a SECOND walk, WIM_CHUNKS into WIMAP_BANK:0000 -- the
+;   episode 2/3 intermission world maps (tools/pack_wi.py wimaps.bin, wi.asm
+;   wi_bgsel). make_atr_doom.py lays them down right behind the songs, so
+;   ll_sec is already there when the first walk ends.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_music
         lda #<MUS_SEC1
         sta ll_sec
         lda #>MUS_SEC1
         sta ll_sec+1
-        stz ll_dst                   ; MUS_BANK0 = offset 0 of its bank
+        lda #MUS_BANK0               ; A = bank, X = chunks, offset 0 of it
+        ldx #MUS_CHUNKS
+ .if WIM_CHUNKS > 0
+        jsr ?run                     ; the songs...
+        lda #WIMAP_BANK              ; ...then the world maps, the next region
+        ldx #WIM_CHUNKS              ;   on the disk
+ .endif
+?run    sta ll_bank
+        stx mus_i
+        stz ll_dst
         stz ll_dst+1
-        lda #MUS_BANK0
-        sta ll_bank
-        lda #MUS_CHUNKS
-        sta mus_i
 ?chunk  lda #32                      ; one 4 KB chunk per read_ext pass
         sta ll_left
         jsr read_ext
@@ -72,9 +95,16 @@ mus_resume = *
         sta ll_bank                  ;   does -- load_dtab/load_los assume it
         rts
 .endp
+        .endseg
 mus_i    dta 0                       ; load_music chunk counter
     .if * > MUSICLD_END+1
         ert 'load_music outgrew MUSICLD_BASE..END (memory_map.inc)'
+    .endif
+    .if [WIM_CHUNKS > 0] .and [WIM_SEC1 != MUS_SEC1+MUS_CHUNKS*32]
+        ert 'load_music reads the world maps on from the songs: WIM_SEC1 must follow MUS'
+    .endif
+    .if [WIM_CHUNKS > 0] .and [WIMAP_BANK >= MUS_BANK0] .and [WIMAP_BANK <= MUS_BANK0+[[MUS_CHUNKS*4096-1]>>16]]
+        ert 'WIMAP_BANK overlaps the songs (MUS_BANK0 + MUS_CHUNKS)'
     .endif
 
         org MUSIC_BASE               ; ...then the per-frame player
@@ -86,6 +116,7 @@ mus_i    dta 0                       ; load_music chunk counter
 ;   music_tabs.inc holds the 24-bit SDRAM address of each song, split lo/mid/hi
 ;   so this is three indexed loads and no arithmetic.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mus_reset
         tax
         stx mus_cur                  ; remembered so the $FF marker can loop
@@ -102,12 +133,14 @@ mus_i    dta 0                       ; load_music chunk counter
         sta mus_p+2
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; mus_adv -- mus_p++, 24-bit. A song is 29 KB so the middle byte carries often
 ;   and the bank byte carries once; both are handled here rather than at the
 ;   three call sites.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mus_adv
         inc mus_p
         bne ?d
@@ -116,12 +149,14 @@ mus_i    dta 0                       ; load_music chunk counter
         inc mus_p+2
 ?d      rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; mus_play -- ONE frame. Call it once per VBLANK; the stream is authored at the
 ;   PAL frame rate, so one record = one frame and nothing here tracks time.
 ;   Preserves nothing but returns with X = 8.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mus_play
         lda mus_on                   ; ARMED? wi_melt calls wi_tic -- and so
         beq ?off                     ;   this -- BEFORE wi_pre has run mus_reset
@@ -176,12 +211,14 @@ mus_i    dta 0                       ; load_music chunk counter
         bra ?emit                    ; the shadow still wants re-asserting today
 ?off    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; mus_stop -- silence the three voices. AUDC only: AUDF is left alone so the
 ;   next mus_play does not have to re-send a frequency the stream thinks is
 ;   already there.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mus_stop
         stz mus_on                   ; disarm first: wi_tic can still run after
                                      ;   this on the way out of the screen
@@ -195,6 +232,7 @@ mus_i    dta 0                       ; load_music chunk counter
         stz AUDC1_R+6                ; AUDC4
         rts
 .endp
+        .endseg
 
     .if * > MUSIC_END+1              ; check the CODE before the org moves
         ert 'music.asm outgrew MUSIC_BASE..END (memory_map.inc)'

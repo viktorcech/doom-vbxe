@@ -58,7 +58,11 @@
 ; BEFORE the health test, so a killing shot still shoves him.
 ;==============================================================
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLTHR1_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; pl_thrust -- no arguments: bl_dmg is the damage, (bl_x, bl_y) the ball,
 ;   i.e. the inflictor. The vector is (player - ball): away from it,
@@ -87,9 +91,13 @@
         sta swr_vx
         jmp pl_thr2                  ; ...carry rides the jmp into the high half
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLTHR1_END+1
         ert 'pl_thrust piece 1 outgrew PLTHR1_BASE..PLTHR1_END (memory_map.inc)'
     .endif
+ .endif
 
         org PLTHR2_BASE
 .proc pl_thr2
@@ -133,7 +141,11 @@
         ert 'pl_thrust piece 4 outgrew PLTHR4_BASE..PLTHR4_END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLTHR5_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 .proc pl_thr5                        ; ...and spend it through move_player's own
         lda ai_sx                    ;   collision path: the halfway probe, the
         sta mv_dx                    ;   step-up rule, coll_plr and en_solid, so
@@ -141,11 +153,19 @@
         sta mv_dx+1                  ;   a shove into a monster stops dead.
         jmp pl_thr6
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLTHR5_END+1
         ert 'pl_thrust piece 5 outgrew PLTHR5_BASE..PLTHR5_END (memory_map.inc)'
     .endif
+ .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLTHR6_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 .proc pl_thr6
         lda ai_sy                    ; ...the other axis, then P_TryMove itself
         sta mv_dy
@@ -170,6 +190,10 @@
                                      ;   SHORTER than before, not three longer,
                                      ;   and ball_frame was full to the byte.
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLTHR6_END+1
         ert 'pl_thrust piece 6 outgrew PLTHR6_BASE..PLTHR6_END (memory_map.inc)'
     .endif
+ .endif

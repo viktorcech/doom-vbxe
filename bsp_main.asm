@@ -243,13 +243,19 @@ DLISTH  equ $D403                    ;   not SDLST: no VBI runs here)
 CHBASE  equ $D409                    ; charset base ($E0 = the ROM font)
 COLPF1  equ $D017                    ; mode-2 text luminance
 COLPF2  equ $D018                    ; mode-2 background
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org RAMCHK_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 .proc ram_check
         ldx #0
 ?bank   lda rc_banks,x
         beq ?ok                      ; table end -> every bank answered
-        sta ?wr+3                    ; the bank byte of both long operands
+        sta ?wr+3                    ; the bank byte of all four long operands
         sta ?rd+3                    ;   (self-mod; cold one-shot code)
+        sta ?sv+3
+        sta ?rs+3
         lda #$A5
         jsr ?probe                   ; pattern, the twin gets $5A...
         bne ?fail
@@ -260,11 +266,21 @@ COLPF2  equ $D018                    ; mode-2 background
         bne ?bank                    ; table < 256 B: always taken
 ?ok     rts
 ?probe  pha
+?sv     lda.l rc_twin                ; THE BANK'S OWN BYTE, saved (2026-09-14):
+        sta rc_save                  ;   bank $01 already holds the staged engine
+        pla                          ;   here (b1_stage_copy ran during the XEX
+        pha                          ;   load), and the probe used to leave $5A
+                                     ;   in it -- an `rts` of crush_things once
+                                     ;   the code grew onto $2A6F (door crash)
 ?wr     sta.l rc_twin                ; -> $BB:rc_twin (bank byte patched)
         eor #$FF
         sta rc_twin                  ; bank-0 twin: a mirror now differs
         pla
 ?rd     cmp.l rc_twin                ; Z=1 iff the bank held the pattern
+        php
+        lda rc_save
+?rs     sta.l rc_twin                ; ... and the bank's byte goes back
+        plp
         rts
 ?fail   lda rc_banks,x               ; the failing bank -> two hex digits
         pha
@@ -299,8 +315,12 @@ COLPF2  equ $D018                    ; mode-2 background
 .endp
 ; the SDRAM level cache's top bank: its last cached sector must exist
 RC_TOP  equ [[PRE1_BASE+[PRE1_CNT*128]-1]>>16]
-rc_banks dta $01,$02,$03,$04,$05,$06,$08,RC_TOP,0
+rc_banks dta $01,$02,$03,$04,$05,$06,MAP_EXT_BANK,$08,RC_TOP,SPRCOL_BANK,MUS_BANK0,0
+                                     ; (+SPRCOL_BANK / MUS_BANK0 2026-09-13: both
+                                     ;   sit ABOVE the cache top, so RC_TOP never
+                                     ;   vouched for them)
 rc_twin dta 0                        ; every probe's bank-0 twin byte
+rc_save dta 0                        ; the probed bank's original byte
 rc_dl   dta $70,$70,$70              ; 24 blank scans
         dta $42,a(rc_msg)            ; two mode-2 lines, one LMS
         dta $02
@@ -317,6 +337,8 @@ rc_bnk  dta d'XX'
 ;   voice, reset it to CENTRE, arm the voice. Lives HERE because the sound
 ;   segment ends flush and this block still had the bytes (boot/infra hole).
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_vgo
         lda snd_side                 ; snd_setpan armed it; a trigger that did
         sta sv_side,x                ;   not = the centre, which is also what a
@@ -325,6 +347,8 @@ rc_bnk  dta d'XX'
         sta sv_act,x                 ; 1 = phase 0 (hi nibble) next
         rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; snd_init2 -- the second (STEREO) POKEY out of init, from main at boot. On
 ;   mono both writes mirror onto POKEY1 with the values it holds anyway.
@@ -335,9 +359,13 @@ rc_bnk  dta d'XX'
         stz $D218                    ; AUDCTL2: 64 kHz base, like AUDCTL
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > RAMCHK_END+1
         ert 'ram_check/snd_vgo/snd_init2 outgrew RAMCHK_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;==============================================================
 ; MAIN
@@ -362,6 +390,11 @@ rc_bnk  dta d'XX'
         jsr setup_memac
         jsr setup_xdl
         jsr setup_bcbs
+ .if 1
+        jsr urom_init                ; DRAC_PLAN 4a: our vectors, ROM out and native
+                                     ;   BEFORE any load -- the loaders run like the
+                                     ;   frame loop now (SIOV via siov_r)
+ .endif
         jsr recip_to_ext             ; the reciprocal tables -> Rapidus bank $01,
                                      ;   BEFORE load_level overwrites the map slot
                                      ;   they are staged in (memory_map.inc
@@ -377,7 +410,7 @@ rc_bnk  dta d'XX'
         cli                          ; IRQs on: SIOV needs them
         lda #0
         sta current_level            ; E1M1
-        jsr load_hud                 ; MOVED UP FROM BELOW (2026-08-13): the
+        jsr load_hud_t ; MOVED UP FROM BELOW (2026-08-13): the
                                      ;   save/load picker draws its slot numbers
                                      ;   out of the status bar's own digits
                                      ;   (mn_slotdig -> hud_entry -> HUD_TAB,
@@ -407,9 +440,9 @@ rc_bnk  dta d'XX'
                                      ;   already streamed once reloads out of
                                      ;   Rapidus SDRAM with no drive at all
                                      ;   (diskio.asm, the SDRAM LEVEL CACHE)
-        jsr load_textures            ; stream this level's .tex into VBXE VRAM (SIO, IRQs on)
-        jsr load_sprites             ; ... then the billboard pixels (.spr)
-        jsr wi_newlvl                ; ... then the things + sprite table + PLAYPAL
+        jsr load_textures_t ; stream this level's .tex into VBXE VRAM (SIO, IRQs on)
+        jsr load_sprites_t ; ... then the billboard pixels (.spr)
+        jsr wi_newlvl_t              ; ... then the things + sprite table + PLAYPAL
                                      ;     (wi_newlvl zeroes the level clock and
                                      ;      falls through to load_things -- wi.asm)
                                      ; (load_sounds ran inside menu_boot and
@@ -418,7 +451,7 @@ rc_bnk  dta d'XX'
                                      ;  the HUD digits -- see up there. Nothing
                                      ;  here writes HUD_BANK0, so the bar is
                                      ;  still streamed exactly once.)
-        jsr load_palette             ; ... and the PLAYPAL slots, each read into the
+        jsr load_palette_t ; ... and the PLAYPAL slots, each read into the
                                      ;   staging buffer and installed straight into its
                                      ;   VBXE palette. MUST STAY LAST: every loader
                                      ;   above streams THROUGH that buffer
@@ -438,15 +471,18 @@ rc_bnk  dta d'XX'
                                      ;  3/4 theirs, exactly like a mid-game
                                      ;  load, so put the mixer back the way
                                      ;  snd_resume does after exit_level)
-        jsr snd_pokey                ; AUDCTL 0, every voice idle, Timer-1 rate
+        jsr snd_pokey_t ; AUDCTL 0, every voice idle, Timer-1 rate
+ .if 1                                ; DRAC_PLAN 4a: urom_init ran before the loads
+ .else
         jsr urom_init                ; RAM vectors at $FFFA/$FFFE, so an NMI or the
+ .endif
                                      ;   sound IRQ taken while the OS ROM is banked
                                      ;   out lands in our handlers (underrom.asm)
 
         ; clear BOTH framebuffers once (palette idx 255 = black; 0 is a map colour).
         ; The frame loop no longer clears -- bg_fill only repaints the gaps -- so
         ; whatever is in a buffer at boot would otherwise show through.
-        jsr clear_both               ; both buffers (colmerge.asm)
+        jsr clear_both_t ; both buffers (colmerge.asm)
 
         ; (the VBXE display is already ON: menu.asm's mn_vbxe_on switches it on
         ;  the moment the title picture is in FRAME_A, thousands of frames
@@ -490,7 +526,7 @@ rc_bnk  dta d'XX'
         lda #0
         sta zback_hi                 ; target FRAME_A (the displayed buffer)
         lda #254
-        jsr clear_screen
+        jsr clear_screen_t
         jmp *                        ; halt (see colour above)
 ?loadok
 
@@ -512,7 +548,13 @@ rc_bnk  dta d'XX'
         ; This also retires the under-ROM trampolines: doors/triggers/seg_yoff are
         ; plain jsr now, which gives back the ~40 cycles each was paying -- seg_yoff
         ; alone ran ~140 times a frame.
-        jsr rom_out
+        jsr rom_out_t
+        jml B1CODE_BASE+game_loop    ; DRAC_PLAN 2b (2026-09-13): the frame loop
+                                     ;   is bank-$01 code; main's prelude above
+                                     ;   runs with the ROM in and stays in bank 0
+.endp
+        .segment B1                  ; DRAC_PLAN 2b: bank $01
+.proc game_loop
  .if 1
         jsr init_level               ; spawn point, doors, per-level state
         stz key_prev
@@ -609,7 +651,7 @@ rc_bnk  dta d'XX'
         jsr swap_buffers             ; wait VBLANK, flip
         lda EXIT_REQ                 ; the USE ray hit an EXIT line this frame
         beq ?loop
-        jsr fin_exit                 ; the FINALE (f_finale.asm) on an ExM8, and
+        jsr fin_exit              ; the FINALE (f_finale.asm) on an ExM8, and
         jmp ?loop                    ;   for everything else one `jmp` on into
                                      ;   the INTERMISSION (wi.asm) -- which
                                      ;   tail-jumps to exit_level -> next level
@@ -619,6 +661,194 @@ rc_bnk  dta d'XX'
                                      ;   is full to the byte, so the whole chain
                                      ;   had to be free at every call site
 .endp
+        .endseg
+
+;--------------------------------------------------------------
+; BANK-0 WRAPPERS for bank-$01 callers (DRAC_PLAN 2b, 2026-09-13).
+;   `jsl X_w0` from bank $01 is `jsr X` here and back with rtl. These procs
+;   stay in bank 0: what the ROM-in paths and the overlays share (the blitter
+;   wait, clear_screen, snd_play, spr_fget, the BCB chain launcher), the
+;   overlay entries (mn_open, hud_blit), the level restart and the finale.
+;--------------------------------------------------------------
+ptc_fire_w0     jsr ptc_fire
+                rtl
+ptc_open_w0     jsr ptc_open
+                rtl
+hud_blit_w0     jsr hud_blit
+                rtl
+hud_fire_w0     jsr hud_blit.hud_fire
+                rtl
+mn_open_w0      jsr mn_open
+                rtl
+snd_setpan_w0   jsr snd_setpan
+                rtl
+menu_run_w0     jsr MENU_RUN                 ; the automap overlay, from b1_amgate
+                rtl
+; bank-0 THUNKS for the runtime overlays: they run in bank 0 (MENU_RUN) and
+; call procs that moved. `jsr X_t` = jsl to `jsr X` in bank $01, and back.
+wp_wload_t      jsl B1CODE_BASE+wp_wload_w1
+                rts
+vw_apply_t      jsl B1CODE_BASE+vw_apply_w1
+                rts
+blk_fill_t      jsl B1CODE_BASE+blk_fill_w1
+                rts
+hud_entry_t     jsl B1CODE_BASE+hud_entry_w1
+                rts
+am_title_t      jsl B1CODE_BASE+am_title_w1
+                rts
+load_vertex_t   jsl B1CODE_BASE+load_vertex_w1
+                rts
+thing_alive_bit_t jsl B1CODE_BASE+thing_alive_bit_w1
+                rts
+        .segment B1
+wp_wload_w1     jsr wp_wload
+                rtl
+vw_apply_w1     jsr vw_apply
+                rtl
+blk_fill_w1     jsr blk_fill
+                rtl
+hud_entry_w1    jsr hud_entry
+                rtl
+am_title_w1     jsr am_title
+                rtl
+load_vertex_w1  jsr load_vertex
+                rtl
+thing_alive_bit_w1 jsr thing_alive_bit
+                rtl
+        .endseg
+; ...and the other way: snd_resume's tail call into init_level (bank $01).
+init_level_t    jsl B1CODE_BASE+init_level_w1
+                rts
+        .segment B1
+init_level_w1   jsr init_level
+                rtl
+        .endseg
+; DRAC_PLAN 4b (xbank_fix.py): bank-0 callers of code that moved to bank $01
+blitter_wait_t  jsl B1CODE_BASE+blitter_wait_w1
+                rts
+clear_both_t    jsl B1CODE_BASE+clear_both_w1
+                rts
+clear_screen_t  jsl B1CODE_BASE+clear_screen_w1
+                rts
+exit_level_t    jsl B1CODE_BASE+exit_level_w1
+                rts
+load_hud_t      jsl B1CODE_BASE+load_hud_w1
+                rts
+load_level_c_t  jsl B1CODE_BASE+load_level_c_w1
+                rts
+load_palette_t  jsl B1CODE_BASE+load_palette_w1
+                rts
+load_sounds_t   jsl B1CODE_BASE+load_sounds_w1
+                rts
+load_sprites_t  jsl B1CODE_BASE+load_sprites_w1
+                rts
+load_textures_t jsl B1CODE_BASE+load_textures_w1
+                rts
+load_vram_t     jsl B1CODE_BASE+load_vram_w1
+                rts
+mn_sbox_t       jsl B1CODE_BASE+mn_sbox_w1
+                rts
+mn_sdraw_t      jsl B1CODE_BASE+mn_sdraw_w1
+                rts
+mn_togame_t     jsl B1CODE_BASE+mn_togame_w1
+                rts
+mus_play_t      jsl B1CODE_BASE+mus_play_w1
+                rts
+mus_reset_t     jsl B1CODE_BASE+mus_reset_w1
+                rts
+mus_stop_t      jsl B1CODE_BASE+mus_stop_w1
+                rts
+pl_restart_t    jsl B1CODE_BASE+pl_restart_w1
+                rts
+rom_in_t        jsl B1CODE_BASE+rom_in_w1
+                rts
+rom_out_t       jsl B1CODE_BASE+rom_out_w1
+                rts
+sg_fresh_t      jsl B1CODE_BASE+sg_fresh_w1
+                rts
+snd_init_t      jsl B1CODE_BASE+snd_init_w1
+                rts
+snd_play_t      jsl B1CODE_BASE+snd_play_w1
+                rts
+snd_pokey_t     jsl B1CODE_BASE+snd_pokey_w1
+                rts
+wi_newlvl_t     jsl B1CODE_BASE+wi_newlvl_w1
+                rts
+ptc_tail_t      jsl B1CODE_BASE+ptc_tail_w1
+                rts
+wi_pctof_t      jsl B1CODE_BASE+wi_pctof_w1
+                rts
+wi_div16_t      jsl B1CODE_BASE+wi_div16_w1
+                rts
+wi_mul100_w0    jsr wi_mul100                ; the intermission overlay's, for
+                rtl                          ;   wi_pctof in bank $01
+        .segment B1
+wi_newlvl_w1    jsr wi_newlvl
+                rtl
+ptc_tail_w1     jsr ptc_tail
+                rtl
+wi_pctof_w1     jsr wi_pctof
+                rtl
+wi_div16_w1     jsr wi_div16
+                rtl
+spr_fcopy_w1    jsr spr_fcopy                ; wi.asm wi_bgsel (stage 2) jsl-s
+                rtl                          ;   straight here: no bank-0 thunk
+blitter_wait_w1 jsr blitter_wait
+                rtl
+clear_both_w1   jsr clear_both
+                rtl
+clear_screen_w1 jsr clear_screen
+                rtl
+exit_level_w1   jsr exit_level
+                rtl
+load_hud_w1     jsr load_hud
+                rtl
+load_level_c_w1 jsr load_level_c
+                rtl
+load_palette_w1 jsr load_palette
+                rtl
+load_sounds_w1  jsr load_sounds
+                rtl
+load_sprites_w1 jsr load_sprites
+                rtl
+load_textures_w1 jsr load_textures
+                rtl
+load_vram_w1    jsr load_vram
+                rtl
+mn_sbox_w1      jsr mn_sbox
+                rtl
+mn_sdraw_w1     jsr mn_sdraw
+                rtl
+mn_togame_w1    jsr mn_togame
+                rtl
+mus_play_w1     jsr mus_play
+                rtl
+mus_reset_w1    jsr mus_reset
+                rtl
+mus_stop_w1     jsr mus_stop
+                rtl
+pl_restart_w1   jsr pl_restart
+                rtl
+rom_in_w1       jsr rom_in
+                rtl
+rom_out_w1      jsr rom_out
+                rtl
+sg_fresh_w1     jsr sg_fresh
+                rtl
+snd_init_w1     jsr snd_init
+                rtl
+snd_play_w1     jsr snd_play
+                rtl
+snd_pokey_w1    jsr snd_pokey
+                rtl
+        .endseg
+; DRAC_PLAN 4b (xbank_fix.py): bank-$01 callers of code that stays in bank 0
+siov_r_w0       jsr siov_r
+                rtl
+snd_fetch_w0    jsr snd_fetch
+                rtl
+snd_stop_w0     jsr snd_stop
+                rtl
 
 ;==============================================================
 ; LEVEL ENTRY / EXIT -- parked in the 128 B block the under-ROM trampolines used
@@ -635,6 +865,7 @@ lvl_resume = *
 ;   assembly-time equs baked from E1M1 (MAP_STARTX/Y/ANG/EYE); with more than one
 ;   level they have to come from the level that is actually in RAM.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spawn_player
         ldx #3                       ; start_x, start_y: 4 B, header order == zp order
 ?l      lda MAP_HSX,x
@@ -649,12 +880,16 @@ lvl_resume = *
         sta zp_pz+1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; init_level -- everything that has to be reset for the map now in RAM. Called
 ;   once at boot and again after every exit switch.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc init_level
+        lda #$FF                     ; vertex cache: force the stamp clear on the
+        sta vc_frame                 ;   first frame (SDRAM is random at boot)
         ldx #0                       ; things blob header: p_ss @5, p_things @7,
 ?cp     lda THINGS_BASE+5,x          ;   p_sprtab @9. Read HERE and not in
         sta th_ss,x                  ;   load_things: the blob is under the ROM,
@@ -695,11 +930,13 @@ lvl_resume = *
         sta tw_chn                   ;   (eor in tw_chain_fire flips $97<->$9A)
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; exit_level -- the EXIT switch was used: load the level the header points at.
 ;   Mirrors the boot load order (SIO wants the OS interrupt chain + IRQs on).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc exit_level
         jsr rom_in                   ; SIOV is in the OS ROM
         lda MAP_HNEXT                ; read BEFORE load_level overwrites the header
@@ -724,6 +961,7 @@ pl_reload                            ; pl_restart re-enters HERE: same level, an
         jsr rom_out                  ; back to the frame loop's world
         jmp snd_resume               ; POKEY back from SIO, then init_level
 .endp
+        .endseg
     .if * > UROM_TRAMP_END+1
         ert 'spawn_player/init_level/exit_level overran the $1B00 block'
     .endif
@@ -941,7 +1179,7 @@ b1copy_resume = *
         ; stages (B1CODE, B1CODE2) and the two SQ2 masters, whose staged
         ; win2 pages die right here. Page counts are rounded up as before;
         ; the tail bytes land in free bank and nothing reads them.
-        jsr rom_out                  ; $C000 is RAM only with the ROM out
+        jsr rom_out_t ; $C000 is RAM only with the ROM out
         ldx #0
 ?next   lda ?tab+0,x
         sta sp_ptr
@@ -953,8 +1191,15 @@ b1copy_resume = *
         sta zp_ptr+1
         lda ?tab+4,x
         sta m_a                      ; pages left (math scratch, dead at boot)
+ .if 1
+        lda ?tab+5,x                 ; 2026-09-13: the row's OWN bank -- code
+        sta zp_ptr+2                 ;   goes to B1CODE_BANK, the automap
+                                     ;   overlay to the data bank (drac.txt:
+                                     ;   bank $01 is the code bank)
+ .else
         lda #MAP_EXT_BANK
         sta zp_ptr+2
+ .endif
 ?page   ldy #0
 ?byte   lda (sp_ptr),y
         sta [zp_ptr],y
@@ -964,16 +1209,40 @@ b1copy_resume = *
         inc zp_ptr+1
         dec m_a
         bne ?page
+ .if 1
+        txa                          ; next 6-byte ?tab row
+        clc
+        adc #6
+        tax
+        cpx #12
+ .else
         txa                          ; next 5-byte ?tab row
         clc
         adc #5
         tax
         cpx #15
+ .endif
         bcc ?next
-        jmp rom_in                   ; ...and back to emulation mode with it
+        jmp rom_in_t ; ...and back to emulation mode with it
+ .if 1
+?tab    dta <AMOVL_STAGE, >AMOVL_STAGE, <AMOVL_EXT, >AMOVL_EXT, 5, MAP_EXT_BANK
+        dta <B1CODE_STAGE, >B1CODE_STAGE, <HUDTAB_OFF, >HUDTAB_OFF, 2, MAP_EXT_BANK
+                                     ; TWO pages since 2026-09-16: HUD_TAB
+                                     ;   in the first, HU_TAB -- the HU strip
+                                     ;   directory -- in the second
+                                     ;   (bank01.asm, memory_map.inc HUTAB_OFF)
+                                     ; (the two bank01.asm CODE rows are gone,
+                                     ;  2026-09-13: that code is the B1 segment,
+                                     ;  put in bank $01 by b1_stage_copy while
+                                     ;  the XEX loads. HUD_TAB is data: the
+                                     ;  data bank, where hud_entry reads it with
+                                     ;  zp_ptr+2 = MAP_EXT_BANK -- the bank
+                                     ;  every map reader after it expects.)
+ .else
 ?tab    dta <B1CODE_STAGE, >B1CODE_STAGE, <B1CODE_OFF, >B1CODE_OFF, [B1CODE_BYTES+255]/256
         dta <B1CODE2_STAGE, >B1CODE2_STAGE, <B1CODE2_OFF, >B1CODE2_OFF, [B1CODE2_BYTES+255]/256
         dta <AMOVL_STAGE, >AMOVL_STAGE, <AMOVL_EXT, >AMOVL_EXT, 5
+ .endif
                                      ; (the SQ2 master rows are gone, 2026-08-31
                                      ;  pm: the tables live at SQ2L_UROM/
                                      ;  SQ2H_UROM, past every stream -- no
@@ -983,6 +1252,59 @@ b1copy_resume = *
         ert 'b1_to_ext outgrew B1COPY_BASE..END (memory_map.inc)'
     .endif
         org b1copy_resume
+
+;--------------------------------------------------------------
+; b1_stage_copy -- XEX INIT behind every chunk tools/split_b1.py stages:
+;   B1STAGE = dst(16), len(16), payload -> copy the payload to $01:dst.
+;   It runs inside the boot loader's XEX parse: EMULATION mode, OS ROM in,
+;   IRQs on -- so 8-bit only, no rep (a no-op there anyway). Long [zp],y is
+;   legal in emulation. sp_ptr/zp_ptr are engine zero page that nothing
+;   touches before main. Boot-only: the hole it sits in is dead afterwards.
+;--------------------------------------------------------------
+stcopy_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+        org B1STCOPY_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+.proc b1_stage_copy
+        lda B1STAGE                  ; dst offset in bank $01
+        sta zp_ptr
+        lda B1STAGE+1
+        sta zp_ptr+1
+        lda #B1CODE_BANK
+        sta zp_ptr+2
+        lda #<[B1STAGE+4]            ; the payload
+        sta sp_ptr
+        lda #>[B1STAGE+4]
+        sta sp_ptr+1
+        ldy #0
+        ldx B1STAGE+3                ; whole pages first
+        beq ?tail
+?page   lda (sp_ptr),y
+        sta [zp_ptr],y
+        iny
+        bne ?page
+        inc sp_ptr+1                 ; Y wrapped: both pointers one page on
+        inc zp_ptr+1                 ;   (dst + len stays inside the bank:
+        dex                          ;   B1SEG_BASE + B1SEG_LEN = $10000)
+        bne ?page
+?tail   cpy B1STAGE+2                ; then the remainder, Y = 0 on entry
+        beq ?done
+        lda (sp_ptr),y
+        sta [zp_ptr],y
+        iny
+        bne ?tail                    ; remainder < 256: the cpy ends it first
+?done   rts
+.endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+    .if * > B1STCOPY_END+1
+        ert 'b1_stage_copy outgrew B1STCOPY_BASE..END (memory_map.inc)'
+    .endif
+ .endif
+        org stcopy_resume
 
         icl 'savegame.asm'           ; SAVE/LOAD -- the menu's second overlay.
                                      ;   Same two-address org trick, same VRAM
@@ -1117,24 +1439,28 @@ tw_seg_end = *                       ; watched by the .if below
 ;--------------------------------------------------------------
 ; mvg_arm / mv_guard -- a bound on mv_sector's BSP descent (memory_map.inc).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mvg_arm
         lda #40                      ; deeper than any tree these maps build
         sta mv_dep
         lda MAP_HROOT                ; ...and hand back what the lda took
         rts
 .endp
+        .endseg
 mv_dep  dta 0
     .if * > MVGUARD_END+1
         ert 'mvg_arm outgrew MVGUARD_BASE..END (memory_map.inc)'
     .endif
 
         org MVGUARD2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mv_guard
         dec mv_dep
         beq ?bail                    ; 40 nodes deep and still no leaf: the tree
         jmp mv_sector.mvs_top        ;   is cyclic, so stop walking it
 ?bail   jmp mv_sector.mvs_leaf
 .endp
+        .endseg
     .if * > MVGUARD2_END+1
         ert 'mv_guard outgrew MVGUARD2_BASE..END (memory_map.inc)'
     .endif
@@ -1144,12 +1470,14 @@ mv_dep  dta 0
 ; sg_fresh -- see SGFRESH_BASE in memory_map.inc. Tail-jumps into pl_reload, so
 ;   sg_go2's call site is the three bytes it always was.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sg_fresh
         ldx current_level
         lda #0
         sta lvl_res,x
         jmp exit_level.pl_reload
 .endp
+        .endseg
     .if * > SGFRESH_END+1
         ert 'sg_fresh outgrew SGFRESH_BASE..END (memory_map.inc)'
     .endif

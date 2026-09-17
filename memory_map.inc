@@ -21,6 +21,186 @@ VFOCAL          equ 160              ; VERTICAL focal (scale_z): decoupled from 
                                      ; LR view (2:1 pixels). Mirror of gui.py VFOCAL.
 HHFP            equ (VIEW_HEIGHT/2)*256     ; horizon (view/2) in Q8 -> track_calc
 
+; D0 -- drac.txt: $8000-$BFFF is for a permanent 16 KB VRAM window, so the
+; bank-0 DATA that sat in fixed blocks and equ cells there is packed here
+; instead, below $8000 (tools/d0_mark.py + the `.ds` cells in this file).
+; $281C is where the $2000 engine flow ends since its code went to bank $01;
+; $36F8 is the next fixed block. Defined first: this file declares D0 cells.
+; Besides data it holds only what must stay in bank 0 for good: siov_r
+; (underrom.asm, DRAC_PLAN 4a -- SIOV needs emulation mode, so PBR 0).
+D0SEG_BASE    equ $281C
+D0SEG_LEN     equ $36F8-D0SEG_BASE
+        .segdef D0 D0SEG_BASE D0SEG_LEN rw 0
+; DRAC_PLAN 4 (drac.txt: "zmienne zadeklarowane jako 8-bitowe albo 24-bitowe
+;   przedeklarowac na 16 albo 32 bity"): the painter's PAINT_VARS and the
+;   renderer's $1300 page as DECLARED cells in segment D0, in their old order.
+;   The 24-bit and 8-bit cells the 16-bit code works on carry their full 32/16
+;   bits now (pc_g, rs_rptf, rs_drpt, rs_ycacc, rs_yfacc, rs_ybcacc, rs_ybfacc, rs_spa, rs_spb, rs_Ltmp, rs_acctmp, rs_mag, rs_wtexad, rs_ltexad, rs_tsrc, tw_base, rs_t2);
+;   the old address lines are the .else sides further down.
+ .if 1
+        .segment D0
+PAINT_D0                             ; (was PAINT_VARS = OSFREE_BASE)
+pc_colw     .ds 3
+pc_n        .ds 1                     ; paint_col: real runs in the tile column
+                                      ;   (0 until the column's first wrap)
+pc_x0       .ds 1                     ; paint_col: the anchor run's slot (bytes)
+vc_key      .ds 2                     ; vertex cache: the index being looked up
+vc_frame    .ds 1                     ;   ... and the frame stamp (1..255, never 0)
+ai_lim      .ds 1                     ; ai_tick / en_tick: the level's n_things
+                                      ;   rounded up to even (0 = all 256)
+pc_dy       .ds 3
+pc_cum      .ds 1
+pc_x        .ds 1
+pc_w        .ds 1
+pc_f        .ds 3
+pc_sx       .ds 1
+pc_g        .ds 2
+rs_rptf     .ds 1                    ; DRAC_PLAN 5: 32-bit cells, word arithmetic: rptf, rpt lo, rpt hi, pad
+rs_rpt      .ds 3                    ;   is ONE cell (pt_step adds rs_drpt by words)
+rs_drpt     .ds 4
+ptm_last    .ds 2
+RSPAGE_D0                            ; (was the $1300 page)
+rs_segi     .ds 2
+rs_scL      .ds 2
+rs_scR      .ds 2
+rs_sxL      .ds 2
+rs_sxR      .ds 2
+rs_span     .ds 2
+rs_wtop     .ds 2
+rs_wbot     .ds 2
+rs_ycacc    .ds 4
+rs_ycS      .ds 2
+rs_yfacc    .ds 4
+rs_yfS      .ds 2
+rs_mpass    .ds 2
+rs_midtex   .ds 2
+ms_n        .ds 1
+ms_i        .ds 1
+ms_cur      .ds 1
+ms_cstep    .ds 3
+ms_uni      .ds 1
+ms_cbase    .ds 1
+rs_ceilcol  .ds 1
+rs_floorcol .ds 1
+rs_wallcol  .ds 1
+rs_yoffv    .ds 2
+rs_sc1      .ds 2
+rs_sc2      .ds 2
+rs_sx1      .ds 2
+rs_sx2      .ds 4
+rs_top      .ds 1
+rs_bot      .ds 1
+rs_lowcol   .ds 1
+rs_isport   .ds 3
+rs_nt       .ds 1
+rs_nb       .ds 1
+ms_ot       .ds 2
+ms_ob       .ds 2
+ms_t        .ds 1
+ms_b        .ds 1
+ms_t0       .ds 1
+ms_b0       .ds 1
+ms_off      .ds 4
+rs_ybcacc   .ds 4
+rs_ybcS     .ds 2
+rs_ybfacc   .ds 4
+rs_ybfS     .ds 2
+rs_spa      .ds 2
+rs_spb      .ds 2
+rs_wtmp     .ds 2
+rs_Ltmp     .ds 4
+rs_Stmp     .ds 2
+rs_acctmp   .ds 4
+rs_ra       .ds 2
+rs_rb       .ds 2
+rs_pyc16    .ds 2
+rs_pyf16    .ds 2
+rs_pybc16   .ds 2
+rs_pybf16   .ds 2
+rs_nt16     .ds 2
+rs_nb16     .ds 2
+rs_invm     .ds 2
+rs_invsh    .ds 1
+rs_mag      .ds 4
+rs_acc      .ds 5
+cb_top      .ds 2
+cb_bottom   .ds 2
+cb_left     .ds 2
+cb_right    .ds 2
+cb_X        .ds 8
+cb_Z        .ds 8
+cb_lo       .ds 2
+cb_hi       .ds 2
+cb_cnt      .ds 1
+cb_xa       .ds 1
+cb_xb       .ds 1
+cb_off      .ds 2
+cb_fbb      .ds 1
+rs_wtexid   .ds 1
+rs_wtexad   .ds 4
+rs_wtexh    .ds 1
+rs_wtexwm   .ds 1
+rs_ltexid   .ds 1
+rs_ltexad   .ds 4
+rs_ltexh    .ds 1
+rs_ltexwm   .ds 1
+rs_tsrc     .ds 4
+rs_texh_cur .ds 1
+rs_txx      .ds 2
+rs_worldh   .ds 2
+rs_dscr     .ds 2
+rs_tpr      .ds 2
+rs_pegrow   .ds 2
+tw_wt       .ds 2
+tw_ctmp     .ds 2
+tw_row      .ds 1
+tw_b        .ds 1
+tw_use8     .ds 1
+tw_guard    .ds 1
+tw_spy      .ds 2
+tw_dr       .ds 2
+tw_off      .ds 2
+tw_tile     .ds 2
+tw_base     .ds 4
+tw_brow     .ds 1
+tw_bh       .ds 1
+tw_h        .ds 1
+tw_rem      .ds 1
+tw_lim      .ds 1
+tw_lastsrc  .ds 3
+tw_boff     .ds 2
+tw_rpt      .ds 1
+tw_n        .ds 1
+tw_n1       .ds 1
+tw_r        .ds 1
+rs_texmask  .ds 2
+rs_texpow2  .ds 3
+tw_t0       .ds 1
+tw_need     .ds 1
+tw_soff     .ds 2
+tw_lastt0   .ds 1
+tw_lastneed .ds 1
+tw_s        .ds 1
+tw_ssh      .ds 1
+tw_rsh      .ds 1
+tw_dsh      .ds 1
+rs_seglen   .ds 2
+rs_segoff   .ds 2
+rs_uacc     .ds 5
+rs_uflip    .ds 2                    ; DRAC_PLAN 5: no 8-bit window (process_seg writes it 16-bit)
+rs_t1       .ds 4                    ; DRAC_PLAN 5: 32-bit cells, word arithmetic
+rs_t2       .ds 4
+cu_savex    .ds 1
+rs_sscl     .ds 3
+rs_pegf     .ds 1
+rs_pegl     .ds 1
+rs_vshw     .ds 1
+rs_vshl     .ds 1
+rs_vsh      .ds 1
+rs_vsht     .ds 1
+        .endseg
+ .endif
+
 
 
 ;==============================================================
@@ -138,6 +318,8 @@ PAINT_VARS  equ OSFREE_BASE
 ; donors are declared after this file is included): pc_yacc = loc_floor,
 ; pc_y/pc_yn = zp_mvsec -- render-dead per-call scratch of movers/AI/player.
 ; PAINT_VARS+0..2 and +10..11 are their old cells, free again.
+ .if 1                                ; DRAC_PLAN 4: declared in D0
+ .else
 pc_colw     = PAINT_VARS+0            ; zp_col as a WORD (2026-09-09): paint_col's emit
                                       ;   adds it 16-bit to the row address
 pc_dy       = PAINT_VARS+3            ; the current run's screen extent, Q8 rows
@@ -156,6 +338,7 @@ rs_rpt      = PAINT_VARS+14           ; SCREEN ROWS PER TEXEL, Q8 (the inverse o
 rs_rptf     = PAINT_VARS+16           ;   ... its Q16 fraction
 rs_drpt     = PAINT_VARS+17           ; per-column step, Q16 signed 24-bit
 ptm_last    = PAINT_VARS+20           ; the rs_rpt pt_mul last BAKED into pt_dy's
+ .endif
                                       ;   operands (2 B): paint_col skips the
                                       ;   re-bake while it is unchanged -- flat
                                       ;   walls step rpt by <1 LSB per column.
@@ -336,12 +519,20 @@ AMOVL_STAGE     equ $D800            ; ...and where MADS parks it in the XEX.
 ; Rapidus-fast (MEMAC-A), which is exactly right for these: every one of them is
 ; touched a handful of times a frame, and the fast holes are worth more to the
 ; render path (see am_mark above, and mn_pend for the same reasoning).
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF
+        .segment D0
+am_on           .ds 1                ; 0 = the 3D view, else mn_open's bank byte
+am_sh           .ds 1                ; zoom: world units per screen ROW = 1<<am_sh
+am_karm         .ds 1                ; the zoom keys' press edge (0/1/2)
+        .endseg
+ .else
 am_on           = $A2B2              ; 0 = the 3D view. Non-zero = the map is up,
                                      ;   AND the value IS mn_open's bank byte
                                      ;   (BANK_EN|AMOVL_BANK) -- so am_gate needs
                                      ;   no constant to open with.
 am_sh           = $A2B3              ; zoom: world units per screen ROW = 1<<am_sh
 am_karm         = $A2B4              ; the zoom keys' press edge (0/1/2)
+ .endif
 ; ---- the four gates. Each one RETARGETS a `jsr` that was already there, so the
 ;      blocks they hook into (main's $2000 segment, hud.asm) pay nothing ------
 AMGATE_BASE     equ $A38C            ; am_gate:  main's `jsr render_world`
@@ -366,6 +557,31 @@ AMWGATE_END     equ $B77F
 ; it four -- and a boot-only table could not care less that win2 is slow.
 MNLDTAB_BASE    equ $B377
 MNLDTAB_END     equ $B391
+
+; ---- THE BOOT MENU'S BLITTER (menu.asm mn_sdraw/mn_sbox/mn_sdst/mn_togame) --
+; The boot menu does not draw into a framebuffer. Its screen IS the TITLE, at
+; DOOM's own 320x200 in VBXE's SR overlay mode (menu_syms.inc MENU_SRVRAM), so
+; every patch it blits needs a destination that steps 320 bytes a row instead
+; of SCREEN_WIDTH's 160, and a source zoomed 2x so a 160-wide patch still
+; covers the 320 hardware pixels it covers on the LR screen. That is a
+; different hud_blit, not a flag on the existing one -- the game shares
+; hud_blit and must not pay for it.
+;
+; PARKED IN TWO HOLES because it is ~240 bytes and no single hole is that big,
+; and because the three overlays that call it (menu.asm, m_episode.asm,
+; savegame.asm's picker) run in the SAME $1000-$14FF window and had 30 bytes
+; left between them. Everything here is resident and reached by absolute jsr.
+MNSR_BASE       equ $B2E4            ; mn_sdraw -- a menu_tab patch into the
+MNSR_END        equ $B376            ;   title picture (ends at MNLDTAB_BASE)
+MNSR2_BASE      equ $8A1F            ; mn_sdst + mn_togame, and the variables.
+MNSR2_END       equ $8AAC            ;   mb_x/mb_y/mb_w/mb_h ARE these bytes:
+                                     ;   they used to live in menu.asm's overlay
+                                     ;   and m_episode.asm -- a DIFFERENT overlay
+                                     ;   in the same $1000-$14FF window -- now
+                                     ;   sets them too, so it would have been
+                                     ;   writing over the picker's own code
+MNSR3_BASE      equ $A300            ; mn_sbox -- the background restore
+MNSR3_END       equ $A38B
 
 ; ---- collision (M5): relocated routines + tunables -------------------------
 CALCU_BASE      equ $0610            ; calc_u -- per-column perspective u. Lives in
@@ -409,7 +625,7 @@ BNTAB_END       equ $8FB0            ;   2026-08-31: 3 skull-key ids arrived, th
 CBCORN_BASE     equ $5C00            ; cb_corners: check_bbox's four view-space
 CBCORN_END      equ $5D40            ;   corners in 8 frac-table multiplies
 AITICK_BASE     equ $3920            ; ai_tick (enemy_ai.asm): the per-tic sweep over
-AITICK_END      equ $3984            ;   256 things. FAST ($0000-$3FFF) since 2026-09-09:
+AITICK_END      equ $3984            ;   256 things.
                                      ;   it ran from win1 at $5Bxx, and the word sweep
                                      ;   no longer fit AI_BASE..AI_END anyway. The hole
                                      ;   is the $2000 engine segment's tail.
@@ -510,7 +726,10 @@ DOORS_NMAX      equ 48               ; array stride; MAP_NDOORS (cap) must fit.
                                      ;   64 is the next real ceiling: past it the
                                      ;   MAP_DOORS/MAP_DSND record index (idx*4
                                      ;   into Y) wraps.
-DOOR_BASE       equ [MAP_EXT_BANK*$10000]+DOOR_EXT
+EXT_BASE        equ [MAP_EXT_BANK*$10000] ; the Rapidus DATA bank (map EXT, AI pages,
+                                     ;   tables) as a 24-bit base. Bank $01 is the
+                                     ;   CODE bank (B1CODE_BANK) -- drac.txt.
+DOOR_BASE       equ EXT_BASE+DOOR_EXT
 DOOR_STATE      = DOOR_BASE          ; [N] 0=closed 1=opening 2=open(dwell) 3=closing
 DOOR_CURLO      = DOOR_STATE+DOORS_NMAX   ; [N] current ceiling, lo
 DOOR_CURHI      = DOOR_CURLO+DOORS_NMAX   ; [N] current ceiling, hi
@@ -1025,11 +1244,11 @@ bsp_stack   equ $1400              ; iterative BSP walk: far-child stack (128 en
 ; the ,x forms pay no cross-page cycle either way.
 ; The old win2 pages $8D00-$8FFF and $A800-$AAFF are FREE now (with $A400-$A7FF
 ; from the SQ2 move: 2.5 KB of win2 for the next cold eviction).
-; Offsets $A000+ on purpose: bank $01 CODE has to sit inside the $9000-$9FFF
-; MEMAC hole (the sim mirrors it to the same bank-0 addresses -- see
-; _bench_frame.py B1_LO/B1_HI), so the hole is code-only real estate and DATA
-; like these six pages stays out of it.
-FRAC_EXT    equ $010000            ; the bank the six pages live in
+; Offsets $A000+: chosen 2026-08-31, when bank $01 CODE had to sit inside the
+; $9000-$9FFF MEMAC hole because the sim mirrored it into bank 0. Since
+; 2026-09-13 the sim fetches through PBR (sim6502.py code_view) and there is
+; no mirror; the offsets simply stayed.
+FRAC_EXT    equ EXT_BASE            ; the bank the six pages live in
 TSIN_LO     equ $A000              ; |sin| * b, byte 0   (offset INSIDE bank $01)
 TSIN_MI     equ $A100              ; byte 1
 TSIN_HI     equ $A200              ; byte 2
@@ -1040,6 +1259,8 @@ TCOS_HI     equ $A500              ; byte 2
 ; ---- per-seg render scratch ($1300-$13xx) -----------------------------------
 ;   Fixed-point: scales Q8(16b); tracks/accumulators Q8 24-bit signed; steps
 ;   Q8 16-bit signed. (Kept in RAM, not ZP -- ZP is for the hot pointers/math.)
+ .if 1                                ; DRAC_PLAN 4: declared in D0
+ .else
 rs_segi     = $1300                ; index of the seg being drawn (render_subsector
                                    ;   counts it up) -- the key into MAP_YBITS
 rs_scL      = $1302                ; 1/Z scale, left endpoint   (Q8,16b)
@@ -1224,11 +1445,14 @@ tw_rsh      = $13E4                ; 8-log2(S): tw_wt >> rsh = sample index
 tw_t0       = $13DC                ; first texel of the range put in the 8x scratch
 tw_need     = $13DD                ; how many texels the span needs expanded
 tw_ctmp     = $13B8                ; tw_expand: wanted end texel (cache containment
+ .endif
                                    ; test); the spare byte of the tw_wt accumulator
 TW_PAD      equ 6                  ; texels expanded BEYOND the span's own range, so
                                    ; the next column's (slightly shifted) range still
                                    ; falls inside the scratch -> cache hit instead of
                                    ; the frame's most expensive blit. 0 disables it.
+ .if 1                                ; DRAC_PLAN 4: declared in D0
+ .else
 tw_soff     = $13DE                ; t0*8: sample index the scratch starts at (16b)
 tw_lastt0   = $13E0                ; DEAD with tw_lastsrc above (2 B free): these
 tw_lastneed = $13E1                ; were the expander cache's range, and nothing
@@ -1246,6 +1470,7 @@ tw_lastneed = $13E1                ; were the expander cache's range, and nothin
 ;   is exact perspective, and both tracks advance by a constant per column.
 rs_t1       = $13F0                ; scaleR*(x - sxL) (24-bit, += rs_utR)
 rs_t2       = $13F3                ; scaleL*(sxR - x) (24-bit, -= rs_utL)
+ .endif
 ; ---- the u-track's GUARDED endpoint scales (2026-07-31) ---------------------
 ;   rs_t1/rs_t2 are 24-bit cells and their init throws m_prod+3 away, so a
 ;   max(scale)*span product past 2^24 wraps and the texture u goes garbage --
@@ -1266,7 +1491,10 @@ UGUARD_END  equ $26E6              ;   still in the fast $0000-$3FFF window --
                                    ;   the $2000-tail hole, above $257E so the
                                    ;   engine segment keeps room to creep.
                                    ;   $26E7 is WPFEN_BASE: this is the ceiling.
+ .if 1                                ; DRAC_PLAN 4: declared in D0
+ .else
 cu_savex    = $13F6                ; calc_u preserves the column loop's X
+ .endif
 ;   ($13F7-$13FF free)
 ; TW_SAFE = 1 pins the wall texturing to the configuration that was known to
 ; render correctly: oversample 8x everywhere and always expand the whole texture
@@ -1377,7 +1605,7 @@ SPRFUZZ_END     equ $A29F            ;   (spr_draw.asm). It is HERE and not inli
                                      ;   fire and the spectre code overwrote the
                                      ;   3x3 neighbourhood table. $A29F is the
                                      ;   last byte that is really free here.
-SPRBLIT_BASE    equ $37A0            ; spr_blit: FAST since 2026-09-09 (census: 3480 cyk/f
+SPRBLIT_BASE    equ $37A0            ; spr_blit: (census: 3480 cyk/f
 SPRBLIT_END     equ $381F            ;   at win2's x11.2 = 2.0 ms/f, the costliest win2
                                      ;   proc). Was $A302, the old-PLAYPAL hole:
                                      ; the $B000 block ends at HUDBLIT_BASE ($B810)
@@ -1465,40 +1693,66 @@ MENU_BANK0      equ $18              ; title + main menu pixels (pack_menu.py):
                                      ;   the base of the per-level VRAM pool, empty
                                      ;   until the first load_level. Costs nothing:
                                      ;   arena_init re-claims it every level load.
-HUD_VRAM        equ $07D000          ; status bar graphics (pack_hud.py); moved up
-HUD_BANK0       equ $7D              ; = HUD_VRAM >> 12: load_hud's first target
-                                     ;   chunk. 2026-08-11: $79 -> $7D with the
-                                     ;   bank-7 repack (FRAME_C) -- this equ is
-                                     ;   HAND-KEPT and streaming to the old chunk
-                                     ;   put the art inside WEAP_SLOT (noise bar)
+HUD_VRAM        equ $04A000          ; status bar graphics (pack_hud.py), SIX
+HUD_BANK0       equ $4A              ;   chunks. 2026-09-16: $07D000 -> here.
+                                     ;   The bar is an SR overlay now, so every
+                                     ;   lump is 320 wide and the blob doubled
+                                     ;   to 24,497 B -- three chunks short of
+                                     ;   what the old home had. It lives behind
+                                     ;   the HU strips instead, in the six
+                                     ;   chunks packing THEM to their own width
+                                     ;   gave back (pack_menu.py _hu_strips),
+                                     ;   and $07D000 is VRAM_BAR320 now.
+                                     ;   BOTH equs are HAND-KEPT: streaming to
+                                     ;   the wrong chunk puts the art inside
+                                     ;   somebody else's region with no error
+                                     ;   (2026-08-11, the noise bar).
+VRAM_BAR320     equ $07D000          ; THE STATUS BAR ITSELF, 320 x 32 = 10,240 B
+                                     ;   -- the surface the XDL's bottom eight
+                                     ;   entries scan in SR (xdl.asm) and the one
+                                     ;   bar_blit paints (hud.asm). It is NOT a
+                                     ;   framebuffer row range any more: rows
+                                     ;   168-199 of FRAME_A are still there and
+                                     ;   still 160 wide (VRAM_HUDROWS), because
+                                     ;   the intermission, the finale, the READ
+                                     ;   THIS! pages and the melt all paint a
+                                     ;   full 160x200 picture and show it on
+                                     ;   XDL list L. Only the GAME's bar is here.
+                                     ;   Sits in the 12 KB the HUD blob vacated,
+                                     ;   with 2,048 B to spare.
 HUD_BAR_Y       equ 168              ; DOOM ST_Y: the bar covers rows 168..199
 VIEW_HEIGHT     equ 168              ; 3D view above it -- DOOM shrinks it the same
 ; HUD_TAB entry: u24 vram, u8 width (bytes), u8 height, i8 left, i8 top
 HUDT_SIZE       equ 7
-HUD_BAR         equ 0                ; index of STBAR
-HUD_DIG0        equ 1                ; STTNUM0..9 = 1..10
-HUD_PCT         equ 11               ; STTPRCNT
-ST_AMMOX        equ 22               ; DOOM x=44 -> our bytes are 2 pixels wide
-ST_HEALTHX      equ 45               ; DOOM 90
-ST_ARMORX       equ 110              ; DOOM 221 (110.5 -> 110)
+; ---- HUD_TAB indices. STBAR IS NOT ONE (2026-09-16): it is 320 wide and the
+;      row holds the width in a byte, and it was never drawn through the row
+;      anyway -- the background fill and hud_facefix's cell restore both build
+;      their own BCB. It reaches the engine as HUDV_STBAR (hud_syms.inc), and
+;      every index below is one lower than it used to be.
+;      THE X COORDINATES ARE DOOM'S OWN AGAIN: a byte is a pixel on the bar.
+HUD_DIG0        equ 0                ; STTNUM0..9 = 0..9
+HUD_PCT         equ 10               ; STTPRCNT
+ST_AMMOX        equ 44               ; st_stuff.c ST_AMMOX
+ST_HEALTHX      equ 90               ; ST_HEALTHX
+ST_ARMORX       equ 221              ; ST_ARMORX
 ST_NUMY         equ 171              ; DOOM ST_AMMOY/ST_HEALTHY/ST_ARMORY
-HUD_ARMS        equ 12               ; STARMS (DOOM x=104, y=168)
-HUD_YS0         equ 29               ; STYSNUM0..9 = 29..38, the SMALL yellow
+HUD_ARMS        equ 11               ; STARMS (DOOM x=104, y=168)
+HUD_YS0         equ 28               ; STYSNUM0..9 = 28..37, the SMALL yellow
                                      ;   digits. Packed since the bar's ammo
                                      ;   columns were planned and unused by any
                                      ;   code until the FPS readout moved into
                                      ;   the view (2026-08-28) and wanted digits
                                      ;   that do not cover a third of the picture.
-HUD_GN0         equ 39               ; STGNUM2..7 = 39..44 (still unused: nothing
+HUD_GN0         equ 38               ; STGNUM2..7 = 38..43 (still unused: nothing
                                      ;   draws the ARMS numbers -- see draw_hud)
-HUD_COMMA       equ 45               ; STCFN044, the FPS readout's decimal comma
-HUD_KEY0        equ 13               ; STKEYS0..2
-HUD_FACE        equ 16               ; STFST00..02 look-around set (DOOM x=143,y=168)
-HUD_FACE_GRIN   equ 19               ; STFEVL0: the evil grin on a weapon pickup
-HUD_FACE_HURT   equ 20               ; STFST2x: DOOM pain level 2 (health 34..66)
-HUD_FACE_CRIT   equ 23               ; STFST4x: DOOM pain level 4 (health 0..33)
-HUD_FACE_RAGE   equ 26               ; STFKILL0/2/4, +0/+1/+2 by pain level:
-HUD_FACE_GOD    equ 29               ; STFGOD0: st_stuff.c:900 -- godmode OR
+HUD_COMMA       equ 44               ; STCFN044, the FPS readout's decimal comma
+HUD_KEY0        equ 12               ; STKEYS0..2
+HUD_FACE        equ 15               ; STFST00..02 look-around set (DOOM x=143,y=168)
+HUD_FACE_GRIN   equ 18               ; STFEVL0: the evil grin on a weapon pickup
+HUD_FACE_HURT   equ 19               ; STFST2x: DOOM pain level 2 (health 34..66)
+HUD_FACE_CRIT   equ 22               ; STFST4x: DOOM pain level 4 (health 0..33)
+HUD_FACE_RAGE   equ 25               ; STFKILL0/2/4, +0/+1/+2 by pain level:
+HUD_FACE_GOD    equ 28               ; STFGOD0: st_stuff.c:900 -- godmode OR
                                      ;   pw_invulnerability, priority 4
                                      ;   ST_RAMPAGEOFFSET, the face DOOM shows
                                      ;   while damagecount is up (hud_pain)
@@ -1506,9 +1760,9 @@ HUD_FACE_GOD    equ 29               ; STFGOD0: st_stuff.c:900 -- godmode OR
                                      ;   health; DOOM has 5, only 3 fit the HUD
                                      ;   VRAM slot, so we take its 0/2/4.
 face_base       = $0F5F              ; first frame of the look-around set in use
-ST_ARMSX        equ 52               ; DOOM 104 / 2
-ST_FACEX        equ 71               ; DOOM 143 / 2 (71.5 -> 71)
-ST_KEYX         equ 119              ; DOOM 239 / 2
+ST_ARMSX        equ 104              ; st_stuff.c ST_ARMSX -- DOOM's own x, like
+ST_FACEX        equ 143              ;   the three above: the bar is 320 bytes
+ST_KEYX         equ 239              ;   wide now, one byte per DOOM pixel
 ST_KEY0Y        equ 171              ; DOOM key rows 171 / 181 / 191
 START_HEALTH    equ 100              ; DOOM P_SetupLevel: 100%, 50 bullets, pistol
 START_BULLETS   equ 50
@@ -1658,6 +1912,8 @@ CLRBOTH_END  equ $85FF               ;   the slow window costs it ~30 cycles onc
                                      ;   -- and colmerge's $1B80 block, which is
                                      ;   per-column code in the Rapidus window,
                                      ;   gets those 23 B back (it had 6 left)
+ .if 1                                ; DRAC_PLAN 4: declared in D0
+ .else
 rs_sscl     = $13F7                  ; this seg's scale = max(rs_scL, rs_scR), the
                                      ;   DOOM ds->scale of R_DrawSprite. Every
                                      ;   column the seg CLOSES carries it in the
@@ -1677,6 +1933,7 @@ rs_vshw     = $13FC                  ; per seg: texel shift for the wall / upper
 rs_vshl     = $13FD                  ; per seg: texel shift for the lower step
 rs_vsh      = $13FE                  ; the shift the current draw_twall_col uses
 rs_vsht     = $13FF                  ; vsh_neg scratch: the texture height
+ .endif
 ; (the HUD entry pointer borrows zp_ptr -- indirect indexing needs zero page)
 ; ---- vissprites: PARALLEL ARRAYS, one entry per sprite, indexed by X ---------
 ;   The old 16 B record forced VIS_MAX 11 (n*16 has to stay a byte AND the table
@@ -1708,11 +1965,19 @@ vs_ybt      = $3DB0                  ; [40] its LAST screen row, clamped to a by
                                      ;   re-advertises it as code space and the next
                                      ;   relocated proc lands on it.
 vs_scl      = $08C8                  ; [40] Q8 vertical scale     ($08F0-$08FF spare)
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF
+        .segment D0
+vs_sch      .ds 40                   ; [40]   (= VFOCAL*256/Z; also the sort key)
+vs_cpl      .ds 40                   ; [40] clip block, LOW byte (hi is always $07);
+                                     ;      bit 0: 1 = ONE window for every column
+        .endseg
+ .else
 vs_sch      = $BF50                  ; [40]   (= VFOCAL*256/Z; also the sort key)
 vs_cpl      = $BF78                  ; [40] clip block, LOW byte (hi is always $07).
                                      ;      Blocks are 2 B aligned, so bit 0 is free:
                                      ;      1 = ONE window shared by every column
                                      ;      (uniform snapshot, see spr_proj).
+ .endif
 vs_th       = $E6F8                  ; [40] THING index of this vissprite. The
                                      ;   record already carries vs_sid, but that is
                                      ;   the SPRITE (one per type+rotation) and the
@@ -1887,9 +2152,11 @@ SPRCOL_BANK equ $66                  ; 2026-09-09: WAS $08 -- and $08:0000 IS
                                      ;   among them on 30 things (the spider is
                                      ;   128 units wide and its frames alone
                                      ;   spend the run). The Rapidus has 14.5 MB
-                                     ;   and this port uses $01-$06 with $07
-                                     ;   parked for music, so $08 was free and
-                                     ;   whole. spr_fget and spr_ctcol are the
+                                     ;   and this port used $01-$06 with $07
+                                     ;   then parked for music (the songs live
+                                     ;   at MUS_BANK0 $67 now, and $07 is
+                                     ;   unused -- tools/bank_map.py), so $08
+                                     ;   was taken for free and whole. spr_fget and spr_ctcol are the
                                      ;   only readers and both now say $08 in
                                      ;   their long pointer; FARENA stays here,
                                      ;   it is runtime-only and not streamed.
@@ -1900,6 +2167,42 @@ SPRCOL_BANK equ $66                  ; 2026-09-09: WAS $08 -- and $08:0000 IS
         ert 'SPRCOL_BANK is past the Rapidus SDRAM ($EF:FFFF)'
     .endif
 SPRCOL_EXT  equ $0000                ; bank SPRCOL_BANK: coltab blocks, packed
+; --- VERTEX TRANSFORM CACHE (2026-09-14) -- seg_draw.asm vc_look/vc_store ------
+; transform() is pure within a frame (player pos/angle, the sin/cos tables),
+; and segs share vertices, so process_seg looks (X,Z) up by vertex index before
+; transforming. Direct-mapped, 256 slots = index & $FF; a slot is valid when its
+; TAGH byte is the index high byte and its STAMP is this frame's vc_frame.
+; Seven 256-byte tables in an otherwise unused SDRAM bank (bank_map: $66 is
+; SPRCOL, $67 the songs, nothing above).
+VCACHE_BANK equ $68
+VCACHE_BASE equ [VCACHE_BANK<<16]
+VC_TAGH     equ $0000                ; index high byte
+VC_STAMP    equ $0100                ; frame stamp
+VC_XL       equ $0200                ; view X lo/hi, view Z lo/hi
+VC_XH       equ $0300
+VC_ZL       equ $0400
+VC_ZH       equ $0500
+    .if [VCACHE_BANK<<16] < PRE_END
+        ert 'VCACHE_BANK sits inside the SDRAM level cache (atr_layout.inc PRE_END)'
+    .endif
+    .if [VCACHE_BANK = SPRCOL_BANK] .or [VCACHE_BANK = $67]
+        ert 'VCACHE_BANK collides with the sprite columns / the songs'
+    .endif
+; --- THE EPISODE 2/3 INTERMISSION MAPS (2026-09-16) -- wi.asm wi_bgsel ---------
+; WIMAP1/WIMAP2, halved, 32 KB apart from offset 0 (tools/pack_wi.py wimaps.bin,
+; wi_syms.inc wi_bgm holds each level's MID byte). Streamed ONCE at boot by
+; load_music's second walk; only WIMAP0 fits the intermission's VRAM run, so the
+; others live here and wi_bgsel copies one into WI_BGARENA when it is needed.
+WIMAP_BANK  equ $69
+    .if [WIMAP_BANK<<16] < PRE_END
+        ert 'WIMAP_BANK sits inside the SDRAM level cache (atr_layout.inc PRE_END)'
+    .endif
+    .if [WIMAP_BANK = SPRCOL_BANK] .or [WIMAP_BANK = VCACHE_BANK]
+        ert 'WIMAP_BANK collides with the sprite columns / the vertex cache'
+    .endif
+    .if WIM_CHUNKS*4096 > $10000
+        ert 'wimaps.bin is more than one SDRAM bank (wi_bgm is a MID byte only)'
+    .endif
 FTAB_EXT    equ $E000                ; bank SPRCOL_BANK: [255] 8 B {u24 file_off,
                                      ;   u16 size, u16 coltab, pad}
 FARENA_EXT  equ $FC00                ; bank $01: [255] u24 arena addr (runtime;
@@ -2080,7 +2383,7 @@ AIDT_END     equ $0E77                ;   the AI block, which had four bytes lef
 ;   long,X but no long,Y. The DATA still ships in the XEX -- it is assembled
 ;   into the map slot at RECIP_STAGE and copied up once, before the first level
 ;   load overwrites that slot (recip_to_ext in bsp_main.asm).
-RECIP_EXT     equ $018000            ; bank $01, above the AI pages
+RECIP_EXT     equ EXT_BASE+$8000            ; bank $01, above the AI pages
 RCX_SCALE_LO  equ RECIP_EXT+$000
 RCX_SCALE_HI  equ RECIP_EXT+$100
 RCX_SX_LO     equ RECIP_EXT+$200
@@ -2106,7 +2409,7 @@ RECIP_STAGE   equ $4000              ; staging: the map slot, dead after the cop
 ; XEX, staged into the map slot, copied up by recip_to_ext before the first
 ; load_level. The order is safe by a mile -- main calls recip_to_ext at $0239,
 ; load_sounds/snd_init do not run until menu_boot.
-SNDX_EXT      equ $019400            ; bank $01, in the free run above DTAB_EXT
+SNDX_EXT      equ EXT_BASE+$9400            ; bank $01, in the free run above DTAB_EXT
 SNDX_N        equ 57                 ; = sound_tables.inc SFX_COUNT. It lives HERE
                                      ;   so the five addresses below resolve
                                      ;   before sound.asm is icl'd; sound.asm ERTs
@@ -2141,7 +2444,42 @@ SNDX_BYTES    equ SNDX_N*5           ; 280 B. snd_to_ext copies pages THEN the
 ; every other hole big enough to be tempting.
 B1CODE_OFF    equ $9600              ; offset INSIDE bank $01 (the org address,
                                      ;   so branches/jsr resolve in the bank)
-B1CODE_BASE   equ [MAP_EXT_BANK*$10000]  ; ...and what a thunk's `jsl` adds
+B1CODE_BANK   equ $01                ; the CODE bank (drac.txt: $010000-$01FFFF)
+B1CODE_BASE   equ [B1CODE_BANK*$10000]  ; ...and what a thunk's `jsl` adds
+; ---- the bank-$01 CODE SEGMENT (DRAC_PLAN step 2, 2026-09-13) -------------
+; Procedures wrapped in `.segment B1 ... .endseg` are laid out one after the
+; other from B1SEG_BASE inside bank $01: no fixed block address and no ert --
+; MADS fails the build itself when the segment outgrows B1SEG_LEN, and every
+; label in it carries bank 1 in the .lab. tools/split_b1.py takes the blocks
+; out of the XEX and re-inserts them as chunks staged at B1STAGE, each copied
+; up by b1_stage_copy (an XEX INIT) while the file is still loading.
+B1SEG_BASE    equ $1000              ; bank-$01 offset of the first proc
+B1SEG_LEN     equ $F000              ; ...up to $01:FFFF
+        .segdef B1 B1SEG_BASE B1SEG_LEN rw B1CODE_BANK
+B1STAGE       equ $9000              ; the MEMAC hole: plain RAM while loading
+B1STAGE_MAX   equ $1000              ;   (setup_memac turns the window on later)
+B1STCOPY_BASE equ $8EA7              ; b1_stage_copy: boot-only, in the free
+B1STCOPY_END  equ $8EFF              ;   hole below the MEMAC window
+HUDTAB_OFF    equ $9700              ; HUD_TAB's offset in the DATA bank: it is
+                                     ;   data, so it left the code segment;
+                                     ;   b1_to_ext copies it there and hud_entry
+                                     ;   reads it [zp_ptr],y with MAP_EXT_BANK
+HUTAB_OFF     equ HUDTAB_OFF+$100    ; ...and HU_TAB, the HU STRIP DIRECTORY, in
+                                     ;   the page behind it -- b1_to_ext's row
+                                     ;   carries TWO pages now, and $9900 is
+                                     ;   B1CODE2_OFF, so this page is the last
+                                     ;   one free here (HU_TAB is 192 B).
+                                     ;   The strips stopped being a fixed stride
+                                     ;   apart (pack_menu.py _hu_strips: that
+                                     ;   padding is what the SR status bar is
+                                     ;   made of), so strip_blit has to be told
+                                     ;   where each one is.
+HU_MAXSTRIPS  equ 64                 ; per-array stride -- a BUILD CONSTANT so
+                                     ;   the two bases below need no strip count
+                                     ;   (pack_menu.py pads to it and checks)
+HU_OLO_EXT    equ EXT_BASE+HUTAB_OFF ; [64] offset lo, inside TITLE_VRAM's bank
+HU_OHI_EXT    equ HU_OLO_EXT+HU_MAXSTRIPS       ; [64] offset hi
+HU_W_EXT      equ HU_OHI_EXT+HU_MAXSTRIPS       ; [64] width in bytes
 B1CODE_STAGE  equ $C500              ; staging: the gap between the menu and
                                      ;   savegame overlays in the THINGS slot.
                                      ;   PAGE ALIGNED -- b1_to_ext walks it with
@@ -2174,14 +2512,17 @@ DAPUSE_BASE   equ $8D00              ; door_at_point + use_leaf + use_sample +
 DAPUSE_END    equ $8EFF              ;   try_use: USE-press only, win2 is free
                                      ;   for them (the old TSIN stage pages)
 B1CODE2_OFF   equ $9900              ; second bank $01 code block (bank01.asm).
-                                     ;   CODE, so it MUST stay inside the
-                                     ;   $9000-$9FFF MEMAC hole: the sim has no
-                                     ;   banked opcode fetch and mirrors
-                                     ;   B1_LO..B1_HI into bank 0 at the game
-                                     ;   loop's door (_bench_frame.py) -- a
-                                     ;   block outside the hole would mirror
-                                     ;   over live win2 code and take the whole
-                                     ;   verify/bench toolchain down with it.
+                                     ;   Placed in the $9000-$9FFF MEMAC hole
+                                     ;   while the sim mirrored bank $01 code
+                                     ;   into bank 0. The sim fetches through
+                                     ;   PBR since 2026-09-13, so that limit is
+                                     ;   gone -- but profiles are still keyed
+                                     ;   by 16-bit pc: keep bank $01 code off
+                                     ;   addresses bank-0 code uses (DRAC_PLAN
+                                     ;   0.1 / phase 2).
+    .if HUTAB_OFF+3*HU_MAXSTRIPS > B1CODE2_OFF
+        ert 'HU_TAB runs into B1CODE2_OFF -- see HUTAB_OFF'
+    .endif
 B1CODE2_STAGE equ $CD00
 B1CODE2_MAX   equ $0280              ; 640 B: $CD00..$CF7F, PJAIM_BASE is next
 B1COPY_BASE   equ $4B9E              ; b1_to_ext: the map slot's tail hole, next
@@ -2334,10 +2675,18 @@ ENINIT_END  equ $EFFF                ;   call per level) and it did not fit abov
                                      ;   the $FEDD block overflowed into $FFFA and
                                      ;   MADS reported it as an addressing error on
                                      ;   the first variable, not as an overrun.
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF
+        .segment D0
+vs_sid      .ds 40                   ; [40] sprite table index
+vs_ord      .ds 40                   ; [40] draw order, NEAR..FAR (insertion-sorted
+                                     ;      on scale; spr_draw walks it backwards)
+        .endseg
+ .else
 vs_sid      = $BFA0                  ; [40] sprite table index
 vs_ord      = $BFC8                  ; [40] draw order, NEAR..FAR (insertion-sorted
                                      ;      on scale; spr_draw walks it backwards)
                                      ;      ($BFF0-$BFFF spare)
+ .endif
 ; sprite render scratch -- free RAM behind the collision block ($0E9E-$0EFF)
 sp_n        = $0E9E                  ; vissprites collected this frame
 sp_i        = $0E9F                  ; thing loop index / range end
@@ -2498,7 +2847,15 @@ DOOR_RAMEND = DOOR_FRAC+DOORS_NMAX   ; + DOORSTAY below = the 12th array. The
 ;                     what lets the melt borrow the whole thing as WIPE_END: a
 ;                     FULL 200-row screen fits, and no frame is rendered while a
 ;                     wipe runs
-;  $018000  POOL      textures + sprites, per level (make_atr_doom.py
+;  $018000  POOL      textures + sprites, per level -- and AT BOOT ONLY the two
+;                     TITLEPICs: the 160-wide copy at $018000 (8 chunks, what
+;                     the menu is drawn over) and DOOM's own 320x200 at
+;                     $020000 (16 chunks, 64000 B + its own XDL at $02F900).
+;                     Both are gone at the first load_level, and nothing
+;                     streams into VRAM while the title is up -- load_sounds,
+;                     load_weapons and load_music all read_ext into Rapidus
+;                     SRAM. tools/pack_menu.py, menu.asm show_title.
+;                     (make_atr_doom.py
 ;                     atr_levels.inc): the level's .tex streams to $018000+,
 ;                     its .spr starts at the next 4 KB chunk after it, and
 ;                     everything up to ARENA_SPR_TOP ($03D000, 148 KB) is one
@@ -2597,6 +2954,21 @@ VRAM_XDL        equ $00A000          ;   -- see VRAM_XDL_A below; $A000-$A0FF is
 XDL_BANKA       equ $08              ; list A = bank $08, list B = bank $09
 VRAM_XDL_A      equ $008000
 VRAM_XDL_B      equ $009000
+VRAM_XDL_L      equ $009300          ; list L -- the LEGACY list: all LR, all 200
+XDL_BANKL       equ $09              ;   rows out of FRAME_A, i.e. exactly what
+                                     ;   every list was before the status bar
+                                     ;   became an SR overlay (xdl.asm). The
+                                     ;   intermission, the finale, the READ
+                                     ;   THIS! pages, the loading screen and the
+                                     ;   melt all paint a full 160x200 picture
+                                     ;   into FRAME_A and would lose their bottom
+                                     ;   32 rows on a list whose bar comes from
+                                     ;   VRAM_BAR320. Rides list B's chunk at
+                                     ;   +$300 (list B ends at $00928A).
+                                     ;   The game's own flip never selects it:
+                                     ;   xdl_hi holds A/B/C, so the first
+                                     ;   swap_buffers after any of those screens
+                                     ;   takes the display back by itself.
 VRAM_XDL_C      equ $008800          ; list C (triple buffer) rides chunk 8's
                                      ;   PADDING behind list A -- NOT a chunk of
                                      ;   its own: $00F000 (the first try) is the
@@ -2607,11 +2979,16 @@ VRAM_XDL_C      equ $008800          ; list C (triple buffer) rides chunk 8's
                                      ;   2026-08-11 flicker). Chunks 8/9 are
                                      ;   never streamed. Flip byte = $88.
 VRAM_BCB_VLINE  equ $00A100
+VRAM_BCB_FF     equ VRAM_BCB_VLINE+64  ; the painter links' constant $FF source
+                                     ;   byte (setup_chains writes it; +63 is
+                                     ;   ptc_put's dummy target)
 VRAM_BCB_CLEAR  equ $00A200
 VRAM_BCB_TWALL  equ $00A300          ; textured wall column (B2, w3d-style)
 VRAM_BCB_TEX8   equ $00A400          ; 8x column expander (see VRAM_TEX8 below)
 VRAM_BCB_SPR    equ $00A500          ; sprite column (BLT_BSTENCIL, index 0 = clear)
 HUDCODE_BASE    equ $AF40            ; hud.asm: widgets
+; bar_blit/bar_bg/bar_fire (hud.asm) need no block here: they are bank-$01
+; code and the B1 segment has no fixed addresses (B1SEG_BASE below).
 HUDBLIT_BASE    equ $36F8            ; hud.asm: hud_blit/hud_blit_bg. FAST since
 HUDBLIT_END     equ $379F            ;   2026-09-09 (was $B810, win2 x11.2: 0.3 ms/f
                                      ;   for ~4 blits a frame). Was: (tail of the
@@ -2737,8 +3114,17 @@ VRAM_TEX8B      equ $00FC00          ; the SECOND scratch: an expand emitted int
 TEX8_ZOOM       equ 8                ; vertical oversampling factor
 
 ; ---- MEMAC-A window: 4 KB at MEMW in 6502 space; the map sits below it -------
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+MEMW16          equ $8000            ; drac.txt: ONE permanent 16 KB MEMAC-A window at
+MEMW            equ $A000            ;   $8000-$BFFF. BANK_SEL keeps 4 KB chunk numbers
+MEMW_HI         equ >MEMW16          ;   (VBXE masks them to a 16 KB page, alt-src vbxe.cpp
+                                     ;   kBankAMask $7C): chunk N sits at MEMW16+(N&3)*$1000,
+                                     ;   so the BCB chunk $0A is at $A000 = MEMW and every
+                                     ;   MEMW+MEMW_*_OFF write stays as it was.
+ .else
 MEMW            equ $9000
 MEMW_HI         equ >MEMW            ; window position (high nibble) for MEMAC_CTL
+ .endif
 BANK_OVERHEAD   equ $0A
 
 ;==============================================================
@@ -3033,10 +3419,10 @@ PJMIR_BASE      equ $A096            ; pj_ons/pj_ssl/pj_ssh: 3 x PJ_NSLOT, the
 PJMIR_END       equ $A0AD            ;   draw loop's fast reject
 PJSLT_BASE      equ $82F0            ; pj_slot: slot -> zp_ptr
 PJSLT_END       equ $82FF
-PJLD_BASE       equ $3840            ; (FAST since 2026-09-09: the word copy
+PJLD_BASE       equ $3840            ; (the word copy
                                      ;  did not fit the 14 B at $77F2)            ; pj_load
 PJLD_END        equ $3853
-PJSV_BASE       equ $3854            ; (FAST since 2026-09-09, as PJLD)            ; pj_save
+PJSV_BASE       equ $3854            ; (as PJLD)            ; pj_save
 PJSV_END        equ $386B
 PJMR_BASE       equ $3C99            ; pj_mirr
 PJMR_END        equ $3CAF
@@ -3712,7 +4098,13 @@ FPS_DIGW        equ 3                ; the pen's advance, in byte columns. The
 ; every consumer reads the same seven bytes it always read. It took two goes:
 ; the first indexed the table with X and wrecked the bar, because X is the
 ; CALLER'S COLUMN (hud.asm). $BE67-$BF2A is ordinary free code space now.
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF
+        .segment D0
+hud_ent         .ds 7                ; [7] the row hud_entry just fetched
+        .endseg
+ .else
 hud_ent         equ $BE60            ; [7] the row hud_entry just fetched
+ .endif
 HUDENT_BASE     equ $3A4E            ; ...and hud_entry itself, which grew by the
 HUDENT_END      equ $3A9F            ;   copy loop -- into the block that
                                      ;   process_seg's 16-bit rewrite freed
@@ -3932,7 +4324,7 @@ CHTARM_END      equ $E5F4            ;   dmg_amt behind it -- en_bkill's tail
 DMGAMT_BASE     equ $E5F5            ; dmg_amt (movers.asm): 5 bytes evicted from
 DMGAMT_END      equ $E5FF            ;   DMGSEC to make room for pl_armsub
 ENTHING_BASE    equ $3820            ; en_thing: thing index -> its record ptr.
-                                     ;   FAST since 2026-09-09 (was $BC48-$BC7F, win2)
+                                     ;   (was $BC48-$BC7F, win2)
 ENTHING_END     equ $383F
 ENBHIT_BASE     equ $A2C0            ; en_bhit: apply the blast to one thing.
 ENBHIT_END      equ $A301            ;   2026-07-30: was $A2B6, and the sound
@@ -4323,6 +4715,11 @@ FIN_ARBANK  equ $18                  ;   texture/sprite pool -- 88 KB of it for
                                      ;   the pool holds the LEVEL's graphics, the
                                      ;   level is over, and exit_level streams the
                                      ;   next one's over the top on the way out.
+WI_BGARENA  equ $018000              ; ...and the intermission's E2/E3 world map,
+                                     ;   for the same reason: wi_bgsel copies it
+                                     ;   out of WIMAP_BANK before the first draw
+                                     ;   and WI_XLOAD's level load reclaims it.
+                                     ;   160x200 = $7D00 B, clear of $020000.
 ; ---- POWERS + the backpack (p_inter.c P_GivePower, powerups.asm) ------------
 ;   Bonus ids 25..31, BN_STAT 9 -- give_bonus' third class, next to the counters
 ;   (1..15) and the bit sets (16..24). The state lives in the $0F00-$0F3F hole
@@ -4931,7 +5328,7 @@ ARINIT_END   equ $7E06               ;   arena reset (FARENA clear, bump,
 ; $5B4F(17), $7FE2(16) -- CP128/PJCLR took $7C9E and $76ED. Re-derive from the
 ; XEX before believing any free-run claim in a comment, including this one.)
 ENTICK_BASE  equ $38B0               ; en_tick (enemy.asm): the per-tic death
-                                     ;   sweep. FAST since 2026-09-09 (was $6E00,
+                                     ;   sweep. (was $6E00,
                                      ;   win1; the word sweep outgrew that hole).
 ;   (old line:) ENTICK_BASE  equ $6E00               ; en_tick (enemy.asm): the per-tic death
 ENTICK_END   equ $391F               ; (was $6E7F)               ;   sweep -- its trimmed idle path grew it

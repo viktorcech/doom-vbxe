@@ -19,8 +19,9 @@ STICK0   equ $D300            ; PIA PORTA (joystick 0 in low nibble)
 ; swap_buffers -- wait VBLANK, display the just-rendered buffer, flip back.
 ;   (OS VBI ticks RTCLOK3; main enables NMIEN=$40 before the loop.)
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc swap_buffers
-        jsr blitter_wait             ; async blitter: ensure the frame's LAST blit
+        jsr blitw_hard               ; async blitter: ensure the frame's LAST blit
                                      ; finished before we publish the buffer
         ldx zback_hi                 ; show the LIST that reads the buffer we
         lda xdl_hi,x                 ;   just drew -- and DO NOT WAIT (2026-08-11
@@ -33,6 +34,7 @@ STICK0   equ $D300            ; PIA PORTA (joystick 0 in low nibble)
         sta FRM_PAR                  ;   ZFRONT = what the screen shows/will
         rts                          ;   show (mn_key gates the menu on it).
 .endp
+        .endseg
 xdt_resume = *
         org XDLTAB_BASE              ; the two 8-entry flip maps, indexed by
 xdl_hi  dta >VRAM_XDL_A, >VRAM_XDL_B, 0, 0, 0, 0, 0, >VRAM_XDL_C
@@ -42,6 +44,7 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
 ;--------------------------------------------------------------
 ; read_input -- snapshot STICK0; apply rotation to zp_ang.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc read_input
         lda STICK0
         sta stick_save
@@ -64,6 +67,7 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
         sta zp_ang
 ?nr     rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; move_player -- forward/back along facing (uses zp_sin/zp_cos), with wall
@@ -72,12 +76,21 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
 ;   a wall instead of passing through it. coll_cx/coll_cy (= zp_rx/zp_ry) carry
 ;   the tested point into collide_blocked.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc move_player
  .if 1
         lda pl_dead                  ; a corpse does not walk (P_DeathThink runs
         bne ?dead                    ;   instead of P_MovePlayer)
+  .if 1
+        lda pl_air                   ; pl_airmove's gate INLINE (2026-09-15): on the
+        beq ?grnd                    ;   ground (every normal frame) no jsr, clc,
+        jsr pl_airmove               ;   rts, bcs (-16 a frame)
+        bcs ?slide                   ; (always: the airborne path returns C=1)
+?grnd
+  .else
         jsr pl_airmove               ; airborne? then the keys do nothing and the
         bcs ?slide                   ;   momentum carries (P_MovePlayer/onground)
+  .endif
         lda stick_save
         and #$03                     ; up or down pressed? (both 1 = neither)
         cmp #$03
@@ -128,9 +141,10 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
         lda #0
         sbc mv_dx
         sta mv_dx
-        lda #0
-        sbc mv_dy
-        sta mv_dy
+        sec                          ; (2026-09-15) the first sbc leaves C = 0
+        lda #0                       ;   unless mv_dx was 0, so walking backwards
+        sbc mv_dy                    ;   came out one unit short in y every
+        sta mv_dy                    ;   frame -- the .else side sets C per word
         sep #$20
         .LONGA OFF
         ; SPD (24) > PLAYER_R (16): test the HALFWAY point first, which caps the
@@ -156,7 +170,11 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         sta coll_cy
         sep #$20
         .LONGA OFF
-        jsr coll_plr                 ; midpoint blocked -> the whole X step is out
+  .if 1
+        jsr coll_plrs                ; midpoint blocked -> the whole X step is out
+  .else                               ;   (coll_plrs: + P_TryMove's step-up rule
+        jsr coll_plr                 ;   per seg, collision.asm 2026-09-15)
+  .endif
         jne ?skipx
         rep #$20                     ; --- X axis: candidate = (px+dx, py) -- px+dx
         .LONGA ON                    ;   is pk_x, and coll_cy is still py
@@ -166,7 +184,11 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         .LONGA OFF
         jsr coll_step_ok             ; step up > MAXSTEP? (must use stairs)
         bne ?skipx
+  .if 1
+        jsr coll_plrs                ; wall (or a too-high ledge) within radius?
+  .else
         jsr coll_plr                 ; wall within radius?
+  .endif
         bne ?skipx                   ; blocked -> don't commit X
         lda #$FF                     ; ...and P_TryMove's other half: a monster or
         sta sol_self                 ;   a barrel standing there blocks the player
@@ -191,7 +213,11 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         sta coll_cx
         sep #$20
         .LONGA OFF
+  .if 1
+        jsr coll_plrs
+  .else
         jsr coll_plr
+  .endif
         jne ?done
         rep #$20                     ; --- Y axis: candidate = (px, py+dy) -- py+dy
         .LONGA ON                    ;   is pk_y, and coll_cx is still px
@@ -201,7 +227,11 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         .LONGA OFF
         jsr coll_step_ok
         bne ?done
+  .if 1
+        jsr coll_plrs
+  .else
         jsr coll_plr
+  .endif
         bne ?done                    ; blocked -> don't commit Y
         lda #$FF                     ; ...and the things, as on the X axis
         sta sol_self
@@ -404,12 +434,17 @@ mp_nomove                            ; pl_idle falls back here
 ?nomove jmp mp_pkhere                ; NOT moving this frame: P_XYMovement never
  .endif
 .endp                                ;   runs, so the only point to test is where
+        .endseg
                                      ;   he stands. The loop that did it moved to
                                      ;   PKCLAMP_BASE beside mp_clamp -- those nine
                                      ;   bytes are what pay for the jmp above.
 
 pkc_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PKCLAMP_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; mp_clamp / mp_pkhere -- move_player's tail. mp_pkhere: pk = where he stands.
 ;   mp_clamp: the same, but only when coll_seg saw a SHUT DOOR this move; else pk
@@ -417,12 +452,20 @@ pkc_resume = *
 ;   behind a window or up on a ledge reachable (spr_pickup's header: 118 of them
 ;   in episode 1). Both clear the flag -- one move, one answer.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 5: no 8-bit window
+coll_solid dta 0,0                   ; (coll_seg incs it 16-bit; readers use the low byte)
+ .else
 coll_solid dta 0                     ; set by coll_seg on an opening of exactly 0
+ .endif
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mp_clamp
         lda coll_solid
         bne mp_pkhere
         rts
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mp_pkhere
  .if 1
         stz coll_solid
@@ -445,9 +488,13 @@ coll_solid dta 0                     ; set by coll_seg on an opening of exactly 
         rts
  .endif
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PKCLAMP_END+1
         ert 'mp_clamp/mp_pkhere outgrew PKCLAMP_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org pkc_resume
 
 ;==============================================================
@@ -485,10 +532,15 @@ coll_solid dta 0                     ; set by coll_seg on an opening of exactly 
 ;   * no landing squat. P_ZMovement sets deltaviewheight = momz>>3 on a hard
 ;     landing and P_CalcHeight walks it back; pl_vh is already shared with the
 ;     death camera, so that wants state of its own.
-;   * no sfx_oof: this build's sound table has no such id (tools/wadsound.py).
+;   * sfx_oof is not in this build's sound table (tools/wadsound.py), so the
+;     hard landing plays SFX_NOWAY, the USE grunt (pl_zmove ?hit, 2026-09-15).
 ;==============================================================
 fall_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org FALL_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 pl_z    dta a(0)                     ; the player's FEET, world units (signed 16)
 pl_mz   dta 0                        ; momz, units per frame (signed 8: walks
@@ -510,6 +562,8 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
 ;   P_ZMovement, then the eye. locate_floor's zp_ptr is left alone: update_pz
 ;   reads the player's sector out of it for the nukage damage.
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_zfloor
         jsr locate_floor
         jsr pl_zmove
@@ -522,12 +576,14 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         sta zp_pz+1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pl_tele -- the teleport's tail (movers.asm trig_walk, which had no room):
 ;   the sound, and P_Teleport's `thing->z = thing->floorz` -- he arrives
 ;   STANDING on the destination floor, not falling onto it.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_tele
         lda #SFX_TELEPT              ; DOOM plays it at BOTH ends -- the player
         sta snd_pending              ;   is at one of them, so never remote
@@ -535,17 +591,21 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         sta pl_snap
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pl_zmove -- P_ZMovement for the player. IN: loc_floor = the floor under him.
 ;   Clobbers A/X and m_a.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+OOF_MZ  equ 28                       ; P_ZMovement's "momz < -GRAVITY*8": 8 units
+                                     ;   a TIC is 28 a FRAME on FALL_G's 3.5 tics
 .proc pl_zmove
  .if 1
         lda pl_snap
         beq ?fly
         stz pl_snap                  ; a spawn or a teleport: stand him on it
-        bra ?land
+        bra ?land                    ;   (past ?hit: P_Teleport zeroes momz)
 ?fly    rep #$20                     ; ---- 16-bit A: d = pl_z - floor, signed --
         .LONGA ON                    ;   the sbc's N and Z ARE the two tests
         sec                          ;   (sep keeps them)
@@ -553,8 +613,13 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         sbc loc_floor
         sep #$20
         .LONGA OFF
+  .if 1                               ; the hard landing's grunt (2026-09-15)
+        bmi ?hit                     ; below it -> he has arrived
+        beq ?hit                     ; exactly on it -> still standing
+  .else
         bmi ?land                    ; below it -> he has arrived
         beq ?land                    ; exactly on it -> still standing
+  .endif
         lda pl_mz                    ; --- airborne
         bne ?acc
         lda #-FALL_G/2               ; momz == 0: the first frame off the edge is
@@ -579,6 +644,16 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         lda #1
         sta pl_air
         rts
+  .if 1
+?hit    lda pl_mz                    ; the momentum he lands with: 0 standing,
+        beq ?land                    ;   else -6..-120 ($FA..$88) -- never
+        cmp #-OOF_MZ                 ;   positive, ?put only ever subtracts
+        bcs ?land                    ; C=1: -28..-6, a soft landing (-18 = 24 u)
+        lda #SFX_NOWAY               ; sfx_oof. DSOOF is not in the sound table
+        sta snd_pending              ;   (tools/wadsound.py); the USE grunt it is
+  .else
+        ;nothing
+  .endif
 ?land   rep #$20                     ; z = floorz, and the momentum goes with it
         .LONGA ON                    ;   (the .else side says why, every frame)
         lda loc_floor
@@ -645,6 +720,7 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         rts                          ;   sideways on whatever he last walked at.
  .endif
 .endp                                ;   move_player latches the live delta again
+        .endseg
                                      ;   BEFORE update_pz runs, so the frame he
                                      ;   actually steps off a ledge keeps its own.
 
@@ -654,6 +730,7 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
 ;   ignored (P_MovePlayer) and the momentum is unchanged (no air friction).
 ;   C=0 = on the ground, carry on reading the stick.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_airmove
  .if 1
         lda pl_air
@@ -693,11 +770,13 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; pl_latch -- remember this frame's ground momentum, so the frame he steps off
 ;   the edge carries it into the air. Called with mv_dx/mv_dy final.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_latch
  .if 1
         rep #$20
@@ -721,11 +800,15 @@ pl_ady  dta a(0)                     ;   world space, so turning in mid-air does
         rts
  .endif
 .endp
+        .endseg
 
 ; (skipx_ref used to sit here and pushed the block past FALL_END -- it is
 ;  parked in plr_steps' PSTEP block now, doors.asm.)
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > FALL_END+1
         ert 'the fall code outgrew FALL_BASE..FALL_END (memory_map.inc)'
     .endif
+ .endif
         org fall_resume
 

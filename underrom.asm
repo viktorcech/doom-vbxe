@@ -136,6 +136,19 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
         lda #>snd_irq
         sta $FFFF
         sta $FFEF
+ .if 1                                ; DRAC_PLAN 4a (drac.txt: all code -> bank $01):
+        stz POKMSK_R                 ;   the ROM STAYS OUT from here on, so every
+        stz IRQEN_R                  ;   interrupt is ours -- no OS keyboard/BREAK
+                                     ;   IRQ (snd_irq acks foreign ones with
+                                     ;   IRQEN=POKMSK, which must be 0 for that)
+        clc
+        xce                          ; native for good: only siov_r (SIOV) and
+                                     ;   sg_bye (COLDSV) step back into the ROM
+        lda #$40
+        sta NMIEN                    ; rom_nmi: RTCLOK3 (ZFRONT/FRM_PAR/XDLA_PEND
+        cli                          ;   were zeroed in setup_chains before this)
+        rts
+ .else
         lda PORTB
         ora #$01
         sta PORTB                    ; ROM back in
@@ -145,7 +158,44 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
                                      ;   setup_chains, long before this NMIEN)
         cli
         rts
+ .endif
 .endp
+
+;--------------------------------------------------------------
+; siov_r -- DRAC_PLAN 4a: SIOV from the ROM-out, native world. rom_in no longer
+;   banks the ROM in; this is the one place it comes in, for exactly one SIOV
+;   call: emulation mode (PBR is 0 -- this is bank-0 code, so the interrupts
+;   SIOV waits on come back to it), OS VBI + IRQs on as SIOV expects, then ROM
+;   out, native, and rom_nmi back. Y (the SIO status) survives; A is clobbered.
+;   It has to stay in bank 0 for good (xce), so it rides segment D0.
+;--------------------------------------------------------------
+        .segment D0
+.proc siov_r
+        php                          ; the caller's I flag
+        sei
+        stz NMIEN                    ; rom_nmi must not meet the ROM's $FFEA
+        sec
+        xce                          ; emulation: the OS runs as a 6502
+        lda PORTB
+        ora #$01
+        sta PORTB                    ; ROM in
+        lda #$40
+        sta NMIEN                    ; the OS VBI (SIO's timeout counters)
+        cli
+        jsr SIOV
+        sei
+        stz NMIEN
+        lda PORTB
+        and #$FE
+        sta PORTB                    ; ROM out: $FFEA/$FFEE are RAM again
+        clc
+        xce                          ; native
+        lda #$40
+        sta NMIEN                    ; rom_nmi again
+        plp
+        rts
+.endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; rom_out / rom_in -- the banking pair. PORTB is read-modify-written so the BASIC
@@ -171,27 +221,49 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
 ; exactly as it did; the stack keeps its $01xx page (nothing in the engine
 ; reloads S -- there is no txs/tsx outside boot).
 rb_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org ROMBANK_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc rom_out
+ .if 1                                ; DRAC_PLAN 4a: native since urom_init and the
+        lda PORTB                    ;   ROM already out -- kept as the idempotent
+        and #$FE                     ;   bank-out the callers expect
+        sta PORTB
+        rts
+ .else
         lda PORTB
         and #$FE
         sta PORTB                    ; ROM out first: while still in emulation
         clc                          ;   the NMI vector is $FFFA, also RAM and
         xce                          ;   also installed -- no unguarded window
         rts
+ .endif
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc rom_in
+ .if 1                                ; DRAC_PLAN 4a: the ROM stays out -- the only
+        rts                          ;   ROM routine the loaders need is SIOV, and
+                                     ;   siov_r banks it in around that one call
+ .else
         sec                          ; leave native BEFORE the ROM covers $FFEA
         xce
         lda PORTB
         ora #$01
         sta PORTB
         rts
+ .endif
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > ROMBANK_END+1
         ert 'rom_out/rom_in outgrew ROMBANK_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org rb_resume
 
 ;==============================================================

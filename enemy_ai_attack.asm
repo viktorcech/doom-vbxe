@@ -44,6 +44,7 @@
 ; ai_try_atk -- A_Chase's attack branches. C=1: it attacked (or is in the
 ;   post-attack pause), so A_Chase returns without moving.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_try_atk
         lda #>TH_KIND
         jsr ai_get
@@ -58,8 +59,7 @@
         jsr ai_get                   ; NOTE: ai_amode, not ai_t2 -- ai_put and
         sta ai_amode                 ;   ai_pdist both use ai_t2 as scratch
         cmp #1<<AIM_RTSH
-        bcc ?nort
-        sec
+        bcc ?nort                    ; (C = 1 past it: the sbc needs no sec)
  .if 1
         sbc #1<<AIM_RTSH
         sta ai_amode
@@ -133,6 +133,7 @@
 ?nope   clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_hurt -- Y = the thing that just took damage. p_inter.c P_DamageMobj:
@@ -145,6 +146,7 @@
 ;   points the victim at whoever landed it, ai_src -- which is the player on
 ;   every path but a monster's own gunshot.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_hurt
         sty ai_t
         jsr aif_retal
@@ -157,6 +159,7 @@
 ?put    ldx #>TH_MODE
         jmp ai_pain_row              ; ...which stores it and then, on the same
 .endp                                ;   roll, drops the FLINCH frame in. It is
+        .endseg
                                      ;   a jmp and not a jsr on purpose: this
                                      ;   block is full to the byte, so the tail
                                      ;   call had to stay exactly three bytes
@@ -164,6 +167,7 @@
 ;--------------------------------------------------------------
 ; ai_isvis -- C=1 if ai_t is in this frame's vissprite list. Clobbers A/X.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_isvis
         ldx sp_n
 ?lp     dex
@@ -176,12 +180,14 @@
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_pdist -- ai_ad = P_AproxDistance(target - thing): dx+dy/2 with the larger
 ;   term whole, which is DOOM's own cheap distance (m_fixed.c). The target is
 ;   the player until something else shoots this monster (infight.asm).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_pdist
  .if 1
         jsr aif_tpos                 ; -> ai_tx/ai_ty
@@ -299,12 +305,14 @@
 ?yok    rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_mrange -- P_CheckMissileRange's distance roll. C=1 = fire.
 ;   dist = ad - 64; kinds with no meleestate get another -128 ("fire more");
 ;   clamp to 200; fire unless P_Random() < dist.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_mrange
         sec
         lda ai_ad
@@ -330,17 +338,18 @@
 ?roll   lda RANDOM
         cmp ai_t2                    ; P_Random() < dist -> do NOT fire
         bcc ?no
-        sec
-        rts
+        rts                          ; (C = 1 already: the bcc fell through)
 ?no     clc
         rts
 ?point  sec
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_atk_enter -- P_SetMobjState(missilestate/meleestate): attack state 0.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_atk_enter
         lda #>TH_MODE
         jsr ai_get
@@ -354,6 +363,7 @@
         sec                          ; A_Chase returns right after the state set
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_atk_next -- the current ATTACK state ran out. AT_LAST hands the thing back
@@ -366,6 +376,7 @@
 ;   and it answers C=1 with ai_awst ALREADY back to 0, so ?step's own +1 lands on
 ;   chain state 1 and this arm costs five bytes: a jsr and a branch.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_atk_next
         jsr ai_atk_tics              ; A = this row's tics byte (and ai_awst =
         and #AT_LAST                 ;   the state it came from)
@@ -399,11 +410,13 @@
         jsr ai_put
         jmp ai_atk_row
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_atk_row -- point TH_WROW at the ATTACK row for the current TH_WST, take
 ;   its tics, and run the action if the row carries AT_FIRE.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_atk_row
         jsr aif_oct                  ; A_FaceTarget: every attack action turns
         ldx #>TH_DIR                 ;   the monster to its target first (the
@@ -430,12 +443,14 @@
         jmp ai_fire
 ?done   rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_atk_tics -- ai_arow = ATAB_EXT[kind] + TH_WST, A = that row's tics byte.
 ;   The attack rows share DTAB_ROWS with the death and walk frames (8 B each,
 ;   tics at +7 -- see the DTAB note in memory_map.inc).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_atk_tics
  .if 1
         lda #>TH_WST
@@ -520,6 +535,7 @@
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_fire -- the damage rolls, p_enemy.c verbatim. mk_atk says which:
@@ -548,6 +564,7 @@
 ;   16-unit radius when |spread| * dist is small enough. That keeps a zombieman
 ;   across a room from being a guaranteed hit, which a bare damage call would be.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_fire
         ldx ai_k
         lda mk_atk,x
@@ -606,18 +623,28 @@
         asl
         jsr aif_hurt                 ; a CALL, like the claw below: the bite
         lda #SFX_SGTATK              ;   (info.c attacksound) is queued AFTER the
+ .if 1
+        jmp snd_qp_ai                ; tail call --   damage so en_plr_hurt's grunt does not
+ .else
         jsr snd_qp_ai                ;   damage so en_plr_hurt's grunt does not
         rts                          ;   overwrite it -- one sound slot
+ .endif
 ?claw   lda ai_ad+1                  ; the imp's claw, same range test
         bne ?throw
         lda ai_ad
         cmp #60
         bcs ?throw                   ; out of reach -> A_TroopAttack's else:
-        jsr ?r8                      ; (P_Random()%8+1) * the kind's damage byte
+        lda RANDOM                   ; (P_Random()%8+1) * the kind's damage byte
+        and #7                       ;   (?r8, inlined: its one call site)
+        inc @
         jsr ?x3                      ; ...*3 imp / *10 baron. A CALL, not a jump:
         lda #SFX_CLAW                ;   A_TroopAttack plays sfx_claw inside its
+ .if 1
+        jmp snd_qp_ai                ; tail call --   P_CheckMeleeRange branch, i.e. exactly
+ .else
         jsr snd_qp_ai                ;   P_CheckMeleeRange branch, i.e. exactly
         rts                          ;   when the scratch connects -- but
+ .endif
                                      ;   en_plr_hurt queues the player's own
                                      ;   grunt (sfx_plpain) on the way through,
                                      ;   and there is ONE sound slot. Written
@@ -735,6 +762,7 @@
         rts
  .endif
 .endp
+        .endseg
 
     .if * > AIATK_END+1
         ert 'the A_Chase attack block outgrew AIATK_BASE..END (memory_map.inc)'
@@ -750,7 +778,11 @@
 ; uses it for the halved delta, so anything that has to survive a call needs its
 ; own.
 aivar_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AIVARS_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ai_ad   dta 0,0                      ; P_AproxDistance(player, thing)
 ai_ax   dta 0,0                      ; its two |deltas|
 ai_ay   dta 0,0
@@ -759,9 +791,13 @@ ai_awst dta 0                        ; the ATTACK state it came from
 ai_asc  dta 0                        ; ... scaled x NSTOR (rows are state-major)
 ai_atics dta 0                       ; that row's tics byte, flags and all
 ai_amode dta 0                       ; the working copy of TH_MODE
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AIVARS_END+1
         ert 'the AI attack scratch outgrew AIVARS_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org aivar_resume
 
 ;==============================================================
@@ -804,6 +840,7 @@ airf_resume = *
 ;   info.c refire chain, which pack_things pack_atk asserts at PACK time.
 ;   C=0: this chain really is over, fall back to the RUN cycle.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_refire
         jsr ai_atk_tics              ; the tics byte again -- ai_atk_next spent
         and #AT_REFIRE               ;   its copy on the AT_LAST test, and this
@@ -814,15 +851,20 @@ airf_resume = *
 ?no     clc
         rts
 .endp
+        .endseg
     .if * > AIRF_END+1
         ert 'ai_refire outgrew AIRF_BASE..AIRF_END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AIRF2_BASE
+ .endif
 ;--------------------------------------------------------------
 ; ai_refire2 -- entered with C = (P_Random() >= 10), i.e. C=0 already means
 ;   "keep firing" and only C=1 pays for the sight test.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_refire2
         bcc ?yes
         jsr aif_isvis                ; the port's P_CheckSight -- the same oracle
@@ -839,9 +881,13 @@ airf_resume = *
 ?no     clc
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AIRF2_END+1
         ert 'ai_refire2 outgrew AIRF2_BASE..AIRF2_END (memory_map.inc)'
     .endif
+ .endif
         org airf_resume
 
 ;==============================================================
@@ -892,7 +938,10 @@ airf_resume = *
 ; the map -- PAINROW_BASE ($8105, 27 B) and PAINRW2_BASE ($1827, 25 B).
 ;==============================================================
 pain_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PAINROW_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; ai_pain_row -- ai_hurt's tail. Reached with A = the thing's new TH_MODE and
@@ -902,6 +951,7 @@ pain_resume = *
 ;   engine-wide MAP_EXT_BANK $01 that init_level seeds -- bank $01 is where
 ;   every AI page and the whole .dtab live, so there is nothing to park back.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_pain_row
         jsr ai_put                   ; ai_hurt's own store: reactiontime 0,
         lda en_painr                 ;   MF_JUSTHIT if it flinched -- and that
@@ -916,10 +966,14 @@ pain_resume = *
         jmp ai_pain2
 ?out    rts
 .endp
+        .endseg
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PAINROW_END+1
         ert 'ai_pain_row outgrew PAINROW_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org PAINRW2_BASE
 
 ;--------------------------------------------------------------
@@ -936,6 +990,7 @@ pain_resume = *
 ;   The order is TICS FIRST because ai_put eats both zp_ptr and Y -- the row
 ;   waits on the stack while the tics read still has the pointer it needs.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_pain2
         lda [zp_ptr],y
         bmi ?out                     ; $FF: no flinch frame for this kind here
@@ -951,6 +1006,7 @@ pain_resume = *
         jmp ai_put
 ?out    rts
 .endp
+        .endseg
 
     .if * > PAINRW2_END+1
         ert 'ai_pain2 outgrew PAINRW2_BASE..END (memory_map.inc)'
@@ -971,6 +1027,7 @@ pain_resume = *
 ;--------------------------------------------------------------
 cdmg_resume = *
         org AICDMG_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_cdmg
         ldy #3                       ; A_TroopAttack's damage byte
         ldx ai_k
@@ -983,9 +1040,11 @@ cdmg_resume = *
 ?go     jsr ai_mul
         jmp aif_hurt
 .endp
+        .endseg
 
 ;   A = m_a * Y, for Y >= 1. Max 8*10 = 80, so no carry ever leaves the loop
 ;   and the clc can sit outside it.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_mul
         lda #0
         clc
@@ -994,6 +1053,7 @@ cdmg_resume = *
         bne ?m
         rts
 .endp
+        .endseg
     .if * > AICDMG_END+1
         ert 'ai_cdmg/ai_mul outgrew AICDMG_BASE..END (memory_map.inc)'
     .endif

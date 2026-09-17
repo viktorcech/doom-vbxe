@@ -41,6 +41,7 @@
 ;   zp_ptr+2 already holds MAP_EXT_BANK -- init_level sets it and nothing else
 ;   writes it (collision.asm's note), so the long stores below need no setup.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_init
         ; sp_tab / sp_ptr borrowed as the two (zp),y readers -- they are sprites.asm
         ; per-frame scratch and init_level runs long before the first frame. My own
@@ -72,8 +73,7 @@
         iny
         lda (sp_tab),y
         sta en_t+1
-        txa
-        tay                          ; Y = thing index -> the bank $01 page offset
+        txy                          ; Y = thing index -> the bank $01 page offset
         lda en_t
         sta [zp_ptr],y               ; TH_HPL[i]
         inc zp_ptr+1                 ; $6400 -> $6500 = TH_HPH
@@ -107,6 +107,7 @@
                                      ;   this one is full, see the note above)
         jmp en_kfill                 ; TH_KIND for every thing (WROT block: this
 .endp                                ;   one is full) -- and IT tail-jumps the
+        .endseg
                                      ;   ai_reset that used to sit here.
 
 ; (en_kind_of MOVED to the WROT block 2026-08-03: wrot_dir/wrot_init pushed
@@ -135,6 +136,7 @@
 ;                        target fills the view, so it still almost always lands
 ;     rocket / plasma    P_SpawnPlayerMissile: no spread at all (it autoaims)
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_gunshot
  .if 1
         stz en_hit                   ; en_shoot raises it when the shot CONNECTS
@@ -234,11 +236,13 @@
 ?mgo    jsr en_shoot
         jmp pf_shot                  ; blood on what it hit, or the MELEERANGE
 .endp                                ;   puff on the wall it did not
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_r5 -- P_GunShot's damage: 5*(P_Random()%3+1) = 5, 10 or 15. One roll per
 ;   PELLET (the shotgun calls it seven times). Clobbers A and en_t.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_r5
         lda RANDOM                   ; POKEY LFSR (see the header note)
         and #3
@@ -259,6 +263,7 @@
         adc en_t                     ; *5
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_hurt_snd / en_die_snd -- the voice, from info.c via mk_tables.inc.
@@ -266,6 +271,7 @@
 ;   P_Random() < painchance (p_inter.c P_DamageMobj), so the roll is here too --
 ;   without it a burst of pistol fire makes one long scream. Clobbers A/X.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_hurt_snd
  .if 1
 	stz en_painr
@@ -285,6 +291,7 @@
 ?no     rts                          ;   gunshot AFTER this runs and would stomp it.
                                      ;   STEREO: en_last is the one in pain
 .endp
+        .endseg
 
 ; (en_die_snd MOVED to the MKTAB block 2026-08-04: the A_Scream variant roll
 ;  -- podth1..3 / bgdth1..2 via mk_dthn -- outgrew this block, and it reads
@@ -336,6 +343,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 ;--------------------------------------------------------------
 ; en_shoot -- A = damage. Aim, subtract, kill at <= 0. Clobbers A/X/Y.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_shoot
         sta en_dmg
  .if 1
@@ -469,6 +477,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
         jmp en_kill                  ;   en_kill tail-calls thing_kill for that.)
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_rocket -- A_FireMissile, folded into this port's aim model.
@@ -485,6 +494,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 ;       only finds barrels), so it does reach through the wall behind its victim.
 ;     * the player IS in range of his own rocket, exactly as in DOOM.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_rocket
         lda RANDOM                   ; ((P_Random()&7)+1) * 20
         and #7
@@ -503,6 +513,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
         adc en_t+1                   ; n*20 = 20..160, still a byte
         jmp en_rocket2               ; the aim + blast + the VISIBLE missile
 .endp                                ;   (proj.asm -- this block is full)
+        .endseg
 
 ;--------------------------------------------------------------
 ; sh_trace -- the rocket that hit NO thing: burst it on the wall instead
@@ -593,6 +604,7 @@ SH_NMELEE equ 3                      ; MELEERANGE is 64, and this is 96: the
                                      ;   one up. Still nowhere near a bullet.
 SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_trace
         sta sh_n
  .if 1
@@ -709,6 +721,7 @@ SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
         jmp sh_end                   ; C=0: no wall, the point is the ray end
 ?found  jmp sh_refine                ; the wall is in [0, sh_hi]: the PUFF block
 .endp                                ;   has the room, this one has two bytes
+        .endseg
 
 ; en_rockwall (trace + blast in one) is GONE since 2026-08-05: the two halves
 ; happen a second apart now -- pj_aim traces for the flight target and pj_hit
@@ -716,6 +729,7 @@ SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
 
 rkw2_resume = *
         org BOOMAT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_boomat
         lda en_k2                    ; --- A_Explode at (en_bx, en_by): en_boom
         pha                          ;     minus en_thing/en_lfind ---
@@ -772,6 +786,7 @@ rkw2_resume = *
         sta en_k2
         rts
 .endp
+        .endseg
     .if * > BOOMAT_END+1
         ert 'en_boomat outgrew BOOMAT_BASE..END (memory_map.inc)'
     .endif
@@ -799,6 +814,7 @@ rkw2_resume = *
 ;   ((r&7)+1)*5 == (r&7)*5 + 5, and A <= 7 after the mask means neither shift
 ;   nor either add can carry, so the two CLCs the old version needed are gone.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_plasma
         lda RANDOM
         and #7                       ; A <= 7 -> C stays 0 through the whole sum
@@ -809,6 +825,7 @@ rkw2_resume = *
         adc #5                       ; (n+1)*5 = 5..40
         jmp en_plasma2               ; the hit + the VISIBLE bolt (proj.asm)
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; PLAN, so the next step does not have to re-derive it:
@@ -841,6 +858,7 @@ enanim_resume = *
 ; en_row -- en_k2+1 (a TH_STATE value, row+1) -> zp_ptr = &DTAB_ROWS[row].
 ;   zp_ptr+2 is already MAP_EXT_BANK (init_level sets it once). Clobbers A.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_row
         lda en_k2+1
  .if 1
@@ -878,11 +896,13 @@ enanim_resume = *
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_kill -- Y = thing index, en_kind set. Start the death chain; if this kind
 ;   has none, fall back to the old behaviour (the thing just stops being drawn).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_kill
         sty en_k2
         jsr en_dropmark              ; P_KillMobj's "Drop stuff": the zombieman's
@@ -924,10 +944,12 @@ enanim_resume = *
         lda [zp_ptr],y               ; the first row's tics
         and #$3F                     ; bits 6/7 are the A_Explode / last flags
         sta en_t
-        lda #<TH_STATE
-        sta zp_ptr
+        stz zp_ptr                   ; <TH_STATE = 0 (page-aligned: ert)
         lda #>TH_STATE
         sta zp_ptr+1
+    .if [TH_STATE & $FF] != 0
+        ert 'TH_STATE is not page-aligned -- put the lda #< back (enemy.asm)'
+    .endif
         ldy en_k2
         lda en_k2+1
         sta [zp_ptr],y
@@ -946,6 +968,7 @@ enanim_resume = *
         jsr thing_kill               ;   has NO death chain to hang it on, so this
         jmp en_bossdie               ;   exit still fires it off the kill. (Which
 .endp                                ;   is why pack_death refuses to ship the
+        .endseg
                                      ;   BOSS a chain it had to cut short: full
                                      ;   chain or none, never half of one.)
 
@@ -1003,6 +1026,7 @@ enanim_resume = *
 ;--------------------------------------------------------------
 bd_resume = *
         org BOSSDIE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_bossdie
         lda en_kind                  ; en_kill leaves it set; en_row and the
         cmp THINGS_BASE+34           ;   TH_STATE/TH_TICS stores above do not
@@ -1040,16 +1064,21 @@ bd_resume = *
         sta m_prod
 ?out    rts
 .endp
+        .endseg
     .if * > BOSSDIE_END+1
         ert 'en_bossdie outgrew BOSSDIE_BASE..BOSSDIE_END (memory_map.inc)'
     .endif
         org bd_resume
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org ENANIM2_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; en_adv -- en_k2 = thing, en_k2+1 = the state whose tics just ran out.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_adv
         jsr en_row
         ldy #7
@@ -1092,6 +1121,8 @@ bd_resume = *
         ldx en_k2
         jmp thing_kill               ;   ...and gone from the world
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; bd_at -- en_adv's tail: A = the tics byte it just stored, Y = en_k2 (the
@@ -1114,7 +1145,9 @@ bd_resume = *
 ;   wrong since the day sound.asm claimed that run -- do not trust it.)
 ;--------------------------------------------------------------
 bdat_resume = *
+        .endseg
         org BDAT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bd_at
         cmp #$FF                     ; DT_FREEZE: the corpse row, i.e. the last
         beq ?boss                    ;   death frame -- every other row just ran
@@ -1125,17 +1158,24 @@ bdat_resume = *
         sta en_kind
         jmp en_bossdie               ; ...which answers "not the boss" for all
 .endp                                ;   but three things in the whole game
+        .endseg
     .if * > BDAT_END+1
         ert 'bd_at outgrew BDAT_BASE..BDAT_END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org bdat_resume
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; en_tick -- one DOOM tic of every dying thing. Called from the game loop.
 ;   Parked at ENTICK_BASE: the trimmed idle path grew it out of ENANIM2.
 ;--------------------------------------------------------------
 entick_resume = *
+        .endseg
         org ENTICK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_tick
  .if 1
         ; 2026-09-09 (drac030 style): TH_STATE read as WORDS, two things per
@@ -1154,7 +1194,8 @@ entick_resume = *
         bne ?hit
 ?next   iny
         iny
-        bne ?lp
+        cpy ai_lim                   ; WATERMARK (2026-09-14): n_things, even --
+        bne ?lp                      ;   ai_reset sets it (enemy_ai.asm)
         sep #$20
         .LONGA OFF
         jmp an_tick                  ; the idle rings ride the SAME DOOM tic
@@ -1169,7 +1210,8 @@ entick_resume = *
         lda [zp_ptr],y               ; the odd one (?one puts TH_STATE back)
         beq ?cont
         jsr ?one
-?cont   iny                          ; Z = Y wrapped: the sweep is over
+?cont   iny                          ; Z = Y at the watermark: the sweep is over
+        cpy ai_lim
         rep #$20
         .LONGA ON
         bne ?lp
@@ -1229,14 +1271,21 @@ entick_resume = *
         jmp ?next
  .endif
 .endp
+        .endseg
     .if * > ENTICK_END+1
         ert 'en_tick outgrew ENTICK_BASE..END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org entick_resume
+ .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > ENANIM2_END+1
         ert 'en_adv/en_tick outgrew ENANIM2_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org ENBOOM_BASE
 
 ;--------------------------------------------------------------
@@ -1249,6 +1298,7 @@ entick_resume = *
 ;   stops at a wall the way PIT_RadiusAttack's P_CheckSight makes it.
 ;   en_k2 = the exploding thing. Clobbers A/Y, m_a, m_b, m_prod, sp_ptr.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_boom
         lda en_k2                    ; en_tick/en_adv own these -- the sweep below
         pha                          ;   calls en_kill, which reuses them
@@ -1326,6 +1376,7 @@ entick_resume = *
         sta en_k2
         rts
 .endp
+        .endseg
 
     .if * > ENBOOM_END+1
         ert 'en_boom outgrew ENBOOM_BASE..END (memory_map.inc)'
@@ -1359,6 +1410,7 @@ ensolid_resume = *
 ;   exploded), and TH_STATE != 0 -- that is the death chain, and P_KillMobj
 ;   clears MF_SOLID, so corpses are walk-through here too.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_solid
         lda #<TH_RAD                 ; every per-thing page is 256 B aligned, so
         sta zp_ptr                   ;   the low byte is 0 for all of them and
@@ -1377,14 +1429,14 @@ ensolid_resume = *
         beq ?things
         lda #MK_PLRAD
         jsr ?bdist
+        rep #$20                     ; sol_ox/oy = the point, two word moves
+        .LONGA ON                    ;   (drac030, 2026-09-14)
         lda zp_px
         sta sol_ox
-        lda zp_px+1
-        sta sol_ox+1
         lda zp_py
         sta sol_oy
-        lda zp_py+1
-        sta sol_oy+1
+        .LONGA OFF
+        sep #$20
         jsr ?hit
         beq ?things
         jmp ?yes
@@ -1494,49 +1546,29 @@ ensolid_resume = *
         sta sol_bd+1
         rts
 ;   sol_ox/sol_oy vs coll_cx/coll_cy against sol_bd. A nonzero = blocked.
-?hit    sec
-        lda sol_ox
+?hit    rep #$20                     ; |ox - cx| < blockdist AND |oy - cy| <
+        .LONGA ON                    ;   blockdist, each ONE subtract, the abs
+        sec                          ;   in A and one word compare (2026-09-15:
+        lda sol_ox                   ;   no m_a round trip, no ?absa/m_neg)
         sbc coll_cx
-        sta m_a
-        lda sol_ox+1
-        sbc coll_cx+1
-        sta m_a+1
-        jsr ?absa
-
- .if 1
-        lda m_a
-        cmp sol_bd
- .else
-        sec                          ; |dx| >= blockdist -> DOOM's early "no hit"
-        lda m_a
-        sbc sol_bd
- .endif
-        lda m_a+1
-        sbc sol_bd+1
-        bcs ?miss
-
+        bpl ?ax
+        eor #$FFFF
+        inc
+?ax     cmp sol_bd
+        bcs ?miss16
         sec
         lda sol_oy
         sbc coll_cy
-        sta m_a
-        lda sol_oy+1
-        sbc coll_cy+1
-        sta m_a+1
-
-        jsr ?absa
- .if 1
-        lda m_a
-        cmp sol_bd
- .else
-        sec
-        lda m_a
-        sbc sol_bd
- .endif
-        lda m_a+1
-        sbc sol_bd+1
+        bpl ?ay
+        eor #$FFFF
+        inc
+?ay     cmp sol_bd
+        .LONGA OFF
+        sep #$20
         bcs ?miss
         lda #1
         rts
+?miss16 sep #$20
 ?miss   lda #0
         rts
 ?absa   lda m_a+1                    ; m_a = |m_a|
@@ -1560,6 +1592,7 @@ ensolid_resume = *
         and mv_bit,y
         rts
 .endp
+        .endseg
 
 
 
@@ -1573,12 +1606,16 @@ sol_oy  dta 0,0
 sol_n   dta 0                        ; which of the nine cells the sweep is on
 sol_c   dta 0                        ;   ...and that cell's index, being built
 radf_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org RADFILL_BASE
+ .endif
 ;--------------------------------------------------------------
 ; en_radfill -- from en_init: TH_RAD[thing] = its PIT_CheckThing radius, for
 ;   every thing on the level. The rule rad_of applies is checked at BUILD time
 ;   by tools/pack_things.py _check_radius_rule.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_radfill
  .if 1
 	rep #$20
@@ -1620,9 +1657,13 @@ radf_resume = *
         bne ?l
 ?done   rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > RADFILL_END+1
         ert 'en_radfill outgrew RADFILL_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org RADOF_BASE
 ;--------------------------------------------------------------
@@ -1630,6 +1671,7 @@ radf_resume = *
 ;   classification half of en_radfill (see there); it lives out here because
 ;   the THCOLL block is full to the byte. Clobbers A/X/Y and en_kind/en_k2.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc rad_of
         ldy #7                       ; record +7 = flags
         lda (sp_ptr),y
@@ -1656,16 +1698,25 @@ radf_resume = *
 ?zero   lda #0
         rts
 .endp
+        .endseg
     .if * > RADOF_END+1
         ert 'rad_of outgrew RADOF_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org BLKTAB_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 blk_ox  dta $FF,0,1,$FF,0,1,$FF,0,1  ; en_solid's 3x3 neighbourhood (wrapped)
 blk_oy  dta $FF,$FF,$FF,0,0,0,1,1,1
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > BLKTAB_END+1
         ert 'the blockmap tables outgrew BLKTAB_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org radf_resume
 
 
@@ -1675,6 +1726,7 @@ blk_oy  dta $FF,$FF,$FF,0,0,0,1,1,1
     .endif
         org ensolid_resume
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_thing
         lda en_k2
 en_th2
@@ -1711,6 +1763,7 @@ en_th2
  .endif
         rts
 .endp
+        .endseg
     .if * > ENTHING_END+1
         ert 'en_thing outgrew ENTHING_BASE..END (memory_map.inc)'
     .endif
@@ -1726,6 +1779,7 @@ en_th2
 ;   values below eat the signs, and putting it here gets both callers (the
 ;   player in en_boom, every thing in en_bthings) with one line.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_dist
         jsr en_los
         bcs ?see
@@ -1764,12 +1818,14 @@ en_th2
 ?out    clc
         rts
 .endp
+        .endseg
 ;--------------------------------------------------------------
 ; coll_mon -- the AI's wall probe: collide_blocked at the KIND's radius.
 ;   ai_step calls this where it called collide_blocked, same three bytes.
 ;   Parked in this block because collision.asm's own two are full; it is one
 ;   absolute jsr either way.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_mon
         ldx ai_k                     ; info.c radius -> the power-of-two bucket
         lda mk_rad,x
@@ -1789,6 +1845,7 @@ en_th2
         sta coll_rp1
         jmp collide_blocked
 .endp
+        .endseg
 
     .if * > ENDIST_END+1
         ert 'en_dist outgrew ENDIST_BASE..END (memory_map.inc)'
@@ -1821,6 +1878,7 @@ enray_resume = *
 ;     OUT C=1 and A = the damage, or C=0. sp_ptr, m_a and m_b survive, which is
 ;         what en_bthings' loop needs.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_dray
         jsr en_dist                  ; range (and a barrel's grid) first
         bcc ?out
@@ -1885,12 +1943,17 @@ enray_resume = *
 ?out    clc
         rts
 .endp
+        .endseg
     .if * > ENRAY_END+1
         ert 'en_dray outgrew ENRAY_BASE..END (memory_map.inc)'
     .endif
         org enray_resume
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org ENBVAR_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 en_bx   dta 0,0                      ; where the blast went off
 en_by   dta 0,0
 en_bi   dta 0                        ; the sweep's thing index
@@ -1898,9 +1961,13 @@ en_bself dta 0                       ; ...and the exploding thing, so it is skip
 en_lp   dta 0,0                      ; this blast's LOS record in bank $01 (0 = none)
 en_lt   dta 0,0                      ; en_los: the 16-bit cell arithmetic
 en_lt2  dta 0                        ; en_los: the byte offset inside the row
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > ENBVAR_END+1
         ert 'en_boom scratch outgrew ENBVAR_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org ENLOS_BASE
 
 ;--------------------------------------------------------------
@@ -1915,6 +1982,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   16-bit so the read still stays inside the record, and en_dist's own range
 ;   test throws it away right after. Cold: once per candidate per explosion.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_los
         lda en_lp
         ora en_lp+1
@@ -1985,6 +2053,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
  .endif
         rts
 .endp
+        .endseg
     .if * > ENLOS_END+1
         ert 'en_los outgrew ENLOS_BASE..END (memory_map.inc)'
     .endif
@@ -1997,6 +2066,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   blasts through walls like the whole game used to. Once per explosion.
 ;   Clobbers A/X/Y and zp_ptr.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_lfind
         lda #<LOS_EXT
         sta zp_ptr
@@ -2030,6 +2100,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         sta en_lp+1
         rts
 .endp
+        .endseg
     .if * > ENLFIND_END+1
         ert 'en_lfind outgrew ENLFIND_BASE..END (memory_map.inc)'
     .endif
@@ -2042,6 +2113,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   en_dist's sight test (en_los) is what keeps the chain from jumping a wall
 ;   into the next room.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_bthings
         lda en_k2
         sta en_bself                 ; en_kind_of below reuses en_k2 as scratch
@@ -2131,14 +2203,19 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         bne ?lp
 ?done   rts
 .endp
+        .endseg
     .if * > ENBTH_END+1
         ert 'en_bthings outgrew ENBTH_BASE..END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org ENBHIT_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; en_bhit -- A = damage, en_bi = the thing. P_DamageMobj's arithmetic only.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_bhit
         sta m_prod
  .if 1
@@ -2175,15 +2252,20 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         jmp en_bkill                 ; it died: hand it its own chain
 ?out    rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > ENBHIT_END+1
         ert 'en_bhit outgrew ENBHIT_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org ENBKILL_BASE
 
 ;--------------------------------------------------------------
 ; en_bkill -- the blast finished off thing en_bi: give it its voice and its
 ;   death chain, the same two steps a bullet kill takes.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_bkill
         lda en_bi
         jsr en_thing.en_th2
@@ -2195,9 +2277,13 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
         ldy en_bi
         jmp en_kill
 .endp
+        .endseg
 
 engib_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org OVKILL_BASE
+ .endif
 ;--------------------------------------------------------------
 ; en_ovkill -- P_DamageMobj's tail, for both damage sites: en_t is the health
 ;   the subtraction just produced. Health still ABOVE zero -> return, touching
@@ -2217,6 +2303,7 @@ engib_resume = *
 ;   Parked at OVKILL_BASE because the ENGIB block is full to the byte and the
 ;   enemy block now stops at $FFE9 (the 65816 native vectors).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_ovkill
         lda en_t+1                   ; > 0 -> nothing died: leave en_ovk alone
         bmi ?kill                    ;   (negative: always a kill)
@@ -2239,10 +2326,17 @@ engib_resume = *
  .endif
 ?out    rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > OVKILL_END+1
         ert 'en_ovkill outgrew OVKILL_BASE..END (memory_map.inc)'
     .endif
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org ENGIB_BASE               ; kill-time only, and every block around
+ .endif
                                      ; en_bhit/en_bkill is full
 ;--------------------------------------------------------------
 ; en_gibq -- en_gib = 1 iff this kill is p_inter.c:719's:
@@ -2271,6 +2365,7 @@ engib_resume = *
 ;   both chains and is written once, before the split, instead of twice after
 ;   it -- and `ldy en_kind` now serves the mk_hp compare AND the chain lookup.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_gibq
  .if 1
         stz en_gib
@@ -2294,15 +2389,23 @@ engib_resume = *
         beq ?no                      ; no S_x_XDIE in info.c -> ordinary death
         inc en_gib
         lda #SFX_SLOP                ; A_XScream, not A_Scream (p_enemy.c:1572)
+ .if 1
+        jmp snd_qm_last              ; tail call --   (STEREO: from en_last, see sound.asm)
+ .else
         jsr snd_qm_last              ;   (STEREO: from en_last, see sound.asm)
         rts                          ; zp_ptr already on XTAB_EXT
+ .endif
 ?no     lda #<DTAB_EXT               ; the ordinary chain, and en_kill reads
         sta zp_ptr                   ;   zp_ptr straight out of here
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > ENGIB_END+1
         ert 'en_ovkill/en_gibq outgrew ENGIB_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org engib_resume
     .if * > ENBKILL_END+1
         ert 'en_bkill outgrew ENBKILL_BASE..END (memory_map.inc)'
@@ -2316,6 +2419,7 @@ engib_resume = *
 ;   The armour itself is pl_armsub's (movers.asm, next to update_damage -- this
 ;   block has no room for it). Death restarts the level.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_plr_hurt
         tay                          ; the damage, across the two tests below
         lda pl_dead                  ; P_DamageMobj's second line: "if
@@ -2347,6 +2451,7 @@ engib_resume = *
                                      ;   Costs this block nothing: same jmp, and
                                      ;   ENHURT is full to the byte.
 .endp
+        .endseg
     .if * > ENHURT_END+1
         ert 'en_plr_hurt outgrew ENHURT_BASE..END (memory_map.inc)'
     .endif
@@ -2359,6 +2464,7 @@ engib_resume = *
 ;   change. C=0 = a live thing, use the real sprite table. Preserves X.
 ;   zp_ptr is saved/restored -- the BSP walk owns it while spr_add runs.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_dyn
         stx sp_dsx
         tax
@@ -2373,10 +2479,12 @@ engib_resume = *
         lda #0                       ; default: no mirrored view (spr_wrot sets
         sta sp_dflip                 ;   it; the death path must not inherit one)
  .endif
-        lda #<TH_STATE
-        sta zp_ptr
+        stz zp_ptr                   ; <TH_STATE = 0 (page-aligned: ert)
         lda #>TH_STATE
         sta zp_ptr+1
+    .if [TH_STATE & $FF] != 0
+        ert 'TH_STATE is not page-aligned -- put the lda #< back (enemy.asm)'
+    .endif
  .if 1
 	txy
  .else
@@ -2459,6 +2567,7 @@ engib_resume = *
         clc
         rts
 .endp
+        .endseg
 sp_drow dta 0,0,0,0,0,0,0,0
 sp_dsx  dta 0
     .if * > SPRDYN_END+1
@@ -2479,7 +2588,11 @@ sp_dsx  dta 0
 ;   was cleared by spr_dyn. Preserves Y (the thing index). X is free here.
 ;--------------------------------------------------------------
 wrot_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org WROT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_wrot
         sta swr_row
         lda sp_dfix                  ; draw-time REPLAY: spr_one hands back the
@@ -2504,14 +2617,14 @@ wrot_resume = *
         rts                          ;   body below is past branch range
 ?go     sta swr_dir
         sty swr_y
-        lda zp_rx                    ; the viewer-relative vector spr_proj
-        sta swr_vx                   ;   computed (thing - player)
-        lda zp_rx+1
-        sta swr_vx+1
+        rep #$20                     ; the viewer-relative vector, two word
+        .LONGA ON                    ;   moves (drac030, 2026-09-14)
+        lda zp_rx
+        sta swr_vx
         lda zp_ry
         sta swr_vy
-        lda zp_ry+1
-        sta swr_vy+1
+        .LONGA OFF
+        sep #$20
         jsr oct_of                   ; A = its octant, 0..7
         clc                          ; rot = (octant + 4 - TH_DIR) & 7: the +4
         adc #4                       ;   is the 180-deg flip (thing->viewer)
@@ -2527,6 +2640,7 @@ wrot_resume = *
         ldy swr_y
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; oct_of -- A = the 8-sector angle (octant) of the 16-bit signed vector
@@ -2535,10 +2649,13 @@ wrot_resume = *
 ;   compares (the 2.25 sits the boundary at 24 deg instead of 22.5 -- 1.4 deg
 ;   of skew, pinned by tools/_verify_rot.py). Clobbers A/X, preserves Y.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc oct_of                          ; THE THUNK -- see bank01.asm.
         jsl B1CODE_BASE+b1_oct_of
         rts                          ; a bank-0 `jmp oct_of` still works: it lands
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 swr_vx  dta a(0)
 swr_vy  dta a(0)
 
@@ -2552,6 +2669,8 @@ swr_vy  dta a(0)
 ;   boot hang when en_radfill kept its loop index in X.)
 ;   2026-08-03: moved out of the packed ENINIT block, next to its new caller.
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_kind_of
  .if 1
 	rep #$20
@@ -2589,6 +2708,7 @@ swr_vy  dta a(0)
         sta en_kind
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_oct -- A = octant(ai_t -> ITS TARGET), and it leaves swr_vx/vy holding
@@ -2605,6 +2725,7 @@ swr_vy  dta a(0)
 ;   Hence the bare octant here and the two-line store at the A_FaceTarget
 ;   call site: a wrapper for it pushed this block over SIGHT_BASE.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_oct
         jsr aif_tpos                 ; ai_tx/ai_ty = the target (player or the
                                      ;   infight victim -- infight.asm resolves
@@ -2649,6 +2770,8 @@ swr_vy  dta a(0)
  .endif
         jmp oct_of                   ; -> A = the octant, 0..7
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ; DOOM rot (0 = facing the viewer) -> stored slot (bits 0-1) + mirror (bit 7).
 ; pack_things STORED_ROTS stores lump digits 1/2/3/5, so SIX of DOOM's eight
 ; views are its own pixels: rot 0 the front, 1 the 3/4 front and 7 that same
@@ -2679,6 +2802,8 @@ swr_t    dta a(0)
 ;   stored-view count out of bank $01. pack_things wn[0] = 3 with rotations,
 ;   1 for a front-only build; 0 means a pre-rotation .dtab -- treat as 1.
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wrot_init
         lda #<WTAB_N
         sta zp_ptr
@@ -2701,6 +2826,7 @@ swr_t    dta a(0)
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; wrot_dir -- en_init's per-thing tail: TH_DIR[thing] = the SPAWN FACING from
@@ -2710,6 +2836,7 @@ swr_t    dta a(0)
 ;   direction of travel. Y = thing, (sp_ptr) = its record, zp_ptr = the TH_HPL
 ;   page pointer, which is RESTORED for en_init's loop.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wrot_dir
         sty swr_y                    ; the record read below needs Y
         ldy #7
@@ -2729,6 +2856,7 @@ swr_t    dta a(0)
         sta zp_ptr+1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; wrot_idle -- spr_dyn's ?live tail: an IDLE MONSTER still rotates (it faces
@@ -2743,6 +2871,7 @@ swr_t    dta a(0)
 ;   The answers are identical by construction: TH_KIND is the same kind byte
 ;   en_kind_of returns, gated on the same "has hit points".
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wrot_idle
         lda #>TH_KIND
         sta zp_ptr+1
@@ -2779,6 +2908,7 @@ swr_t    dta a(0)
         clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_kfill -- en_init's third pass (chained off it: the ENINIT block is full):
@@ -2787,6 +2917,7 @@ swr_t    dta a(0)
 ;   so wrot_idle and ai_wake read one byte per frame instead of probing hp
 ;   and walking the sprite table. Tail-jumps ai_reset (en_init used to).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_kfill
         lda th_things
         sta sp_ptr
@@ -2798,8 +2929,7 @@ swr_t    dta a(0)
         ldy #6
         lda (sp_ptr),y               ; the record's sprite id
         sta en_k2
-        txa
-        tay
+        txy
         lda #>TH_HPL                 ; a monster is exactly "it has hit points"
         sta zp_ptr+1
         lda [zp_ptr],y
@@ -2847,8 +2977,7 @@ swr_t    dta a(0)
         bne ?put
 ?zero   lda #0
 ?put    sta en_t
-        txa
-        tay
+        txy
         lda #>TH_KIND
         sta zp_ptr+1
         lda en_t
@@ -2863,6 +2992,8 @@ swr_t    dta a(0)
         bne ?lp
 ?done   jmp ai_reset                 ; ...and nothing chases in a fresh level
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 swr_y2  dta 0
 
 ;--------------------------------------------------------------
@@ -2871,6 +3002,8 @@ swr_y2  dta 0
 ;   when the frame is flipped, against `tx -= offset` normally. The row copy
 ;   is private (sp_drow), so the left-offset byte is simply rewritten there.
 ;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wrot_left
         bit sp_dflip
         bpl ?out
@@ -2880,8 +3013,12 @@ swr_y2  dta 0
         sta sp_drow+5
 ?out    rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > WROT_END+1
         ert 'spr_wrot/wrot_* outgrew WROT_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org wrot_resume
         org enanim_resume

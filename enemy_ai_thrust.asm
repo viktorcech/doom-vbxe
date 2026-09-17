@@ -41,6 +41,7 @@
 ;   and a half, and it costs a table read where DOOM's angle costs a divide.
 ;   Clobbers A/X/Y, the AI's step scratch and m_a/m_b/m_prod.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_thrust
  .if 1
         sty ai_t
@@ -144,6 +145,7 @@
 ?out    rts
  .endif
 .endp
+        .endseg
 
 ; thr_step lives in the SLIDE block with its other caller -- this one is full
 ; to the byte (memory_map.inc).
@@ -154,7 +156,10 @@
         ert 'en_thrust outgrew THRUST_BASE..THRUST_END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org THRC_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; thr_comp -- one axis of the shove. A = that axis' byte out of the octant
@@ -163,6 +168,7 @@
 ;   other way round), Y = the offset into ai_sx. Writes the signed 16-bit step
 ;   P_TryMove takes. Clobbers A and m_a.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc thr_comp
  .if 1
         sta thr_s
@@ -244,6 +250,8 @@
         rts
  .endif
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; ai_mcnt -- P_TryWalk's tail, evicted from the AI block (the ten bytes that
@@ -252,7 +260,12 @@
 ;   never touches the movecount. Returns A = 1, P_Move's "it moved".
 ;--------------------------------------------------------------
 thrc_resume = *
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org THRMC_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_mcnt
         lda ai_walk
         beq ?out
@@ -263,13 +276,23 @@ thrc_resume = *
 ?out    lda #1
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > THRMC_END+1
         ert 'ai_mcnt outgrew THRMC_BASE..THRMC_END (memory_map.inc)'
     .endif
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org thrc_resume
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > THRC_END+1
         ert 'thr_comp outgrew THRC_BASE..THRC_END (memory_map.inc)'
     .endif
+ .endif
 
         org THRBL_BASE
 
@@ -279,6 +302,7 @@ thrc_resume = *
 ;   whether the thing survived: p_inter.c kicks the dying too, and thr_tail is
 ;   what tells a step from a corpse's slide.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_thrust_bl
  .if 1
         rep #$20
@@ -306,16 +330,21 @@ thrc_resume = *
         jmp en_thrust
  .endif
 .endp
+        .endseg
     .if * > THRBL_END+1
         ert 'en_thrust_bl outgrew THRBL_BASE..THRBL_END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org THRDAT_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; en_thrust_plr -- the PLAYER's caller wrapper (en_shoot): Y = the thing his
 ;   bullet just failed to kill, en_dmg = what it took off.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_thrust_plr
  .if 1
         rep #$20
@@ -341,6 +370,8 @@ thrc_resume = *
         jmp en_thrust
  .endif
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ; The octant (oct_of: 0 = east, counting counter-clockwise) -> how much of the
 ; slide goes on each axis: 0 = none, 1 = all of it, 2 = three quarters (the
 ; diagonals), bit7 = negative.
@@ -371,12 +402,14 @@ thrdat_resume = *
 ;   corpse and gets the SLIDE instead of the step -- which is what DOOM gives
 ;   it anyway, so the shortcut costs nothing.
 ;--------------------------------------------------------------
+        .endseg
         org SLIDE_BASE
 ;--------------------------------------------------------------
 ; thr_step -- X = the octant, thr_d = how far, ai_t = the thing: one P_TryMove
 ;   along it. Both en_thrust (a survivor's whole slide, at once) and en_slide
 ;   (a tic's worth of a corpse's) end here. Clobbers A/Y, m_a, the AI scratch.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc thr_step
         ldy #0
         lda thr_sx,x
@@ -389,7 +422,9 @@ thrdat_resume = *
         inc ai_walk
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc thr_tail
         ldy ai_t
         lda #<TH_HPL
@@ -409,6 +444,7 @@ thrdat_resume = *
 ?put    sta sl_d
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; en_slide -- one TIC of the sliding corpse, off the same clock the death
@@ -419,6 +455,7 @@ thrdat_resume = *
 ;   when a tic's worth no longer reaches a unit. Clobbers A/X/Y and the AI
 ;   step scratch -- it runs beside en_tick, which owns none of that.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_slide
  .if 1
         ldy sl_th
@@ -455,11 +492,18 @@ thrdat_resume = *
         sta sl_th
 ?out    rts
 .endp
+        .endseg
     .if * > SLIDE_END+1
         ert 'thr_tail/en_slide outgrew SLIDE_BASE..SLIDE_END (memory_map.inc)'
     .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org thrdat_resume
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > THRDAT_END+1
         ert 'the thrust data outgrew THRDAT_BASE..THRDAT_END (memory_map.inc)'
     .endif
+ .endif
 

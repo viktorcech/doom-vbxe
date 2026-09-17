@@ -58,8 +58,12 @@
 ;--------------------------------------------------------------
 rk_resume = *
         org READKEYS_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc read_keys
+ .if 1                                ; cht_scan's first instruction is `lda kb_new`:
+ .else                                ;   the KBCODE read was dead (2026-09-15)
         lda KBCODE                    ; --- the IDKFA sniffer gets the FIRST look,
+ .endif
         jsr cht_scan                  ; both cheats, off kb_scan's press edges
                                       ;   is down right now. SKSTAT bit2 is low
                                       ;   only while the key is physically held
@@ -127,17 +131,17 @@ rk_resume = *
         dey
         bne ?not2                     ; 3..9 below
         jsr vw_bigger                 ; 2 = '=' -> one step bigger
-        jmp ?ret
+        bra ?ret
 ?not2   cpy #8                        ; slot 10 = 'T' (Y is slot-2 here)
         bne ?wkey
         lda tex_flat                  ; flip the runtime flat-walls switch --
         eor #1                        ;   seg_draw's resolve reads it per seg
         sta tex_flat
-        jmp ?ret
+        bra ?ret
 ?wkey   dey                           ; Y was 3..9 and is now 0..6 = the wp_* id
         tya                           ;   ('1' = fist .. '7' = the BFG, DOOM's
         jsr wp_select                 ;   own keys); wp_select ignores what the
-        jmp ?ret                      ;   player does not own
+        bra ?ret                      ;   player does not own
 ?vsm    jsr vw_smaller
 ?ret    jmp mn_key                    ; tail-call: ESC (menu.asm), which tail-calls
                                       ;   vw_frame -- the border repaint after a
@@ -145,6 +149,7 @@ rk_resume = *
                                       ;   costs this block zero bytes, and it has
                                       ;   none: $F180-$F217 is full.
 .endp
+        .endseg
 wk_tab  dta KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7  ; slot 3..9 -> wp 0..6
 WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('7' -> 9)
     .if * > READKEYS_END+1
@@ -175,6 +180,7 @@ WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('7' -> 9)
 ;   boot RAM indexes cht_tab out of bounds -- a 1-in-256 IDKFA on the first key.
 ;--------------------------------------------------------------
         org CHTKEY_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cht_key
         cmp cht_prev
         beq ?out                      ; still the same key held down
@@ -192,6 +198,7 @@ WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('7' -> 9)
 ?set    stx cht_n
 ?out    rts
 .endp
+        .endseg
 cht_tab dta KEY_I, KEY_D, KEY_K, KEY_F, KEY_A
 CHT_LEN equ * - cht_tab
     .if * > CHTKEY_END+1
@@ -223,7 +230,11 @@ CHT_LEN equ * - cht_tab
 ;     the other cheats make a noise either. The acknowledgement is the HUD
 ;     itself: the ARMS boxes light up, the armour reads 200 and the keys appear.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org CHTGIVE_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cht_give
         jsr cht_arm                   ; armorpoints = 200, armortype = 2
         lda #WP_ART
@@ -247,9 +258,13 @@ CHT_LEN equ * - cht_tab
                                       ;   announces itself with the weapon-pickup
                                       ;   sound is not what m_cheat.c does.
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > CHTGIVE_END+1
         ert 'cht_give outgrew CHTGIVE_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; cht_arm -- IDKFA's "armorpoints = 200; armortype = 2" (st_stuff.c), parked in
@@ -257,12 +272,14 @@ CHT_LEN equ * - cht_tab
 ;   the type is pl_armset's job, and the blue-armour bonus id is what says 2.
 ;--------------------------------------------------------------
         org CHTARM_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cht_arm
         lda #200
         sta PSTATE+PS_ARMOR
         ldy #7                        ; the blue-armour bonus id -> armortype 2
         jmp pl_armset
 .endp
+        .endseg
     .if * > CHTARM_END+1
         ert 'cht_arm outgrew CHTARM_BASE..CHTARM_END (memory_map.inc)'
     .endif

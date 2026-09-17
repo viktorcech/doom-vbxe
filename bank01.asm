@@ -29,8 +29,12 @@
 ;     RTL against a JSR's two-byte frame) and it must not be an interrupt
 ;     handler -- the vectors are 16-bit and live in bank 0.
 ;==============================================================
+; 2026-09-13 (DRAC_PLAN step 2): this is no longer a two-address block that
+; b1_to_ext copies up. It is the start of the B1 SEGMENT (memory_map.inc):
+; tools/split_b1.py stages it and b1_stage_copy puts it in bank $01 during the
+; XEX load. The rules above still hold.
 b1_resume = *
-        org B1CODE_OFF, B1CODE_STAGE
+        .segment B1
 b1_code_start = *
 
 .proc b1_oct_of
@@ -53,6 +57,15 @@ b1_code_start = *
 
 ?ayp	sta swr_ay
 	ora swr_ax
+ .if 1
+	cmp #$0100                   ; (ax|ay) >= $100 <=> a hi bit set; A KEEPS the OR
+	bcc ?small
+?nrm	lsr swr_ax
+	lsr swr_ay
+	lsr @                        ; (ax|ay)>>1 = (ax>>1)|(ay>>1): no reload, no ora
+	cmp #$0100                   ;   (2026-09-15, -6 a step)
+	bcs ?nrm
+ .else
 	and #$ff00
 	beq ?small
 
@@ -62,9 +75,51 @@ b1_code_start = *
 	ora swr_ay
 	and #$ff00
 	bne ?nrm
+ .endif
 
-?small	sep #$20
-	.LONGA OFF
+?small  lda swr_ay                   ; swr_t = ay*2 + ay/4 (16-bit: max 573),
+        lsr @                        ;   still in the 16-bit window (the .else
+        lsr @                        ;   side did it as bytes + rol/inc): the
+        sta swr_t                    ;   quarter, then the double on top of it
+        lda swr_ay
+        asl @                        ; (ay <= 255 after ?nrm: the asl's carry out
+        adc swr_t                    ;   is 0, so no clc)
+ .if 1
+        cmp swr_ax                   ; t < ax (C=0, never equal) = "ax > t": the x
+        bcc ?xaxis16                 ;   axis. The compare runs from t's side, so t
+ .else                                ;   is never stored (2026-09-15, -10)
+        sta swr_t
+        lda swr_ax                   ; ax > ay*2.25 -> the x axis dominates (one
+        cmp swr_t                    ;   word compare: a 9-bit t beats any byte
+        beq ?notx                    ;   ax, which is what the hi-byte test said)
+        bcs ?xaxis16
+ .endif
+?notx   lda swr_ax                   ; swr_t = ax*2 + ax/4
+        lsr @
+        lsr @
+        sta swr_t
+        lda swr_ax
+        asl @
+        adc swr_t
+ .if 1
+        cmp swr_ay                   ; t < ay = "ay > t": the y axis
+        bcc ?yaxis16
+ .else
+        sta swr_t
+        lda swr_ay
+        cmp swr_t
+        beq ?diag16
+        bcs ?yaxis16
+ .endif
+?diag16 sep #$20
+        .LONGA OFF
+        bra ?diag
+?xaxis16 sep #$20
+        .LONGA OFF
+        bra ?xaxis
+?yaxis16 sep #$20
+        .LONGA OFF
+        bra ?yaxis
  .else
         lda swr_vx                   ; swr_ax = |vx|
         sta swr_ax
@@ -106,7 +161,6 @@ b1_code_start = *
         ora swr_ay+1
         bne ?nrm
 ?small
- .endif
 	lda swr_ay                   ; swr_t = ay*2 + ay/4 (16-bit: max 573)
         lsr
         lsr
@@ -156,6 +210,7 @@ b1_code_start = *
         beq ?diag
         bcs ?yaxis
 
+ .endif
 ?diag   ldx #1                       ; a diagonal: pick the quadrant by signs
         lda swr_vx+1
         bpl ?dxp
@@ -327,21 +382,49 @@ b1_code_start = *
 ;   It was $BE60 in base RAM until 2026-08-30 and was the biggest cold block
 ;   left down there: nothing reads it per frame, only a HUD repaint does.
 ;--------------------------------------------------------------
+;   2026-09-13: DATA, so it is out of the code segment -- a one-page
+;   two-address block that b1_to_ext copies into the data bank at HUDTAB_OFF.
+b1_code_end = *
+        .endseg
+hudtab_resume = *
+        org HUDTAB_OFF, B1CODE_STAGE
 HUD_TAB
         ins 'build/assets/hud/hud.tab'
-
-b1_code_end = *
-B1CODE_BYTES = b1_code_end - b1_code_start
-    .if B1CODE_BYTES > B1CODE_MAX
-        ert 'bank01.asm outgrew B1CODE_MAX -- b1_to_ext copies that many bytes'
+HUDTAB_BYTES = * - HUD_TAB
+    .if HUDTAB_BYTES > $100
+        ert 'HUD_TAB outgrew its page -- b1_to_ext copies TWO and HU_TAB owns'
+        ert '  the second one (bsp_main.asm ?tab, memory_map.inc HUTAB_OFF)'
     .endif
+;--------------------------------------------------------------
+; HU_TAB -- the HU STRIP DIRECTORY, in the page behind HUD_TAB and copied up by
+;   the same b1_to_ext row (2026-09-16). Three arrays of HU_MAXSTRIPS bytes --
+;   offset lo, offset hi, width -- so strip_blit reads all three with one X and
+;   three `lda.l`, and memory_map.inc can name the bases without a strip count.
+;   The strips used to be TITLE_STRIDE apart and all padded to the widest line,
+;   which is why none of this existed; that padding was 25,699 B and it is the
+;   SR status bar now (pack_menu.py _hu_strips, xdl.asm).
+;   The offset is 16-bit and TITLE_VRAM is 64 KB-aligned, so the strip's VRAM
+;   address is the bank byte and these two -- nothing to add.
+;--------------------------------------------------------------
+        org HUTAB_OFF, B1CODE_STAGE+$100
+HU_TAB
+        ins 'build/assets/menu/hu.tab'
+HUTAB_BYTES = * - HU_TAB
+    .if HUTAB_BYTES > $100
+        ert 'HU_TAB outgrew the page behind HUD_TAB (memory_map.inc HUTAB_OFF)'
+    .endif
+    .if HUTAB_BYTES != 3*HU_MAXSTRIPS
+        ert 'HU_TAB is not 3 x HU_MAXSTRIPS -- pack_menu.py and memory_map.inc'
+        ert '  disagree about the per-array stride'
+    .endif
+        org hudtab_resume
 
 ;==============================================================
 ; B1CODE2 -- the second block (2026-08-31). B1CODE has 14 B left, so this one
 ; stages in the raw-XEX hole behind SGOVL's parking (B1CODE2_STAGE, memory_map)
 ; and b1_to_ext copies it up in the same breath. Same rules as above.
 ;==============================================================
-        org B1CODE2_OFF, B1CODE2_STAGE
+        .segment B1                  ; (was org B1CODE2_OFF, B1CODE2_STAGE)
 b1_code2_start = *
 
 ;--------------------------------------------------------------
@@ -402,10 +485,18 @@ b1_code2_start = *
                                    ;   adc never carries out; and ?step4's last
                                    ;   rol shifts a guaranteed-0 bit (m_ma+2
                                    ;   <= 1 before it), so C is 0 on entry too
+ .if 1
+        tay                        ; A = 0: the sum's LOW byte rides in Y from here
+?sl     tya                        ;   (tya/tay leave C alone; m_prod's low byte is
+        adc m_ma                   ;   scratch nobody reads after the build) -- -2
+        tay                        ;   a step, 510 steps a rotation frame
+        sta.l FRAC_EXT+TSIN_LO,x
+ .else
 ?sl     lda m_prod                 ; acc += 4*|sin|; store T[x]
         adc m_ma
         sta m_prod
         sta.l FRAC_EXT+TSIN_LO,x
+ .endif
         lda m_prod+1
         adc m_ma+1
         sta m_prod+1
@@ -457,10 +548,18 @@ b1_code2_start = *
         sta.l FRAC_EXT+TCOS_MI
         sta.l FRAC_EXT+TCOS_HI
         ldx #1                     ; (same no-clc argument as ?sl above)
+ .if 1
+        tay                        ; (Y carries the low byte, as ?sl above)
+?cl     tya
+        adc m_ma
+        tay
+        sta.l FRAC_EXT+TCOS_LO,x
+ .else
 ?cl     lda m_prod
         adc m_ma
         sta m_prod
         sta.l FRAC_EXT+TCOS_LO,x
+ .endif
         lda m_prod+1
         adc m_ma+1
         sta m_prod+1
@@ -501,12 +600,14 @@ b1_code2_start = *
         lda am_on                    ; abs = bank 0 (DBR stays 0, block rules)
         beq ?world
         ldx #0
-?p      lda.l B1CODE_BASE+AMOVL_EXT,x
+?p      lda.l EXT_BASE+AMOVL_EXT,x
         sta MENU_RUN,x
         inx
         bne ?p
-        jml MENU_RUN
-?world  jml render_world
+        jsl menu_run_w0              ; (DRAC_PLAN 2b) the overlay returns with
+        rts                          ;   rts: enter it through a bank-0 jsr/rtl
+                                     ;   wrapper, or it returns into bank 0
+?world  jml B1CODE_BASE+render_world   ; (bank $01 since DRAC_PLAN 2b)
 .endp
 
 ; (b1_sq2_restore is GONE, 2026-08-31 pm: the SQ2 tables live at
@@ -514,8 +615,4 @@ b1_code2_start = *
 ;  repaint. The $C900 scheme it served lasted one morning; see qs_mirror.inc.)
 
 b1_code2_end = *
-B1CODE2_BYTES = b1_code2_end - b1_code2_start
-    .if B1CODE2_BYTES > B1CODE2_MAX
-        ert 'bank01.asm B1CODE2 outgrew B1CODE2_MAX (memory_map.inc)'
-    .endif
-        org b1_resume
+        .endseg                      ; (B1SEG_LEN is MADS's own bound -- no ert)

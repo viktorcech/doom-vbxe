@@ -23,6 +23,13 @@
 ; THE GRAPHICS SPLIT THE SAME WAY (tools/pack_menu.py):
 ;   TITLEPIC  -> $018000, the sprite arena. Boot-only, so borrowing the pool is
 ;                free -- arena_init wipes it at the first load_level anyway.
+;                TWICE: the 160-wide copy at $018000, which is what the MENU is
+;                drawn over and what mn_box restores from, and DOOM's own
+;                320x200 at MENU_SRVRAM ($020000) with its own display list
+;                behind it. The bare title is shown from the SECOND one --
+;                VBXE's SR mode reads it a byte per pixel straight out of VRAM,
+;                so the one picture in this port that is not rendered does not
+;                pay the renderer's 160-wide framebuffer (xdl.asm, show_title).
 ;   M_DOOM, MainMenu[]'s six lines, both skulls -> $00B000, one of the FIXED
 ;                4 KB holes the weapon regions freed. The ESC menu draws them
 ;                mid-level, so they cannot live in anything a level load owns.
@@ -78,7 +85,11 @@ COLDSV   equ $E477                   ; OS cold start -- QUIT DOOM's exit
 ;   is a four-store loop.
 ;--------------------------------------------------------------
 mnld_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org MNLDTAB_BASE             ; ...and it does not live in the staging
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 mn_ld_tab                            ;   block: see MNLDTAB_BASE in
         dta a(MENU_SEC1), MENU_TCHUNKS, MENU_TBANK
         dta a(MENU_SEC1 + MENU_TCHUNKS*32), MENU_PCHUNKS, MENU_PBANK
@@ -109,9 +120,13 @@ mn_ld_tab                            ;   block: see MNLDTAB_BASE in
                                      ; asset pool and gone the moment a level
                                      ; streams in.
 MN_LD_N equ * - mn_ld_tab
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > MNLDTAB_END+1
         ert 'mn_ld_tab outgrew MNLDTAB_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org mnld_resume              ;   memory_map.inc for why it moved
 
 ;--------------------------------------------------------------
@@ -130,7 +145,7 @@ MN_LD_N equ * - mn_ld_tab
         sta ld_chunks
         lda mn_ld_tab+3,x
         sta ld_bank0
-        jsr load_vram
+        jsr load_vram_t
         lda mn_li
         clc
         adc #4
@@ -144,8 +159,12 @@ mn_li   dta 0
 ;--------------------------------------------------------------
 ; mn_readthis -- M_ReadThis (m_menu.c:1030), the registered-WAD flow: HELP1,
 ;   a key, HELP2, a key, back to the menu (M_FinishReadThis). The pages are
-;   streamed into TITLEPIC's own arena slot -- same 320x200, so the title's
-;   blit geometry shows them -- and TITLEPIC is streamed back afterwards.
+;   streamed into the 160-WIDE TITLEPIC's arena slot -- same 160x200, so the
+;   title's blit geometry shows them -- and that copy is streamed back
+;   afterwards (MENU_HCHUNKS, not MENU_TCHUNKS: a page is 8 chunks and the
+;   320-wide picture above it is never touched, which is why the reader can run
+;   at all without re-reading 64 KB on the way out). The display is already on
+;   list A here -- mn_anykey took the 320-wide list down before mn_run ran.
 ;   Lives in the MAP-SLOT half with the other boot loaders: every stream runs
 ;   through TEX_STAGE, which is ALSO the RAM the menu overlay runs in, so this
 ;   cannot be overlay code. That makes it BOOT-ONLY in the hard sense -- at
@@ -174,14 +193,15 @@ mn_li   dta 0
         lda #4                       ; the credits page (DOOM VBXE / AUTHOR: W1K
         jsr ?page                    ;   / AI CODE / 2026 / V0.n / build stamp
                                      ;   -- pack_menu.py)
-        lda #6                       ; TITLEPIC back into the arena slot...
-        jsr ?stream
-        jsr ?show                    ; ...and back ONTO THE SCREEN: MN_E_BOOT
-                                     ;   assumes the title is already up, and
-                                     ;   without this the menu came up over the
-                                     ;   stale HELP2 and every wipe uncovered
-                                     ;   title patches (menu2/menu3.png ghosts)
-        jsr snd_pokey                ; SIO owned POKEY through the streams: put
+        lda #>MENU_SRXDL             ; ...and the TITLE back onto the screen,
+        sta VBXE_XDLA1               ;   which is now one store and no re-read
+        lda #[MENU_SRXDL>>16]        ;   at all: the pages landed in $018000 and
+        sta VBXE_XDLA2               ;   the picture at $020000 was never
+                                     ;   touched. (`?read` took the menu off it
+                                     ;   before jumping here, so MN_E_BOOT's
+                                     ;   assumption -- the title is already up
+                                     ;   and clean -- still holds.)
+        jsr snd_pokey_t ; SIO owned POKEY through the streams: put
                                      ;   the mixer back (AUDCTL 0, voices idle,
                                      ;   Timer-1 rate), like main does after
                                      ;   its loaders
@@ -222,23 +242,22 @@ mn_li   dta 0
         jsr hud_blit
         lda #BLT_BSTENCIL
         sta hb_ctrl
-        jmp blitter_wait
-?stream tax                          ; A = rd_secs index: 0/2/4 = HELP1/2/title
+        jmp blitter_wait_t
+?stream tax                          ; A = rd_secs index: 0/2/4 = HELP1/2/credits
         lda rd_secs,x
         sta ll_sec
         lda rd_secs+1,x
         sta ll_sec+1
-        lda #MENU_HCHUNKS            ; every page is title-sized (8 chunks)
+        lda #MENU_HCHUNKS            ; a page is 160x200 = 8 chunks...
         sta ld_chunks
-        lda #MENU_TBANK              ; ...and lands in the title's VBXE bank
-        sta ld_bank0
-        jmp load_vram
-.endp
+        lda #MENU_HBANK              ; ...into the reader's own slot at $018000,
+        sta ld_bank0                 ;   which is NOT the picture's bank any
+        jmp load_vram_t ;   more (the title is 320 wide and lives
+.endp                                ;   at MENU_SRVRAM)
 rd_secs dta a(MENU_SEC1 + MENU_HELP_CH*32)
         dta a(MENU_SEC1 + [MENU_HELP_CH+MENU_HCHUNKS]*32)
         dta a(MENU_SEC1 + [MENU_HELP_CH+2*MENU_HCHUNKS]*32)
-        dta a(MENU_SEC1)
-rd_tab  dta a(MENU_VRAM & $FFFF)     ; the title blit's 7-byte tab row (vram24,
+rd_tab  dta a(MENU_VRAM & $FFFF)     ; the page blit's 7-byte tab row (vram24,
         dta [MENU_VRAM >> 16] & $FF  ;   w, h, left, top), private main-RAM copy
         dta 160, 200, 0, 0           ; 160 BYTES a row (one per halved pixel)
 
@@ -250,9 +269,14 @@ rd_tab  dta a(MENU_VRAM & $FFFF)     ; the title blit's 7-byte tab row (vram24,
 ;   at all, and check_xex fails the build over six of them.
 ;--------------------------------------------------------------
 .proc menu_boot
+ .if 1
+        stz sg_pend                  ; ...and no deferred LOAD until one is picked
+        stz SOUNDR_R                 ; the OS's "noisy I/O" beeping, off: from
+ .else
         lda #0
         sta sg_pend                  ; ...and no deferred LOAD until one is picked
         sta SOUNDR_R                 ; the OS's "noisy I/O" beeping, off: from
+ .endif
                                      ;   here on there is a picture on screen
                                      ;   and every load is behind it
         lda #1
@@ -264,19 +288,23 @@ rd_tab  dta a(MENU_VRAM & $FFFF)     ; the title blit's 7-byte tab row (vram24,
                                      ;   itemOn = currentMenu->lastOn from here
                                      ;   on (m_menu.c:1546).
         jsr load_menu
-        jsr load_palette             ; PLAYPAL -> the VBXE palettes. Without this the
+        jsr load_palette_t ; PLAYPAL -> the VBXE palettes. Without this the
                                      ;   title is BLACK: TITLEPIC is palette INDICES
                                      ;   and boot does not install a palette until
                                      ;   after the first level (bsp_main's load_palette
                                      ;   "MUST STAY LAST" among the level loaders).
                                      ;   It reads its own ATR region (PAL_SEC1), so it
                                      ;   needs no level, and running it twice is free.
+ .if 1
+        stz zback_hi                 ; paint AND show FRAME_A (see the header)
+ .else
         lda #0
         sta zback_hi                 ; paint AND show FRAME_A (see the header)
+ .endif
         lda #BANK_EN | MENU_OBANK
         ldx #MN_E_TITLE
         jsr mn_open                  ; the picture goes up on 41 KB of SIO...
-        jsr load_sounds              ; ... and the other 310 KB stream in BEHIND
+        jsr load_sounds_t ; ... and the other 310 KB stream in BEHIND
                                      ;   it: the digi SFX, the weapon psprites
                                      ;   and the songs (load_sounds tail-calls
                                      ;   load_weapons, which tail-calls
@@ -286,7 +314,7 @@ rd_tab  dta a(MENU_VRAM & $FFFF)     ; the title blit's 7-byte tab row (vram24,
                                      ;   It also streams through TEX_STAGE, so
                                      ;   the overlay is gone by the time it
                                      ;   returns -- hence the second mn_open.
-        jsr snd_init                 ; the mixer, now that its samples are in
+        jsr snd_init_t ; the mixer, now that its samples are in
                                      ; (NO MUSIC HERE. DOOM starts mus_intro
                                      ;  with TITLEPIC, and it was wired up and
                                      ;  working -- D_INTRO as song 9, ticked by
@@ -299,8 +327,9 @@ rd_tab  dta a(MENU_VRAM & $FFFF)     ; the title blit's 7-byte tab row (vram24,
         lda #BANK_EN | MENU_OBANK    ; NOW the title is dismissable, and the
         ldx #MN_E_BOOT               ;   menu comes up behind the keypress
         jsr mn_open
-        jmp load_level_c
-.endp
+        jsr mn_togame_t ; ...and the 320-wide screen goes away with
+        jmp load_level_c_t ;   it: DST_STEPY, the zoom and the display
+.endp                                ;   list all back to the renderer's (PART 2b)
 
 ;==============================================================
 ; PART 2 -- the two PERMANENT stubs. Everything else about the menu is either
@@ -321,9 +350,22 @@ mn_resume = *
 ;--------------------------------------------------------------
         org MNOPEN_BASE
 .proc mn_open
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+        sta VBXE_BANK_SEL
+        and #3                       ; page 0 of chunk A: MEMW16+(A&3)*$1000
+        asl
+        asl
+        asl
+        asl
+        ora #>MEMW16
+        sta ?by+2
+        ldy #0
+?by     lda MEMW16,y
+ .else
         sta VBXE_BANK_SEL
         ldy #0
 ?by     lda MEMW,y
+ .endif
         sta MENU_RUN,y
         iny
         bne ?by
@@ -347,6 +389,7 @@ mn_resume = *
 ;   the restart-on-any-key prompt instead, which is the screen he is looking at.
 ;--------------------------------------------------------------
         org MNKEY_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mn_key
         lda SKSTAT
         and #4                       ; bit2 = 0 while a key is held
@@ -369,7 +412,8 @@ mn_resume = *
         sta mn_arm
         lda #BANK_EN | MENU_OBANK
         ldx #MN_E_INGAME
-        jmp mn_open                  ; ... which lands in mn_ingame, whose rts
+        jsl mn_open_w0                  ; ... which lands in mn_ingame, whose rts
+        rts                          ;   (tail call across the bank line)
                                      ;   goes straight to read_keys' caller.
                                      ;   vw_frame is skipped for that one frame:
                                      ;   the border repaint is a countdown, and
@@ -384,6 +428,7 @@ mn_resume = *
                                      ;   here and why only TAB can be $2C
                                      ; ... then on to the deferred title LOAD,
 .endp                                ;     which tail-calls vw_frame
+        .endseg
     .if * > MNKEY_END+1
         ert 'mn_key outgrew MNKEY_BASE..END (memory_map.inc)'
     .endif
@@ -397,20 +442,405 @@ mn_resume = *
 ;   The cost of doing it this way is one wasted level load at boot, which is
 ;   the same load the player would have sat through anyway.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org MNPEND_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mn_pend
+ .if 1
+        lda rd_pend                  ; READ THIS! picked from the in-game menu
+        beq ?nord
+        stz rd_pend
+        jsr mn_rdgame
+?nord
+ .endif
         lda sg_pend
         beq ?no
-        lda #0
-        sta sg_pend
+        stz sg_pend
         lda #BANK_EN | SGOVL_BANK
         ldx #SG_E_LOAD
-        jmp mn_open
+        jsl mn_open_w0
+        rts                          ;   (tail call across the bank line)
 ?no     jmp vw_frame                 ; read_keys' own tail call, unchanged
 .endp
+        .endseg
+
+;--------------------------------------------------------------
+; mn_rdgame -- BUG FIX 2026-09-15 ("readme v hre: nic sa nezobrazi"). M_ReadThis
+;   works in-game in DOOM (m_menu.c:1030); here ?read only closed the menu,
+;   because mn_readthis lives in the map slot and the pages stream through
+;   TEX_STAGE, which is the overlay's own RAM. This is the RESIDENT reader, run
+;   by mn_pend on the frame after the overlay closed:
+;   * fin_load's SIO bracket -- it is the same in-game stream into the arena;
+;   * each page into $018000 (MENU_HBANK, 8 chunks), i.e. over the FIRST 32 KB
+;     of the sprite arena, so arena_init afterwards: FARENA forgotten and the
+;     frames re-warmed from SDRAM with no SIO, exactly what a level load does;
+;   * mn_togame's 1:1, 160-a-row BCB into FRAME_A, list A up, then a key;
+;   * TEX_STAGE IS solid_arr/ytopc_arr: vw_apply re-marks the border columns
+;     (sg_restore's reason), and the page covered FRAME_A's shared status-bar
+;     rows: hud_dirty = 2.
+;--------------------------------------------------------------
+RD_SEC0 equ MENU_SEC1 + MENU_HELP_CH*32  ; HELP1; each page is one 256-sector step
+    .if MENU_HCHUNKS*32 <> 256
+        ert 'mn_rdgame steps pages by the ll_sec high byte: a page must be 256 sectors'
+    .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc mn_rdgame
+        jsr rom_in                   ; fin_load's bracket (rom_in is a no-op since
+        lda #$40                     ;   DRAC_PLAN 4a: siov_r banks the ROM in)
+        sta NMIEN
+        cli
+        jsl snd_stop_w0              ; the DAC quiet before SIO takes POKEY
+        stz SOUNDR_R
+        lda #0                       ; page 0/1/2 = HELP1, HELP2, the credits
+?pg     pha
+        lda #<RD_SEC0
+        sta ll_sec
+        pla
+        pha
+        clc
+        adc #>RD_SEC0
+        sta ll_sec+1
+        lda #MENU_HCHUNKS
+        sta ld_chunks
+        lda #MENU_HBANK
+        sta ld_bank0
+        jsr load_vram                ; (parks MEMAC back on the overhead bank)
+        lda #<MENU_VRAM                        ; $018000 -> FRAME_A row 0, 1:1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        lda #>[MENU_VRAM&$FFFF]                ; $80 -- the first build zeroed this
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1    ;   byte and copied $010000, i.e.
+        lda #[MENU_VRAM>>16]                   ;   FRAME_B: the frozen 3D frame and
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2    ;   its dead bar rows (readme.png)
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
+        stz MEMW+MEMW_HD_OFF+BCB_ZOOM
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        stz MEMW+MEMW_HD_OFF+BCB_DST_STEPY+1
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        lda #SCREEN_WIDTH
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY
+        lda #SCREEN_WIDTH-1
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        lda #SCREEN_HEIGHT-1
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        jsl hud_fire_w0
+        jsr blitw_hard               ; let the page land before the list moves
+        stz XDLA_PEND                ; no pending flip may take it away again
+        lda #>VRAM_XDL_L             ; the LEGACY list: a page is 160x200 in
+        sta VBXE_XDLA1               ;   FRAME_A, bar rows and all (xdl.asm)
+        stz VBXE_XDLA2
+?up     lda SKSTAT                   ; the key that picked READ THIS! comes UP,
+        and #4                       ;   then the next press turns the page
+        beq ?up
+?dn     lda SKSTAT
+        and #4
+        bne ?dn
+        pla
+        inc @
+        cmp #3
+        jcc ?pg
+        sei
+        jsr rom_out
+        jsr snd_pokey                ; POKEY back from SIO (snd_pokey ends with
+        sei                          ;   cli; the frame loop wants IRQs masked)
+        jsr arena_init               ; the arena lost its first 32 KB: re-warm it
+        lda #MAP_EXT_BANK            ; arena_prefetch exits with zp_ptr+2 on
+        sta zp_ptr+2                 ;   SPRCOL_BANK; init_level sets the engine-
+                                     ;   wide MAP_EXT_BANK after a level load and
+                                     ;   nothing runs it here. (MEMAC needs no
+                                     ;   park: spr_fcopy/load_vram end on
+                                     ;   BANK_OVERHEAD themselves.)
+        jsr vw_apply                 ; the border columns (TEX_STAGE = solid_arr)
+        lda #2
+        sta hud_dirty                ; ...and the status bar in both buffers
+        rts
+.endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a
+rd_pend dta 0                        ; 1 = mn_rdgame on the next mn_pend
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > MNPEND_END+1
         ert 'mn_pend outgrew MNPEND_BASE..END (memory_map.inc)'
     .endif
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+
+;==============================================================
+; PART 2b -- THE BOOT MENU'S BLITTER.
+;
+; hud_blit draws into a framebuffer: 160 bytes a row, one byte per LR pixel,
+; row*SCREEN_WIDTH out of row_lo/row_hi. THE BOOT MENU HAS NO FRAMEBUFFER. Its
+; screen is TITLEPIC itself, at DOOM's own 320x200 in VBXE's SR overlay mode
+; (one byte per hardware pixel, 256 colours), sitting at MENU_SRVRAM and read
+; straight off VRAM by MENU_SRXDL. So the menu needs a blitter of its own, and
+; it differs from hud_blit in exactly three things:
+;
+;   * the destination steps MENU_SRW (320) bytes a row, which is row_lo/row_hi
+;     DOUBLED -- one 16-bit shift, no second table;
+;   * so is the column: x*2, and every menu x is < 128, so that shift cannot
+;     carry out of a byte (the ert in mn_sdst);
+;   * the SOURCE is zoomed 2x (BLT_ZOOM_2X). The M_* patches on disk are
+;     unchanged -- still 160-wide, still halved by pack_menu.py, still the same
+;     lumps the IN-GAME ESC menu blits with hud_blit -- and the zoom makes each
+;     of their bytes cover the two hardware pixels it covers on the LR screen.
+;     The menu is therefore pixel-for-pixel what it always was. What changed is
+;     only what is UNDERNEATH it: DOOM's 320x200 picture instead of a halved
+;     copy of it.
+;
+; mn_sbox is the background restore, and it is NOT zoomed: the background is
+; already at full resolution. Its source is MENU_SRBG, a pristine copy of the
+; picture's top MENU_SRBGH rows that pack_menu.py streams in behind the
+; picture -- the same role TITLEPIC-at-$018000 played for mn_box, at the new
+; width. (In game none of this runs: mn_box/mn_draw/ep_* keep hud_blit and
+; FRAME_A, which is what mn_ing selects at every call site.)
+;
+; PARKED, in two holes (memory_map.inc MNSR_BASE/MNSR2_BASE): this is ~240
+; bytes and the three overlays that call it share one 1280-byte window.
+;==============================================================
+mnsr_resume = *
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+        org MNSR_BASE
+ .endif
+;--------------------------------------------------------------
+; mn_sdraw -- zp_ptr = a 7-byte menu_tab/epi.tab row, X = column, Y = row.
+;   hud_blit's contract exactly, so mn_draw and ep_draw reach it by swapping
+;   one jmp.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc mn_sdraw
+        stx mn_sx
+        sty mn_sy2
+        lda (zp_ptr)                 ; SRC = the patch in VRAM
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        ldy #1
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        iny
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        iny                          ; width: SRC_STEPY = width, WIDTH = width-1
+        lda (zp_ptr),y               ;   (the WIDTH the blitter counts is the
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ; SOURCE's -- the zoom is what
+        dec @                                  ; doubles the destination)
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        iny
+        lda (zp_ptr),y               ; height
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        iny                          ; V_DrawPatch: the patch's own left/top
+        lda mn_sx                    ;   offsets shift it (M_SKULL1/2 carry -1)
+        sec
+        sbc (zp_ptr),y
+        sta mn_sx
+        iny
+        lda mn_sy2
+        sec
+        sbc (zp_ptr),y
+        sta mn_sy2
+        lda #BLT_ZOOM_2X             ; one source byte -> two picture pixels
+        sta MEMW+MEMW_HD_OFF+BCB_ZOOM
+        lda hb_ctrl                  ; BSTENCIL for a patch, COPY for a page
+        sta MEMW+MEMW_HD_OFF+BCB_CTRL
+        jsr mn_sdst
+        jsl hud_fire_w0 ; hud_blit's own "wait, then start" tail
+        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
+.endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+    .if * > MNSR_END+1
+        ert 'mn_sdraw outgrew MNSR_BASE..END (memory_map.inc)'
+    .endif
+ .endif
+
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+        org MNSR2_BASE
+ .endif
+;--------------------------------------------------------------
+; mn_sdst -- the destination both of them share: (mn_sx, mn_sy2) in the title
+;   picture. Also the two BCB fields that are a property of the SCREEN rather
+;   than of the graphic, so neither caller has to remember them.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc mn_sdst
+        ldx mn_sy2
+        lda row_lo,x                 ; row*160 -> row*320: one 16-bit doubling
+        asl
+        sta mn_st
+        lda row_hi,x
+        rol
+        sta mn_st+1
+        lda mn_sx                    ; ...and the column is 2 bytes wide too.
+        asl                          ; Every x the menu passes is < 128 (the
+        adc mn_st                    ;   ert below), so the asl shifts out a 0
+        sta mn_st                    ;   and there is no clc to write
+        bcc ?nc
+        inc mn_st+1
+?nc     sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        lda mn_st+1
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        lda #[MENU_SRVRAM>>16]       ; row*320 + 2x <= 63999, so the bank byte
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ;   is a constant
+        lda #<MENU_SRW               ; ...and the destination steps 320 a row,
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY     ; where the BCB template (and so
+        lda #>MENU_SRW                         ; the GAME) has SCREEN_WIDTH --
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY+1   ; mn_togame puts it back
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        rts
+.endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+    .if MENU_X > 127 || MENU_SKULLX > 127 || MENU_DOOMX > 127 || EPI_X > 127 || EPI_SKULLX > 127 || EPI_TITLEX > 127
+        ert 'a menu x is >= 128: mn_sdst asl-s it and the carry is dropped'
+    .endif
+
+;--------------------------------------------------------------
+; mn_togame -- hand the machine back to the renderer. menu_boot calls it on the
+;   way to load_level_c, and it undoes the three things the boot menu left
+;   pointing at a 320-wide screen. Without it the first HUD blit of the game
+;   draws double-width, 320 bytes down the framebuffer, and the display is
+;   still reading the title.
+;--------------------------------------------------------------
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc mn_togame
+        ; --- THE LOADING SCREEN FIRST. The title used to be a 160-wide copy
+        ; blitted into FRAME_A, and THAT is what the player looked at while
+        ; load_level_c streamed 75 KB. The picture lives in the level POOL now
+        ; ($020000), which the very first thing load_level_c does is overwrite,
+        ; so leaving it on screen shows the pool filling up as noise (garb.png,
+        ; 2026-09-11). Give FRAME_A its own copy on the way past: SRC_STEPX = 2
+        ; keeps every second column, which IS the halving pack_menu.py used to
+        ; do at pack time, so FRAME_A ends up byte-identical to the old one.
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        lda #[MENU_SRVRAM>>16]
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR      ; FRAME_A, row 0, bank 0
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        stz MEMW+MEMW_HD_OFF+BCB_ZOOM          ; and NOTHING is zoomed any more
+        lda #2                                 ;   -- which is also the first of
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX     ;   the three things the game
+        lda #<MENU_SRW                         ;   needs put back
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        lda #>MENU_SRW
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        lda #SCREEN_WIDTH            ; ...the second: the framebuffer is 160
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY     ; bytes a row, where the boot
+        stz MEMW+MEMW_HD_OFF+BCB_DST_STEPY+1   ; menu left 320
+        lda #SCREEN_WIDTH-1
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        lda #SCREEN_HEIGHT-1         ; all 200 rows: the status bar area is
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT        ; FRAME_A's too and load_hud has
+        jsl hud_fire_w0 ; not painted it yet
+        jsr blitw_hard               ; 32 KB -- let it land before the display
+        lda #>VRAM_XDL_L             ;   moves. ...and the third: the display
+        sta VBXE_XDLA1               ;   shows FRAME_A, where the renderer
+        stz VBXE_XDLA2               ;   paints -- on the LEGACY list, because
+                                     ;   this loading screen is 200 rows of
+                                     ;   FRAME_A and the game's bar is an SR
+                                     ;   overlay now (xdl.asm). The first
+                                     ;   swap_buffers takes the display to
+                                     ;   list A by itself.
+                                     ;   XDLA2 back to 0 matters --
+        rts                          ;   swap_buffers pokes XDLA1 alone and
+.endp                                ;   would flip between list A's page and
+        .endseg
+                                     ;   the title's bank ($02) forever after
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+    .if * > MNSR2_END+1
+        ert 'mn_sdst/mn_togame outgrew MNSR2_BASE..END (memory_map.inc)'
+    .endif
+ .endif
+
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+        org MNSR3_BASE
+ .endif
+;--------------------------------------------------------------
+; mn_sbox -- mb_x/mb_y/mb_w/mb_h back to what the PRISTINE picture has there:
+;   mn_box's job, at 320. The rectangle is in the menu's own 160-wide units, so
+;   it is twice as many BYTES wide -- and unlike a patch it is NOT zoomed, the
+;   background being full-resolution already.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc mn_sbox
+        lda mb_x
+        sta mn_sx
+        lda mb_y
+        sta mn_sy2
+        stz MEMW+MEMW_HD_OFF+BCB_ZOOM          ; 1:1 -- see the header
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY (= 0: the ert in mn_box)
+        lda mb_h
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        lda #<MENU_SRW                         ; the source is a screen-wide
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ;   picture, so a sub-rectangle
+        lda #>MENU_SRW                         ;   of it steps 320, not its own
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ;   width
+        jsr mn_sdst                            ; DST = the picture on screen...
+        lda mn_st                              ; ...and SRC = the SAME offset in
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR      ;   the pristine copy, which is
+        lda mn_st+1                            ;   what makes this a background
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1    ;   restore and not a black box
+        lda #[MENU_SRBG>>16]
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        lda mb_w                     ; ...and the width LAST: mn_sdst zeroes the
+        asl                          ;   high byte for the patch case, and this
+        ora #1                       ;   is 2*(w+1)-1 = 2w+1, which for ep_wipe's
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH         ; full-screen 159 is 319 and needs
+        lda #0                                 ; the ninth bit. ORA leaves C
+        rol                                    ; alone, so the asl's carry IS it.
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        jsl hud_fire_w0
+        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
+.endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+mn_sx   dta 0                        ; mn_sdst's column and row, after
+mn_sy2  dta 0                        ;   V_DrawPatch's offsets
+mn_st   dta a(0)                     ; ...and the 16-bit offset it computes,
+                                     ;   which mn_sbox re-uses for the SOURCE
+; mn_box's rectangle. PERMANENT, not overlay bytes: m_episode.asm sets them for
+; mn_sbox and it is a different overlay in the same window -- menu.asm's old
+; $14xx slots are the picker's own code while the picker is resident. (They are
+; in THIS block rather than next to mn_sdst because mn_togame grew a
+; full-screen blit and MNSR2 had eight bytes too few.)
+mn_bx   dta 0
+mn_by   dta 0
+mn_bw   dta 0                        ;   ... width - 1
+mn_bh   dta 0                        ;   ... height - 1
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+    .if * > MNSR3_END+1
+        ert 'mn_sbox outgrew MNSR3_BASE..END (memory_map.inc)'
+    .endif
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
+        org mnsr_resume
+ .endif
 
 ;==============================================================
 ; PART 3 -- THE OVERLAY. Assembled for MENU_RUN ($1000-$14FF), parked in the
@@ -467,7 +897,10 @@ menu_tab
         jsr mn_tabptr
 go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
         ldy mn_y                     ;  already on its HUD_TAB row)
-        jmp hud_blit
+        lda mn_ing                   ; WHICH SCREEN. In game the menu goes over
+        bne ?lr                      ;   the frozen frame, 160 bytes a row; at
+        jmp mn_sdraw_t ;   boot it goes into the 320-wide TITLE
+?lr     jmp hud_blit                 ;   itself (PART 2b). Neither takes A.
 .endp
 
 ;--------------------------------------------------------------
@@ -511,27 +944,27 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
 ;   why the first cut of this menu was a black screen in a key-wait loop.
 ;--------------------------------------------------------------
 .proc show_title
-        lda #BLT_COPY                ; the title is OPAQUE: index 0 is a real
-        sta hb_ctrl                  ;   colour in TITLEPIC, and the stencil the
-        lda #MI_TITLEPIC             ;   patches use would punch boot garbage
-        ldx #0                       ;   through it
-        ldy #0
-        jsr mn_draw
-        lda #BLT_BSTENCIL            ; back to V_DrawPatch behaviour for the menu
-        sta hb_ctrl
-        jsr blitter_wait             ; the blit is async -- do not show a half-
-                                     ;   painted title
+                                     ; NOTHING IS BLITTED. The title used to be
+                                     ; a patch copied into FRAME_A; it is the
+                                     ; SCREEN now, so putting it up is putting
+                                     ; its display list up -- see below.
 ;--------------------------------------------------------------
 ; mn_vbxe_on -- switch the overlay on. (Falls out of show_title; main no longer
 ;   does this at all, which gave the $2000 segment 18 bytes back.)
+;   ON THE TITLE'S OWN LIST, not on list A: MENU_SRXDL reads DOOM's 320x200
+;   picture straight out of VRAM in SR mode (one byte per pixel, 256 colours),
+;   and tools/pack_menu.py generated it into the picture's own chunk padding.
+;   IT STAYS UP FOR THE WHOLE BOOT MENU -- the M_* patches are blitted into the
+;   picture (PART 2b), so nothing ever drops back to 160 wide. mn_togame takes
+;   it down on the way to the game, and `?read` for the READ THIS! pages.
 ;--------------------------------------------------------------
         lda #VC_XDL_ON | VC_NO_TRANS
         sta VBXE_VCTL
-        lda #<VRAM_XDL_A             ; list A -- it reads FRAME_A, which is what
-        sta VBXE_XDLA0               ;   the menu paints and never flips off
-        lda #>VRAM_XDL_A             ;   (swap_buffers rewrites XDLA1 alone)
+        lda #<MENU_SRXDL             ; = 0, like every other list's low byte:
+        sta VBXE_XDLA0               ;   nothing writes XDLA0 again, and every
+        lda #>MENU_SRXDL             ;   switch after this pokes XDLA1/2 only
         sta VBXE_XDLA1
-        lda #[VRAM_XDL_A>>16]
+        lda #[MENU_SRXDL>>16]
         sta VBXE_XDLA2
         rts
 .endp
@@ -546,9 +979,10 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
         lda #0
         sta mn_ing                   ; boot: NEW GAME just returns (menu_boot
  .endif
-                                     ;   does the loading), and the skull's
-        lda #>[MENU_VRAM & $FFFF]    ;   background -- what ESC uncovers and what
-        sta mn_bgh                   ;   the cursor blinks over -- is TITLEPIC
+                                     ;   does the loading). mn_bgh is NOT seeded
+                                     ;   here any more: at boot the background
+                                     ;   is MENU_SRBG and mn_box never reaches
+                                     ;   the line that reads it (PART 2b).
         jsr mn_anykey                ; (mn_arm and mn_sy are seeded by menu_boot:
                                      ;  they are PERMANENT bytes, so their init
                                      ;  belongs outside the overlay -- which is
@@ -573,9 +1007,10 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
                                      ;   PC parked in read_sectors' ?tee).
         lda #0
         rts
-?wipe   jsr mn_wipe                  ; ESC -> M_ClearMenu: the menu comes off and
-        jsr mn_anykey                ;   TITLEPIC is on its own again, until the
-        jmp ?again                   ;   next key brings the menu back
+?wipe   jsr mn_wipe                  ; ESC -> M_ClearMenu: mn_sbox lifts the menu
+        jsr mn_anykey                ;   off the picture out of the PRISTINE copy
+        jmp ?again                   ;   and TITLEPIC is on its own again, at 320
+                                     ;   -- the display list never moved
 ?go     rts
 .endp
 
@@ -605,7 +1040,7 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
                                      ;  its ESC edge until every key is up)                  ; PollControls: the paused jiffies are not
         sta fps_last                 ;   door/lift/timer time (WL_PLAY.C:813 does
                                      ;   the same thing for the same reason)
-        jsr vw_apply                 ; THE ONE THING THE OVERLAY BREAKS. $1000 is
+        jsr vw_apply_t                 ; THE ONE THING THE OVERLAY BREAKS. $1000 is
                                      ;   solid_arr, and the border columns outside
                                      ;   the view window are marked solid ONCE, by
                                      ;   vw_apply -- "nothing in the frame path
@@ -698,7 +1133,7 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
         lda #VIEW_HEIGHT-1           ; rows 0..167 -- the status bar is SHARED
         sta MEMW+MEMW_HD_OFF+BCB_HEIGHT        ;   (bank 0) and needs no copy
         jsr hud_blit.hud_fire        ; hud_blit's own "wait, then start" tail
-        jsr blitter_wait             ; ...and this one is 26 KB: let it finish
+        jsr blitter_wait_t ; ...and this one is 26 KB: let it finish
         lda #>VRAM_XDL_A             ; show FRAME_A (a no-op when it already is)
         sta VBXE_XDLA1
         rts
@@ -772,7 +1207,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         jmp ?drawn
 ?dmain  jsr mn_items
 ?drawn  ldx #SFX_SWTCHN              ; M_StartControlPanel's own sound: the menu
-        jsr snd_play                 ;   opening IS a switch throw (m_menu.c:1545)
+        jsr snd_play_t ;   opening IS a switch throw (m_menu.c:1545)
  .if 1
         stz mn_sk
         stz mn_arm2                  ; the key that opened the menu has to be
@@ -851,12 +1286,12 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sta mn_sy
         jsr mn_skdraw
         ldx #SFX_PSTOP               ; every cursor step, m_menu.c:1629/1639
-        jsr snd_play
+        jsr snd_play_t
         jmp ?loop
 ?back2  jmp ?loop                    ; ?back is out of branch range from down here
                                      ;   now that ESC is in the key scan
 ?esc    ldx #SFX_SWTCHX              ; M_ClearMenu, and the panel closing is the
-        jsr snd_play                 ;   switch coming back (m_menu.c:1710)
+        jsr snd_play_t ;   switch coming back (m_menu.c:1710)
         lda mn_mode
         beq ?escout
         jsr mn_wipeslots             ; the picker backs out to MainMenu[] first
@@ -866,7 +1301,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 ?escout lda #$FF                     ; ...and the caller puts back whatever the
         rts                          ;   menu was covering
 ?sel    ldx #SFX_PISTOL              ; KEY_ENTER on a plain item (m_menu.c:1675)
-        jsr snd_play
+        jsr snd_play_t
         lda mn_mode
         bne ?selslot
         lda mn_sy                    ; the ROW -> MainMenu[]'s own index, so the
@@ -893,8 +1328,36 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         jmp mn_open                  ;   has no room, and QUIT never comes back
 ?read   lda mn_ing                   ; IN-GAME mn_readthis IS NOT THERE. It is
         bne ?rdcl                    ;   staged in the map slot ($4A5C) with the
-        jmp mn_readthis              ;   other boot loaders and load_level_c
-?rdcl   lda #$FF                     ;   wrote a map over it, so the mn_ing test
+        jsr mn_wipe                  ; THE READER IS 160 WIDE: its pages are
+ .if 1
+        jsr mn_togame_t              ; BUG FIX 2026-09-15 ("readme: garbage, pasiky,
+                                     ;   spadne"). The page blit is hud_blit, which
+                                     ;   never writes BCB_ZOOM, DST_STEPY or
+                                     ;   WIDTH+1 -- and the boot menu leaves 2x
+                                     ;   zoom and a 320 stride in them (mn_sdraw;
+                                     ;   mn_wipe a 256+ width), so a 160x200 page
+                                     ;   went down 2x at 320 a row through FRAME_A
+                                     ;   and on into the VRAM behind it. mn_togame
+                                     ;   is exactly the switch needed: the clean
+                                     ;   title halved into FRAME_A (no garbage on
+                                     ;   screen while the page streams), the BCB
+                                     ;   back to 1:1 at 160 a row, THEN list A.
+                                     ;   mn_sdraw puts the menu's zoom and stride
+                                     ;   back itself when the menu redraws.
+ .else
+        lda #>VRAM_XDL_A             ;   blitted into FRAME_A and shown on list
+        sta VBXE_XDLA1               ;   A, like everything else in this port.
+        stz VBXE_XDLA2               ;   So take the menu back off the picture
+ .endif
+        jmp mn_readthis              ;   first and put list A up; mn_readthis
+                                     ;   puts the title's list back at the end,
+                                     ;   and the picture itself is untouched
+                                     ;   (the pages land in $018000).
+?rdcl
+ .if 1
+        inc rd_pend                  ; IN-GAME READ THIS! (2026-09-15): mn_pend runs
+ .endif                               ;   the resident reader (mn_rdgame) next frame
+        lda #$FF                     ;   wrote a map over it, so the mn_ing test
         rts                          ;   it used to carry could never run -- the
                                      ;   jmp went into map data and took POKEY
                                      ;   with it. Overlay code is always
@@ -1186,7 +1649,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         sty mn_y
         clc
         adc #HUD_DIG0
-        jsr hud_entry                ; -> zp_ptr; clobbers Y
+        jsr hud_entry_t                ; -> zp_ptr; clobbers Y
         jmp mn_draw.go               ; ...the X/Y reload + hud_blit tail
 .endp
 
@@ -1214,7 +1677,10 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 ;   in-game. Both are bank $01, which is why one byte covers it.
 ;--------------------------------------------------------------
 .proc mn_box
-        ldx mb_y
+        lda mn_ing                   ; ...and the same split as mn_draw: at boot
+        bne ?lr                      ;   the background is the PRISTINE 320-wide
+        jmp mn_sbox_t ;   picture, not TITLEPIC-at-$018000
+?lr     ldx mb_y
         lda row_lo,x
         clc
         adc mb_x
@@ -1427,10 +1893,10 @@ mn_bgh  = mn_bgh_p                   ; mn_box's background page (see there).
                                      ;   because the picker leaves this overlay
                                      ;   and comes back, and an overlay variable
                                      ;   is reset by every mn_open.
-mb_x    dta 0                        ; mn_box's rectangle
-mb_y    dta 0
-mb_w    dta 0                        ;   ... width - 1
-mb_h    dta 0                        ;   ... height - 1
+mb_x    = mn_bx                      ; mn_box's rectangle -- PERMANENT bytes
+mb_y    = mn_by                      ;   (PART 2b) for the same reason mn_ing is:
+mb_w    = mn_bw                      ;   m_episode.asm's picker is a different
+mb_h    = mn_bh                      ;   overlay in this same window and sets them
  .if 1
                                      ; (mn_fsrc/mn_fdst: mn_freeze writes the
                                      ;  two bank bytes straight into the BCB)

@@ -32,23 +32,24 @@
 ;   EPIOVL_BANK, and page 0 already copied down. The rest of the picker follows
 ;   it out of the same bank.
 ;--------------------------------------------------------------
+EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window: the picker's chunk
 .proc ep_head
  .if 1
         ldx #1
 ?pg     txa                          ; page X of the chunk -> page X of the run
         clc
-        adc #>MEMW
+        adc #>EPOVL_WIN
         sta ?src+2                   ; $90+X cannot carry (X < 4: ert below), so
-        adc #<[[>MENU_RUN]-[>MEMW]]  ;   the second add rides on C=0 and A
+        adc #<[[>MENU_RUN]-[>EPOVL_WIN]]  ;   the second add rides on C=0 and A
         sta ?dst+2                   ;   instead of a fresh txa/clc
-    .if [>MEMW] + [EPIOVL_MAX/256] > 255
-        ert 'ep_head: >MEMW + page carries -- put the txa/clc back'
+    .if [>EPOVL_WIN] + [EPIOVL_MAX/256] > 255
+        ert 'ep_head: >EPOVL_WIN + page carries -- put the txa/clc back'
     .endif
  .else
         ldx #1
 ?pg     txa                          ; page X of the chunk -> page X of the run
         clc
-        adc #>MEMW
+        adc #>EPOVL_WIN
         sta ?src+2
         txa
         clc
@@ -56,7 +57,7 @@
         sta ?dst+2
  .endif
         ldy #0
-?src    lda MEMW,y
+?src    lda EPOVL_WIN,y
 ?dst    sta MENU_RUN,y
         iny
         bne ?src
@@ -152,7 +153,7 @@
         pla                          ;   the stack, not in a RAM cell
         sta ep_sel
         ldx #SFX_PSTOP               ; m_menu.c:1651 -- the cursor's own sound
-        jsr snd_play
+        jsr snd_play_t
         jsr ep_skull
         bra ?loop
  .else
@@ -178,7 +179,7 @@
         jmp ?loop
  .endif
 ?back   ldx #SFX_SWTCHX              ; M_ClearMenu, and the panel closing is the
-        jsr snd_play                 ;   switch coming back (m_menu.c:1681) --
+        jsr snd_play_t ;   switch coming back (m_menu.c:1681) --
                                      ;   the same sound and the same "pop ONE
                                      ;   menu" mn_run gives the save/load picker
         jsr ep_wipe                  ; EpiDef.prevMenu is &MainDef: take the
@@ -190,14 +191,14 @@
 ?bboot  ldx #MN_E_BOOT               ; (the title's "press a key" comes round
 ?bopen  jmp mn_open                  ;  once more on the way back at boot)
 ?sel    ldx #SFX_PISTOL              ; KEY_ENTER on an item (m_menu.c:1675)
-        jsr snd_play
+        jsr snd_play_t
         jsr ep_quiet                 ; ...and the mixer EMPTY before either tail
         ldx ep_sel                   ;   hands POKEY to SIO -- the same rule the
         lda ep_lvl,x                 ;   old NEW GAME had (menu.asm ?ng)
         sta current_level
         lda mn_ing
         beq ?boot
-        jmp pl_restart               ; G_InitNew in game. A TAIL jump: pl_restart
+        jmp pl_restart_t ; G_InitNew in game. A TAIL jump: pl_restart
                                      ;   reloads the level THROUGH TEX_STAGE,
                                      ;   i.e. over this very code
  .if 1
@@ -305,6 +306,15 @@
         asl
         asl
         asl                          ; *8
+ .if 1
+        sec
+        sbc ep_i                     ; ...-1 = *7, and 8i >= i leaves C=1: that
+        adc #<[epi_tab-1]            ;   is the +1 of a 16-bit add of epi_tab-1
+        sta zp_ptr                   ;   (menu.asm mn_tabptr does the same)
+        lda #>[epi_tab-1]
+        adc #0
+        sta zp_ptr+1
+ .else
         sec
         sbc ep_i                     ; ...-1 = *7
         clc
@@ -313,9 +323,13 @@
         lda #>epi_tab
         adc #0
         sta zp_ptr+1
+ .endif
         ldx ep_x
         ldy ep_y
-        jmp hud_blit
+        lda mn_ing                   ; same split as menu.asm's mn_draw: at boot
+        bne ?lr                      ;   the picker goes into the 320-wide TITLE
+        jmp mn_sdraw_t ;   itself, in game over the frozen frame
+?lr     jmp hud_blit
 .endp
 
 ;--------------------------------------------------------------
@@ -360,7 +374,17 @@
         jsr ep_srow                  ; ... which leaves C=0 (its adc cannot
         tax                          ;   carry: ert in ep_srow), and tax/inx/lda
         inx                          ;   do not touch C -- no clc
-        lda row_lo,x
+        ldy mn_ing                   ; BOOT: the background is the pristine
+        bne ?lr                      ;   320-wide picture, and mn_sbox takes the
+        stx mb_y                     ;   same rectangle in the same 160-wide
+        lda #EPI_SKULLX              ;   units (menu.asm PART 2b)
+        sta mb_x
+        lda #9
+        sta mb_w
+        lda #18
+        sta mb_h
+        jmp mn_sbox_t
+?lr     lda row_lo,x
         adc #EPI_SKULLX
  .else
         jsr ep_srow
@@ -411,7 +435,16 @@
 ;--------------------------------------------------------------
 .proc ep_wipe
  .if 1
-        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR
+        lda mn_ing                   ; BOOT: the whole picture back out of the
+        bne ?lr                      ;   pristine copy. It is MENU_SRBGH rows,
+        stz mb_x                     ;   not VIEW_HEIGHT -- the copy stops where
+        stz mb_y                     ;   the episode picker's chunks start, and
+        lda #SCREEN_WIDTH-1          ;   the picker draws nothing below it
+        sta mb_w                     ;   (pack_menu.py _sr_bg_rows checks that).
+        lda #MENU_SRBGH-1
+        sta mb_h
+        jmp mn_sbox_t
+?lr     stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR
         stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
         stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
         stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY (= 0: ert in ep_erase)

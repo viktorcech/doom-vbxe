@@ -69,9 +69,10 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ;   ends flush at MNKEY_BASE with one spare byte).
 ;==============================================================
         org PLKICK1_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_kick
         lda pl_kd
-        beq ?out
+        jeq pl_latch                 ; (a plain beq when pl_latch is in reach)
         lsr                          ; an eighth of what is left, the taper
         lsr                          ;   en_slide spends a corpse's slide with
         lsr
@@ -82,11 +83,13 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ?stop   stz pl_kd
 ?out    jmp pl_latch
 .endp
+        .endseg
     .if * > PLKICK1_END+1
         ert 'pl_kick piece 1 outgrew PLKICK1_BASE..END (memory_map.inc)'
     .endif
 
         org PLKICK2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_kick2
         sec                          ; ...and take it off the remainder
         lda pl_kd
@@ -95,11 +98,13 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         ldx pl_ko
         jmp pl_kick3
 .endp
+        .endseg
     .if * > PLKICK2_END+1
         ert 'pl_kick piece 2 outgrew PLKICK2_BASE..END (memory_map.inc)'
     .endif
 
         org PLKICK3_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_kick3                       ; the octant -> a signed 16-bit component
         ldy #0                       ;   per axis: en_thrust's own decomposition
         lda thr_sx,x                 ;   (1 = all of it, 2 = three quarters on
@@ -109,36 +114,41 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         jsr thr_comp
         jmp pl_kick4
 .endp
+        .endseg
     .if * > PLKICK3_END+1
         ert 'pl_kick piece 3 outgrew PLKICK3_BASE..END (memory_map.inc)'
     .endif
 
         org PLKICK4_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_kick4                       ; mv_dx += the X component. The shove joins
-        clc                          ;   the walk in the same delta, as P_Thrust
-        lda mv_dx                    ;   and P_DamageMobj join in the same momx.
+        rep #$21                     ; mv_dx += the X component, one word add
+        .LONGA ON                    ;   (drac030 idiom)
+        lda mv_dx
         adc ai_sx
         sta mv_dx
-        lda mv_dx+1
-        adc ai_sx+1
-        sta mv_dx+1
+        .LONGA OFF
+        sep #$20
         jmp pl_kick5
 .endp
+        .endseg
     .if * > PLKICK4_END+1
         ert 'pl_kick piece 4 outgrew PLKICK4_BASE..END (memory_map.inc)'
     .endif
 
         org PLKICK5_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_kick5
-        clc
+        rep #$21                     ; mv_dy += the Y component, one word add
+        .LONGA ON                    ;   (drac030 idiom)
         lda mv_dy
         adc ai_sy
         sta mv_dy
-        lda mv_dy+1
-        adc ai_sy+1
-        sta mv_dy+1
+        .LONGA OFF
+        sep #$20
         jmp pl_latch                 ; ...and on into what ?slide used to call
 .endp
+        .endseg
     .if * > PLKICK5_END+1
         ert 'pl_kick piece 5 outgrew PLKICK5_BASE..END (memory_map.inc)'
     .endif
@@ -147,19 +157,26 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ; pl_idle -- move_player's ?dead jumps HERE instead of straight to ?nomove.
 ;==============================================================
         org PLIDLE1_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_idle
         lda pl_dead                  ; a corpse is still a corpse: P_DeathThink
         bne ?no                      ;   runs instead of P_MovePlayer
         lda pl_kd
         beq ?no
         jmp pl_idle2
+ .if 1
+?no     jmp mp_pkhere                ; mp_nomove is only `jmp mp_pkhere`: go there
+ .else                                ;   in one jump (2026-09-15, -3 a frame)
 ?no     jmp move_player.mp_nomove
+ .endif
 .endp
+        .endseg
     .if * > PLIDLE1_END+1
         ert 'pl_idle piece 1 outgrew PLIDLE1_BASE..END (memory_map.inc)'
     .endif
 
         org PLIDLE2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_idle2
         stz mv_dx                    ; no walk this frame -- pl_kick puts the
         stz mv_dx+1                  ;   shove on top of a zero step
@@ -169,6 +186,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
                                      ;   would have set (doors.asm)
         jmp move_player.mp_slide
 .endp
+        .endseg
     .if * > PLIDLE2_END+1
         ert 'pl_idle piece 2 outgrew PLIDLE2_BASE..END (memory_map.inc)'
     .endif
@@ -182,18 +200,27 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ;   about half of what it is handed, so 2x lands the whole slide near DOOM's.
 ;   An imp (3..24) shoves 6..48 units, a baron (8..64) up to 128.
 ;==============================================================
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLTHR1_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_thrust
         lda bl_dmg
         asl
         sta pl_kd
         jmp pl_thr2
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLTHR1_END+1
         ert 'pl_thrust piece 1 outgrew PLTHR1_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org PLTHR2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_thr2                        ; swr_vx = zp_px - bl_x: AWAY from the ball,
         sec                          ;   as DOOM's R_PointToAngle2(inflictor,
         lda zp_px                    ;   target) is
@@ -201,22 +228,26 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         sta swr_vx
         jmp pl_thr3                  ; ...the borrow rides the jmp
 .endp
+        .endseg
     .if * > PLTHR2_END+1
         ert 'pl_thrust piece 2 outgrew PLTHR2_BASE..END (memory_map.inc)'
     .endif
 
         org PLTHR3_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_thr3
         lda zp_px+1
         sbc bl_x+1
         sta swr_vx+1
         jmp pl_thr4
 .endp
+        .endseg
     .if * > PLTHR3_END+1
         ert 'pl_thrust piece 3 outgrew PLTHR3_BASE..END (memory_map.inc)'
     .endif
 
         org PLTHR4_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_thr4
         sec
         lda zp_py
@@ -224,28 +255,45 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         sta swr_vy
         jmp pl_thr5
 .endp
+        .endseg
     .if * > PLTHR4_END+1
         ert 'pl_thrust piece 4 outgrew PLTHR4_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLTHR5_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_thr5
         lda zp_py+1
         sbc bl_y+1
         sta swr_vy+1
         jmp pl_thr6
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLTHR5_END+1
         ert 'pl_thrust piece 5 outgrew PLTHR5_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PLTHR6_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_thr6
         jsr oct_of                   ; A = the octant, 0..7
         sta pl_ko
         lda bl_dmg                   ; ...and ONLY THEN the damage half
         jmp en_plr_hurt
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PLTHR6_END+1
         ert 'pl_thrust piece 6 outgrew PLTHR6_BASE..END (memory_map.inc)'
     .endif
+ .endif

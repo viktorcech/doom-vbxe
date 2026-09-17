@@ -154,15 +154,18 @@ twchain_resume = *
 ;   there) before terminating its own last link. So exactly one CTRL byte is
 ;   ever off-template, and no slot is rewritten while a chain still runs.
 ;--------------------------------------------------------------
+ .if 1
+ .else
 ptc_put sta MEMW+MEMW_VL_OFF+63      ; operand rewritten below on every fire
         rts                          ;   (the initial target is an unused byte)
+ .endif
 
 ptc_fire
         lda zp_pt                    ; low byte still at slot 1 = empty chain
         cmp #BCB_SIZE
         beq ptc_out
         phx                          ; THE PREVIOUS CHAIN -- and `lda BL_BUSY /
-        jsr blitter_wait             ;   bne` is NOT proof that it is done. BUSY
+        jsr blitter_wait_t ;   bne` is NOT proof that it is done. BUSY
         plx                          ;   (BL_BUSY D1) goes LOW between chained BCB
                                      ;   fetches -- Altirra's IsBlitterActive() is
                                      ;   false while a BCB is being read in
@@ -179,6 +182,19 @@ ptc_fire
                                      ;   were there, because spr_blit waits.
                                      ;   phx/plx: paint.asm's callers need X.
         lda #BLT_COPY|BLT_NEXT       ; it is done: re-arm ITS terminated slot
+ .if 1
+ptc_p1  sta MEMW+MEMW_VL_OFF+63      ; ptc_put INLINED, both stores (2026-09-15):
+        rep #$20                     ;   the operands are patched below on every
+        .LONGA ON                    ;   fire, the initial target is an unused
+        lda zp_pt                    ;   byte. -19 cycles a fire (two jsr/rts
+        dec                          ;   for one extra 16-bit store)
+        sta ptc_p1+1
+        sta ptc_p2+1
+        sep #$20
+        .LONGA OFF
+        lda #BLT_COPY                ; ... loses the chain bit = end of list
+ptc_p2  sta MEMW+MEMW_VL_OFF+63
+ .else
         jsr ptc_put
  .if 1
 	rep #$20
@@ -199,8 +215,9 @@ ptc_fire
  .endif
         lda #BLT_COPY                ; ... loses the chain bit = end of list
         jsr ptc_put
+ .endif
         lda #BCB_SIZE                ; launch from slot 1 (slot 0 is the 8x
-        jsr ptc_tail                 ;   expander's; ptc_tail flips tw_chn)
+        jsr ptc_tail_t               ;   expander's; ptc_tail flips tw_chn -- bank $01)
 ptc_open                             ; (re)open: builder -> tw_chn's slot 1
         lda #PT_LINKS
         sta zp_links
@@ -276,16 +293,20 @@ ptc_out rts
 spre_resume = *
         org SPREXP_BASE
     .if TEX_RUNS
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc tw_expand_spr
         jsr tw_expand
         jmp spr_chfire
 .endp
+        .endseg
     .else
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc tw_expand_spr
         jsr tw_chain_open
         jsr tw_expand
         jmp tw_chain_fire
 .endp
+        .endseg
     .endif
     .if * > SPREXP_END+1
         ert 'tw_expand_spr outgrew the $AF34-$AF3F hole (memory_map.inc)'
@@ -302,6 +323,7 @@ spre_resume = *
 ;--------------------------------------------------------------
 twem_resume = *
         org TWEMIT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc tw_expand
  .if 1
 	stz tw_base
@@ -309,6 +331,12 @@ twem_resume = *
         lda #0                       ; tw_base = the scratch that holds (or will
         sta tw_base                  ;   hold) this column: VRAM_TEX8 + scr*$400
  .endif
+ .if 1
+        stz tw_base+2                ; VRAM_TEX8 is in bank 0 (ert); the mid byte
+    .if [VRAM_TEX8 >> 16] != 0       ;   is stored once, below, from the FLIPPED
+        ert 'VRAM_TEX8 left bank 0 -- put the lda #>>16 back (tw_expand)'
+    .endif                           ;   tw_scr: the store that was here was
+ .else                               ;   overwritten before anything read it
         lda tw_scr
         asl
         asl
@@ -317,6 +345,7 @@ twem_resume = *
         lda #[VRAM_TEX8>>16]         ;   was $00/$04 again = the expander blitted
         sta tw_base+2                ;   into FRAME_A rows 0-8 (top-row flicker
                                      ;   whenever a sprite expanded)
+ .endif
         ; --- THE SCRATCH-CONTAINMENT CACHE WAS HERE, AND IT WAS DEAD (deleted
         ;     2026-08-14). It compared rs_tsrc against tw_lastsrc and, on the
         ;     same column, served the expansion out of the scratch whenever
@@ -422,6 +451,7 @@ twem_resume = *
                                      ; (the cache-HIT exit `?done rts` stood
                                      ;  here; nothing branches to it any more)
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; tw_blit -- EMIT one run as the chain's next link: tw_base + tw_boff (source),
@@ -636,6 +666,26 @@ twem_resume = *
     .endif
         lda tw_wt+1                  ; t0 = first texel the span touches
         sta tw_t0
+ .ifdef ANTONIA2
+        lda rs_tpr+1                 ; ANTONIA II: m_prod = h*tpr + wt in ONE
+        bmi ?hsw                     ;   multiply while tpr is below $8000 (see
+        rep #$21                     ;   smul32); else the quarter-squares below.
+        .LONGA ON                    ;   C = 0 from the rep
+        lda tw_h
+        and #$00FF                   ; a byte: the word read drags its neighbour
+        sta.l ANT_MUL
+        lda rs_tpr
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL                ; + wt -- its carry out of byte 1 is what
+        adc tw_wt                    ;   the shared tail below adds into byte 2
+        sta m_prod
+        sep #$20                     ; (sep keeps C)
+        .LONGA OFF
+        lda.l ANT_MUL+2              ; byte 2 alone: h*tpr < 2^24, and m_prod+3
+        sta m_prod+2                 ;   stays untouched, as the software leaves it
+        jmp ?htail                   ; (jmp keeps C)
+?hsw
+ .endif
         qsmul tw_h, rs_tpr, qs_p           ; m_prod = h*tpr + wt  -> last texel at >>8
         lda qs_p
         sta m_prod
@@ -678,6 +728,7 @@ twem_resume = *
         adc tw_wt+1
         sta m_prod+1
  .endif
+?htail                               ; (ANTONIA2's multiply joins here, C live)
         lda m_prod+2
         adc #0
         sta m_prod+2
@@ -1152,6 +1203,26 @@ twruns_resume = *
         jmp ?fill
 ?keeprun
  .endif
+ .ifdef ANTONIA2
+        lda rs_tpr+1                 ; ANTONIA II: m_prod = dr*tpr + wt in ONE
+        bmi ?dsw                     ;   multiply while tpr is below $8000, exactly
+        rep #$21                     ;   as the h*tpr one above
+        .LONGA ON
+        lda tw_dr
+        and #$00FF                   ; the byte the two quarter-squares used
+        sta.l ANT_MUL
+        lda rs_tpr
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL                ; + wt, carry into the shared tail's byte 2
+        adc tw_wt
+        sta m_prod
+        sep #$20                     ; (sep keeps C)
+        .LONGA OFF
+        lda.l ANT_MUL+2              ; byte 2 alone (dr*tpr < 2^24), m_prod+3
+        sta m_prod+2                 ;   untouched
+        jmp ?dtail                   ; (jmp keeps C)
+?dsw
+ .endif
         qsmul tw_dr, rs_tpr, qs_p          ; wt += dr*tpr (dr is a byte -> 2 qsmuls),
         lda qs_p                     ; then reduce mod texH*256
         sta m_prod
@@ -1192,6 +1263,7 @@ twruns_resume = *
         adc tw_wt+1
         sta m_prod+1
  .endif
+?dtail                               ; (ANTONIA2's multiply joins here, C live)
         lda m_prod+2
         adc #0
         sta m_prod+2

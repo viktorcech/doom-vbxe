@@ -87,6 +87,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;   colormap is one 8 KB block at a fixed SRAM address, so the row index is a
 ;   single add on the HIGH byte (lt_seg).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc lt_init
         lda #<CMAP_EXT
         sta zp_cm
@@ -94,6 +95,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         sta zp_cm+2
         jmp an_init                  ; ...and the idle rings on frame A
 .endp                                ;   (sprites.asm). Chained here, at the end
+        .endseg
                                      ;   of init_level's mv_reset -> lt_init run:
                                      ;   the $1B00 block has one byte left, and
                                      ;   an_init MUST run where zp_ptr+2 is
@@ -115,7 +117,14 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;   Called once per drawn seg (~140 a frame). A/Y clobbered, X PRESERVED --
 ;   the caller is mid-way through resolving the wall texture handle.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc lt_seg
+ .if 1
+        ldy #4                       ; BUG FIX 2026-09-15: Y = 4 on BOTH paths. The
+ .endif                               ;   bright path used to skip it, so its `iny`
+                                     ;   read floor_pal from byte Y+1 of whatever
+                                     ;   seg_draw left (2 -> ceil_h's high byte):
+                                     ;   a wrong floor colour under the visor
         lda vis_lit                  ; the visor's answer for THIS tic, decided
                                      ;   once in pw_tic (it blinks as it runs
         bne ?bright                  ;   (p_user.c:371) and every surface goes
@@ -124,18 +133,32 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
                                      ;   IS the high byte. X stays untouched:
                                      ;   the caller is mid-way through resolving
                                      ;   a wall texture handle.
+ .if 0
         ldy #4                       ; sector->lightlevel
+ .endif
         lda (zp_ptr),y
         eor #$FF                     ; row = (255 - light) >> 3
         lsr @
         lsr @
         lsr @
+ .if 1
+    .if [>CMAP_EXT] & $1F
+        ert 'lt_seg ORs the row into >CMAP_EXT: its low five bits must be clear'
+    .endif
+        ora #>CMAP_EXT               ; the dark path ORs in place and FALLS into the
+?add    sta zp_cm+1                  ;   store: no always-taken bpl (-3/seg); the
+                                     ;   bright path jumps back from below the rts
+ .else
         bpl ?add                     ; always: the row is 0..31
 ?bright lda #0
 ?add
-        clc
-        adc #>CMAP_EXT               ; ... a page per row, so the row IS the
-        sta zp_cm+1                  ;     high byte (0..31 above the base)
+    .if [>CMAP_EXT] & $1F
+        ert 'lt_seg ORs the row into >CMAP_EXT: its low five bits must be clear'
+    .endif
+        ora #>CMAP_EXT               ; ... a page per row, so the row IS the
+        sta zp_cm+1                  ;     high byte (0..31 above the base) --
+                                     ;     an ora, not clc/adc (2026-09-15)
+ .endif
         iny                          ; floor_pal @5
         lda (zp_ptr),y
         tay
@@ -147,7 +170,12 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         lda [zp_cm],y
         sta rs_ceilcol
         rts
+ .if 1
+?bright lda #>CMAP_EXT               ; row 0 = the base page (the visor blink)
+        bra ?add
+ .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; update_lights -- one pass over the level's light thinkers, once a frame.
@@ -155,6 +183,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;   tic counters read as VBLANKs. Writes sector->lightlevel in the map slot;
 ;   nothing else in the engine touches that byte.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc update_lights
         ldx MAP_HNLIGHT
         bne ?any
@@ -403,6 +432,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ?ret    rts
  .endif
 .endp
+        .endseg
                                      ;   segment never had to grow a byte.
 lt_n    dta 0                        ; records left in this pass
 lt_dt   dta 0                        ; VBLANKs this frame, clamped
@@ -428,11 +458,17 @@ lt_u    dta 0
 ;--------------------------------------------------------------
 ltsf_resume = *
         org LTSEGF_BASE
+        .segment B1                  ; DRAC_PLAN 2b: its only jump comes from process_seg (bank $01)
 .proc lt_seg_flash
+ .if 1
+        ldy #4                       ; BUG FIX 2026-09-15: before the visor test, as
+ .endif                               ;   lt_seg (?vis skipped it: wrong floor_pal)
         lda vis_lit                  ; the visor's answer for THIS tic, decided
                                      ;   once in pw_tic (it blinks as it runs
         bne ?vis                     ;   lightnum+extralight sum (r_main.c)
+ .if 0
         ldy #4                       ; sector->lightlevel
+ .endif
         lda (zp_ptr),y
         eor #$FF                     ; row = (255 - light) >> 3
         lsr @
@@ -460,6 +496,7 @@ ltsf_resume = *
         sta rs_ceilcol
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; wp_flight -- wp_fenter's tail (P_SetPsprite for ps_flash ends here): read the
@@ -470,6 +507,7 @@ ltsf_resume = *
 ;   sq2_lt_init jsr's it per level too, so an exit mid-flash cannot carry a
 ;   lit view into the next map (g_game.c "cancel gun flashes").
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_flight
         ldy wp_fstate
  .if 1
@@ -481,7 +519,7 @@ ltsf_resume = *
 	txy			;restore NZ
 	beq ?set
 	lda #lt_seg_flash
-?set	sta process_seg.ltsj+1
+?set	sta.l B1CODE_BASE+process_seg.ltsj+1
 	sep #$20
 	.LONGA OFF
  .else
@@ -500,6 +538,7 @@ ltsf_resume = *
  .endif
         rts
 .endp
+        .endseg
     .if * > LTSEGF_END+1
         ert 'lt_seg_flash + wp_flight outgrew LTSEGF_BASE..END (memory_map.inc)'
     .endif

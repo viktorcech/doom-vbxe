@@ -55,7 +55,10 @@
 ;     Nothing new: the same billboard already faces you while it walks away.
 ;   * MT_VILE's two exemptions are not here -- there is no arch-vile in E1.
 ;==============================================================
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AIFIGHT_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; aif_reset -- ai_reset's tail: a fresh level starts with everything after the
@@ -69,6 +72,7 @@
 ;   The third page did NOT fit in this loop (7 B against the 3 this block had
 ;   left), so it is a tail call into the sight hole: sg_seen, enemy_ai.asm.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_reset
         lda #<TH_TARG                ; 0 -- every per-thing page is 256 B aligned
         sta zp_ptr                   ;   (zp_ptr+2 = MAP_EXT_BANK, init_level)
@@ -84,12 +88,14 @@
         bne ?clr
         jmp sg_seen                  ; ...and nothing is in sight of anything
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_tpos -- ai_tx/ai_ty = where ai_t's target is standing. p_enemy.c reads
 ;   actor->target->x/y in P_NewChaseDir, P_CheckMeleeRange and A_FaceTarget
 ;   alike; this port read the player in all three. Clobbers A/Y, sp_ptr, m_prod.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_tpos
         lda #>TH_TARG
         jsr ai_get
@@ -148,6 +154,7 @@
  .endif
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_ttick -- A_Chase's first two blocks, for ai_t:
@@ -158,6 +165,7 @@
 ;   OUT A/Z: nonzero = go on thinking, zero = stand still (the player is dead
 ;   and the player is what it was after -- what A_Chase's spawnstate does).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_ttick
         lda #>TH_TARG
         jsr ai_get
@@ -193,6 +201,7 @@
 ?stand  lda #0
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_live -- Y = thing index: C=1 if it is still a thing damage and thresholds
@@ -206,9 +215,17 @@
 ;   Contract proved against the three originals over 312 cases:
 ;   tools/tests/_verify_aiflive.py.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_live
+ .if 1
+        stz zp_ptr                   ; <TH_STATE = 0 (every per-thing page is
+    .if [TH_STATE & $FF] != 0        ;   256 B aligned: ert)
+        ert 'aif_live: TH_STATE is not page-aligned -- put the lda #< back'
+    .endif
+ .else
         lda #<TH_STATE
         sta zp_ptr
+ .endif
         lda #>TH_STATE
         sta zp_ptr+1
         lda [zp_ptr],y
@@ -227,10 +244,12 @@
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_thdec -- threshold--, floored at 0. Clobbers A/X/Y.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_thdec
         lda #>TH_THRS
         jsr ai_get
@@ -245,11 +264,13 @@
         jmp ai_put
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_isvis -- ai_try_atk's P_CheckSight. Against the player it is the port's
 ;   vissprite oracle; against another monster it is simply true (see the header).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_isvis
         lda #>TH_TARG
         jsr ai_get
@@ -264,6 +285,7 @@
         jmp aif_mvis                 ;   2026-08-20: p_enemy.c A_SpidRefire
 ?plr    jmp aif_pvis                 ;   tests `target->health <= 0` in the SAME
 .endp                                ;   if as P_CheckSight, and the day the
+        .endseg
                                      ;   spider mastermind's refire loop landed
                                      ;   this became a livelock: the spider shot
                                      ;   a cacodemon, the cacodemon died, and it
@@ -285,6 +307,7 @@
 ;   ai_t = the thing that was just hurt (ai_hurt has already stored it),
 ;   ai_src = whoever hurt it, +1 (0 = the player). Clobbers A/X/Y.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_retal
         lda ai_src
         beq ?gate                    ; the player is always a legal target
@@ -317,11 +340,13 @@
         sta snd_pending
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_hurt -- ai_fire's damage sink. A = damage, ai_t = the monster firing,
 ;   ai_vic = a body the shot stopped in ($FF = it reached what it aimed at).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_hurt
         sta ai_t3                    ; the damage, across the target lookup
         lda ai_vic
@@ -345,6 +370,7 @@
         lda ai_t3
         jmp aif_dmg
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_dmg -- P_DamageMobj with a THING for a target. A = damage, ai_vt = the
@@ -353,6 +379,7 @@
 ;   retaliation. ai_t/ai_k are the CALLER's -- ai_hurt stores the victim over
 ;   ai_t and ai_start rewrites ai_k -- so both are saved across it.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_dmg
         sta ai_t4
         ldy ai_vt                    ; "if (target->health <= 0) return" -- the
@@ -416,6 +443,7 @@
         sta ai_t
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_block -- p_map.c PTR_ShootTraverse, thing half only. ai_t is about to fire
@@ -434,6 +462,7 @@
 ;   Barrels are shootable and have a radius, so a bullet finds one -- which is
 ;   what DOOM does too, chain and all.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_block
         lda #$FF
         sta ai_vic
@@ -553,6 +582,7 @@
         sta ai_vic
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_bvis -- thing ai_bi: C=1 if it is in this frame's vissprite list. The
@@ -566,6 +596,7 @@
 ;   not on screen there is a wall or a shut door in front of it. spr_add drops
 ;   fully-occluded sprites, which is what makes this test mean "reachable".
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_bvis
         ldx sp_n
 ?lp     dex
@@ -578,12 +609,14 @@
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_alive -- thing ai_bi: C=1 and ai_brad = its radius if a shot can stop in
 ;   it. en_bthings' own liveness pair (not already dying, health left) plus the
 ;   MF_SOLID radius -- p_map.c:979 lets a corpse or a pickup through.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_alive
         ldy ai_bi
         jsr aif_live                 ; not dying, health left (aif_live leaves
@@ -598,11 +631,13 @@
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_cand -- thing ai_bi against the line of fire. C=1 = the shot stops here,
 ;   and ai_alen is its distance from the shooter (the loop's new cutoff).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_cand
         lda ai_bi                    ; c = candidate - shooter
         jsr en_thing.en_th2
@@ -692,12 +727,14 @@
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_perp -- the line test itself: C=1 when |dx*cy - dy*cx| < radius * |d|,
 ;   i.e. the shot passes closer to the candidate's centre than its own radius.
 ;   cross_pos (math.asm) leaves the full signed 32-bit cross product in cx_p1.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_perp
  .if 1
 	rep #$20
@@ -824,6 +861,7 @@
 ?yes    sec
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_alen -- m_fixed.c P_AproxDistance of ai_alx/ai_aly (signed 16): the larger
@@ -831,10 +869,13 @@
 ;   dominant axis, which is what the "in front" test above reads.
 ;   OUT ai_alen. Clobbers A, ai_aax/ai_aay/ai_t4.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_alen                          ; THE THUNK -- see bank01.asm.
         jsl B1CODE_BASE+b1_aif_alen
         rts                          ; the tail call comes back through the rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ; ---- scratch, all of it inside this block ----------------------------------
 ai_tx    dta 0,0                     ; where ai_t's TARGET stands (aif_tpos)
@@ -865,6 +906,10 @@ ai_aay   dta 0,0
 ai_ahalf dta 0,0                     ; the smaller magnitude, halved (16-bit)
 ai_axmaj dta 0
 
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AIFIGHT_END+1
         ert 'infight.asm outgrew AIFIGHT_BASE..END (memory_map.inc)'
     .endif
+ .endif

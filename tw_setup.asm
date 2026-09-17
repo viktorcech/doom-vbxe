@@ -18,9 +18,11 @@ twclip_resume = *
 ; them, the swap and the shifts are all 16-bit quantities; only m_neg/m_negb
 ; are 8-bit code. `sep` touches M alone, so the N the subtract set survives it
 ; and the `bpl` still reads the sign of the 16-bit result.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc seg_len
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
+seg_len16                            ; (am_mark arrives 16-bit already)
         sec                          ; m_a = |dx|
         lda zp_rx2
         sbc zp_rx1
@@ -56,43 +58,53 @@ twclip_resume = *
 ?dyp    rep #$20
         .LONGA ON
  .endif
-        lda m_a                      ; order so m_a = max, m_b = min -- one
-        cmp m_b                      ;   unsigned 16-bit compare, not the
-        bcs ?omax                    ;   hi/lo pair it was
- .if 1
+        lda m_a                      ; which is the max? -- one unsigned 16-bit
+        cmp m_b                      ;   compare, and then NO swap: each order
+        bcs ?omax                    ;   has its own tail (2026-09-15). The tail
+ .if 1                                ;   is L = max - max/8 + min/2, the max/8
+        lsr m_a                      ;   negated in A (~q + 1 + max) so nothing
+        lda m_b                      ;   goes through m_res -- same 16-bit sum
+        lsr                          ;   as max + min/2 - max/8
+        lsr
+        lsr
+        eor #$FFFF
+        sec
+        adc m_b                      ; max - max/8 (this add always carries out)
+        clc
+        adc m_a                      ; + min/2
+        bra ?fin
+?omax   lsr m_b                      ; min/2
+  .if 1                               ; A still holds m_a: the lda at the top, and
+  .else                               ;   cmp/bcs/lsr m_b leave A alone (-4/seg)
+        lda m_a
+  .endif
+        lsr
+        lsr
+        lsr
+        eor #$FFFF
+        sec
+        adc m_a
+        clc
+        adc m_b
+?fin
+ .else
 	pha			;A is already loaded, contains m_a
 	lda m_b
 	sta m_a
 	pla
 	sta m_b
- .else
-        lda m_b                      ; (Y is 8-bit, so the swap goes through the
-        pha                          ;   STACK, which IS 16 bits wide here)
-        lda m_a
-        sta m_b
-        pla
-        sta m_a
- .endif
 ?omax   lsr m_b                      ; min/2
         lda m_a                      ; max/8 -> m_res
- .if 1
 	lsr
 	lsr
 	lsr
 	sta m_res
- .else
-        sta m_res
-        lsr m_res
-        lsr m_res
-        lsr m_res
- .endif
         clc                          ; L = max + min/2 - max/8
         lda m_a
         adc m_b
-;       sta rs_seglen
         sec
-;       lda rs_seglen
         sbc m_res
+ .endif
  .if 1
     .if TEX_HALFW
         ; 2:1 HORIZONTAL DOWNSAMPLE (pack_textures.py HALF_W). The stored texture
@@ -128,6 +140,7 @@ twclip_resume = *
 ?ok     rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; tw_texmask -- from rs_texh_cur derive rs_texmask = texH*256-1 and rs_texpow2 =
@@ -142,6 +155,7 @@ twclip_resume = *
 ;--------------------------------------------------------------
 twmask_resume = *
         org TWMASK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc tw_texmask
         lda #$FF
         sta rs_texmask
@@ -157,6 +171,7 @@ twmask_resume = *
         sta rs_texpow2
         rts
 .endp
+        .endseg
     .if * > TWMASK_END+1
         ert 'tw_texmask outgrew TWMASK_BASE..TWMASK_END (memory_map.inc)'
     .endif
@@ -169,6 +184,7 @@ twmask_resume = *
 ;   seams accepted -- see textures-prototype memory). Column-major layout:
 ;   src = base + tex_x*texH. Caller must have set rs_wtex*/rs_ltex* per seg.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wall_src
         lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texels)
         and rs_wtexwm
@@ -182,20 +198,29 @@ twmask_resume = *
 wix     lda.l $000000,x
  .if 1
 	plx
- .else
-        ldx pc_sx                    ;   ... X is the caller's column counter
+	tay                          ; the stored column, PARKED IN Y (2026-09-15):
+ .else                                ;   nothing but this proc read rs_txx, and
+        ldx pc_sx                    ;   tya below zero-extends it for free
  .endif
     .else
         tay                          ; ...and then which STORED column that is:
 wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one copy
     .endif
-        sta rs_txx                   ;   of each distinct column and this array says
+                                     ;   of each distinct column and this array says
                                      ;   which. The operand is patched per SEG in
                                      ;   seg_draw (?wix), never per column, so the
                                      ;   whole dedup costs 4 cycles here.
-        lda rs_wtexh
-        sta rs_texh_cur
-        jsr tw_texmask               ; tile mask + pow2 flag for this texture
+        lda rs_wtexh                 ; tw_texmask INLINED (2026-09-15): the mask
+        sta rs_texh_cur              ;   (texH*256-1) and the pow2 flag, without
+        dec                          ;   the jsr/rts and the rs_texh_cur reload.
+        sta rs_texmask+1             ;   rs_texmask's low byte is rewritten
+        and rs_wtexh                 ;   because the cell lives in the SIO staging
+        sta rs_texpow2               ;   pages (see tw_texmask's header)
+ .if 1                                ; ... but NOTHING reads that low byte: paint.asm
+ .else                                ;   and textures.asm only `and rs_texmask+1`
+        lda #$FF                     ;   (2026-09-15, -6/column)
+        sta rs_texmask
+ .endif
     .if TEX_RUNS
     .if TEX_RUNSH <> 6
         ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
@@ -207,8 +232,7 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         ; adc's carry rides into the bank byte through the sep (M only).
         rep #$20
         .LONGA ON
-        lda rs_txx
-        and #$FF                     ; the 16-bit load drags rs_txx+1 along
+        tya                          ; the column: Y is 8-bit, so B comes out 0
  .if 1
 	xba
 	lsr
@@ -230,7 +254,11 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         adc #0                       ;     16-bit add's carry
         sta rs_tsrc+2
         ldy #0                       ; the old loop always exited with Y=0; keep that
+ .if 1
+        jmp draw_twall_clip          ; TAIL CALL (2026-09-15): both callers jsr'd
+ .else                                ;   draw_twall_clip right after (-9/column)
         rts
+ .endif
     .else
         qsmul rs_txx, rs_wtexh, qs_p       ; qs_p = tex_x * texH  (<=127*128, fits 16b)
  .if 1
@@ -253,10 +281,16 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         lda rs_wtexad+2
         adc #0
         sta rs_tsrc+2
+ .if 1
+        jmp draw_twall_clip          ; (tail call, as the TEX_RUNS path above)
+ .else
         rts
+ .endif
     .endif
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc low_src
         lda rs_uacc+1                ; world u, same track as wall_src
         and rs_ltexwm
@@ -270,6 +304,7 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
 lix     lda.l $000000,x              ; the LOWER step's own index array, in SDRAM
  .if 1
 	plx
+	tay                          ; (as wall_src: the column parks in Y)
  .else
         ldx pc_sx
  .endif
@@ -277,18 +312,24 @@ lix     lda.l $000000,x              ; the LOWER step's own index array, in SDRA
         tay
 lix     lda $FFFF,y                  ; the LOWER step's own column index array
     .endif
-        sta rs_txx
-        lda rs_ltexh
+        lda rs_ltexh                 ; tw_texmask inlined (as wall_src, 2026-09-15)
         sta rs_texh_cur
-        jsr tw_texmask               ; tile mask + pow2 flag for this texture
+        dec
+        sta rs_texmask+1
+        and rs_ltexh
+        sta rs_texpow2
+ .if 1                                ; (the low byte has no reader, as wall_src)
+ .else
+        lda #$FF
+        sta rs_texmask
+ .endif
     .if TEX_RUNS
     .if TEX_RUNSH <> 6
         ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
     .endif
         rep #$20                     ; same 16-bit fusion as wall_src above
         .LONGA ON
-        lda rs_txx
-        and #$FF
+        tya
  .if 1
 	xba
 	lsr
@@ -310,7 +351,10 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         adc #0
         sta rs_tsrc+2
         ldy #0                       ; the old loop always exited with Y=0; keep that
+ .if 1                                ; FALLS THROUGH into draw_twall_clip, the next
+ .else                                ;   proc of this org block (2026-09-15, -12/col)
         rts
+ .endif
     .else
         qsmul rs_txx, rs_ltexh, qs_p
         clc
@@ -323,15 +367,20 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         lda rs_ltexad+2
         adc #0
         sta rs_tsrc+2
+ .if 1                                ; (falls through, as the TEX_RUNS path above)
+ .else
         rts
+ .endif
     .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; draw_twall_clip -- like draw_clip but textured: clip raw signed16 rows
 ;   rs_ra/rs_rb to [rs_top,rs_bot] -> rs_spa/rs_spb, then draw the textured
 ;   column (rs_tsrc/rs_texh_cur must already be set for this column). Preserves X.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc draw_twall_clip
         lda rs_ra+1                  ; a = max(rs_ra, top); >bot -> nothing
         bmi ?atop
@@ -384,6 +433,7 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
     .endif
 ?out    rts
 .endp
+        .endseg
     .if * > TWCLIP_END+1
         ert 'seg_len/wall_src/low_src/draw_twall_clip outgrew TWCLIP_BASE..END (memory_map.inc)'
     .endif

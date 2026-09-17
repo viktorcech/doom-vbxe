@@ -54,6 +54,7 @@
 ; ai_reset -- from init_level: nothing chases in a fresh level. Clearing
 ;   TH_WROW is what actually stops it -- everything else keys on that page.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_reset
         lda #$FF
         sta sl_th                    ; no corpse is sliding on a fresh level --
@@ -69,13 +70,19 @@
 ?clr    sta [zp_ptr],y
         iny
         bne ?clr
+        lda THINGS_BASE              ; n_things (pack_things header, <= 255):
+        inc @                        ;   ai_tick / en_tick sweep the pairs below
+        and #$FE                     ;   it only. Rounded up to even; 255 -> 0
+        sta ai_lim                   ;   = the whole page, as before (Y wraps)
         jmp aif_reset                ; ...and nothing is angry at anything either
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_wake -- A_Look, once per FRAME over the vissprites the BSP walk collected.
 ;   Runs in the game loop, not the render path, so clobbering zp_ptr is safe.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_wake
         ldx sp_n
         beq ?out
@@ -110,8 +117,10 @@
                                      ;   (the barrel, a front-only build) reads
                                      ;   0 here and behaves as it always did.
 ?wake   jsr ai_wseen                 ; ...and is its MIDDLE column open? then wake
-?back   lda #<TH_WROW                ; the scan's page back (ai_ismon/ai_start
-        sta zp_ptr                   ;   moved both bytes)
+?back   stz zp_ptr                   ; the scan's page back (ai_ismon/ai_start
+    .if [TH_WROW & $FF] != 0         ;   moved both bytes; <TH_WROW = 0)
+        ert 'TH_WROW is not page-aligned -- put the lda #< back (enemy_ai.asm)'
+    .endif
         lda #>TH_WROW
         sta zp_ptr+1
         jmp ?lp
@@ -120,6 +129,7 @@
         dec ai_noise                 ;   P_RecursiveSound and it never expires;
 ?done   rts                          ;   one global countdown is the stand-in
 .endp                                ;   (see ai_noise).
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_wseen -- ai_wake's tail, out in free RAM (the AI block has four bytes left).
@@ -139,6 +149,7 @@
 ;--------------------------------------------------------------
 aiws_resume = *
         org AIWS_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_wseen
         lda #0
         ldy vs_x1h,x                 ; x1 < 0 -> the sprite starts off the left
@@ -155,6 +166,7 @@ aiws_resume = *
         ldx ai_vx
 ?out    rts
 .endp
+        .endseg
     .if * > AIWS_END+1
         ert 'ai_wseen outgrew AIWS_BASE..AIWS_END (memory_map.inc)'
     .endif
@@ -208,6 +220,7 @@ aiws_resume = *
 ;--------------------------------------------------------------
 aidoor_resume = *
         org AIDOOR_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_door
         ldy #SEG_BACK
         lda [zp_sptr],y
@@ -236,6 +249,7 @@ aidoor_resume = *
         jmp snd_door_toggle          ;   toggle it shut every single tic
 ?out    rts
 .endp
+        .endseg
     .if * > AIDOOR_END+1
         ert 'ai_door outgrew AIDOOR_BASE..END (memory_map.inc)'
     .endif
@@ -243,6 +257,7 @@ aidoor_resume = *
 
 aifront_resume = *
         org AIFRONT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_front
         lda ai_noise                 ; the player SHOT: A_Look takes the
         beq ?look                    ;   sector's soundtarget FIRST and that
@@ -257,8 +272,7 @@ aifront_resume = *
                                      ;   set {7,0,1} is symmetric about 0, so
                                      ;   the sign costs nothing and saves the
                                      ;   push/pull round ai_get
-        clc
-        adc #1                       ; rots 7,0,1 -> 0,1,2
+        inc @                        ; rots 7,0,1 -> 0,1,2 (C dies in the cmp)
         and #7
         cmp #3                       ; C=0: it is facing you
         bcc ?out
@@ -272,6 +286,7 @@ aifront_resume = *
                                      ;   never read as melee range.
 ?out    rts
 .endp
+        .endseg
     .if * > AIFRONT_END+1
         ert 'ai_front outgrew AIFRONT_BASE..END (memory_map.inc)'
     .endif
@@ -340,6 +355,7 @@ aiwake_resume = *
 ;   (USE_PT_A = the monster, USE_PT_B = the player) and the sample step, then
 ;   falls into sg_walk. Clobbers A/X/Y, sp_ptr, zp_px/zp_py (put back).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_sight
         lda #$FF                     ; no leaf tested yet ($FFFF is not a leaf
         sta USE_SS                   ;   id). Primed here and not in sg_walk:
@@ -349,24 +365,23 @@ aiwake_resume = *
                                      ;   sg_pl = the player, for sg_bsp's restore
         lda ai_t                     ; ...and the monster is its ORIGIN
         jsr en_thing.en_th2          ; sp_ptr = its record: x, y are +0..+3
-        ldy #3
-?mo     lda (sp_ptr),y
-        sta USE_PT_A,y
-        dey
-        bpl ?mo
-        ldx #0                       ; the vector, player - monster. The borrow
-        lda #4                       ;   chains inside a leg and starts fresh on
-        sta sg_t                     ;   each one, hence the sec on the even
-?v      txa                          ;   bytes (sg_dy follows sg_dx). The counter
-        and #1                       ;   is a MEMORY byte on purpose: cpx would
-        bne ?nc                      ;   clobber the carry the hi byte needs, and
-        sec                          ;   that put a phantom -256 in every leg
-?nc     lda USE_PT_B,x               ;   whose difference was zero.
-        sbc USE_PT_A,x
-        sta sg_dx,x
-        inx
-        dec sg_t
-        bne ?v
+        rep #$20                     ; USE_PT_A = the monster, and the vector
+        .LONGA ON                    ;   target - monster, each leg ONE 16-bit
+        lda (sp_ptr)                 ;   subtract (2026-09-15: the byte loops
+        sta USE_PT_A                 ;   were ~170 cycles; this is ~40)
+        ldy #2
+        lda (sp_ptr),y
+        sta USE_PT_A+2
+        sec
+        lda USE_PT_B
+        sbc USE_PT_A
+        sta sg_dx
+        sec
+        lda USE_PT_B+2
+        sbc USE_PT_A+2
+        sta sg_dy
+        .LONGA OFF
+        sep #$20
         lda sg_dx+1                  ; the bigger leg, to the nearest 256 units
         bpl ?px                      ;   (the sign folded away)
         eor #$FF
@@ -386,6 +401,7 @@ aiwake_resume = *
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_pvis -- aif_isvis' player case (infight.asm): DOOM's
@@ -394,6 +410,7 @@ aiwake_resume = *
 ;   your back. On screen still answers yes for free; off screen costs the ray,
 ;   and only for a monster that is already chasing.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_pvis
         jsr aif_pchk                 ; is there still a player to shoot at, and
         beq ?no                      ;   was it drawn this frame? (2026-08-20:
@@ -405,6 +422,7 @@ aiwake_resume = *
 ?no     clc
 ?yes    rts
 .endp
+        .endseg
     .if * > SIGHT_END+1
         ert 'ai_sight/aif_pvis outgrew SIGHT_BASE..SIGHT_END (memory_map.inc)'
     .endif
@@ -479,9 +497,9 @@ sg_sa   dta 0                        ; which side of this node USE_PT_A is on
 ; descents (a full root-to-leaf walk EACH), this pays one descent's worth of
 ; nodes plus the far children.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sg_bsp
-        lda #0
-        sta sg_sp
+        stz sg_sp
         lda #SG_LEAFN
         sta sg_lf
         lda MAP_HROOT                ; from the root, like use_locate
@@ -492,18 +510,24 @@ sg_sa   dta 0                        ; which side of this node USE_PT_A is on
         and #$80
         bne ?leaf
         jsr calc_nodeptr
-        ldx #3                       ; which side is the MONSTER on?
-?pa     lda USE_PT_A,x
-        sta zp_px,x
-        dex
-        bpl ?pa
+        rep #$20                     ; which side is the MONSTER on? (two word
+        .LONGA ON                    ;   moves, not a byte loop: 2026-09-15)
+        lda USE_PT_A
+        sta zp_px
+        lda USE_PT_A+2
+        sta zp_py
+        .LONGA OFF
+        sep #$20
         jsr point_on_side
         sta sg_sa
-        ldx #3                       ; ...and the PLAYER?
-?pb     lda USE_PT_B,x
-        sta zp_px,x
-        dex
-        bpl ?pb
+        rep #$20                     ; ...and the PLAYER?
+        .LONGA ON
+        lda USE_PT_B
+        sta zp_px
+        lda USE_PT_B+2
+        sta zp_py
+        .LONGA OFF
+        sep #$20
         jsr point_on_side            ; A = side of B, 0 or 1
         cmp sg_sa
         beq ?one                     ; both the same side: the other subtree
@@ -550,14 +574,18 @@ sg_sa   dta 0                        ; which side of this node USE_PT_A is on
                                      ;   leaf test again, and those fly level
                                      ;   (stz leaves C alone -- the php is next)
         php                          ; C has to survive the restore
-        ldx #3
-?rb     lda sg_pl,x                  ; the PLAYER, back into zp_px/zp_py -- and
-        sta zp_px,x                  ;   out of sg_tgt's own copy, not out of
-        dex                          ;   USE_PT_B: since 2026-08-25 the ray's far
-        bpl ?rb                      ;   end is the monster's TARGET, which for an
+        rep #$20                     ; (two word moves, 2026-09-15)
+        .LONGA ON
+        lda sg_pl                    ; the PLAYER, back into zp_px/zp_py -- and
+        sta zp_px                    ;   out of sg_tgt's own copy, not out of
+        lda sg_pl+2                  ;   USE_PT_B: since 2026-08-25 the ray's far
+        sta zp_py                    ;   end is the monster's TARGET, which for an
+        .LONGA OFF
+        sep #$20
         plp                          ;   infighting pair is another MONSTER. This
         rts                          ;   read USE_PT_B for as long as the two were
 .endp                                ;   the same point, and putting a monster's
+        .endseg
                                      ;   position into zp_px would have moved the
                                      ;   PLAYER there for every reader downstream.
     .if * > SGBSP_END+1
@@ -590,20 +618,28 @@ sgtgt_resume = *
 ; sg_tgt -- ai_sight's head: sg_pl = the player, USE_PT_B = ai_t's target.
 ;   Clobbers A/X/Y, sp_ptr, m_prod, zp_ptr (aif_tpos' own list).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sg_tgt
-        ldx #3                       ; the player, parked for sg_bsp's restore.
-?pl     lda zp_px,x                  ;   zp_px/zp_py are four adjacent zero-page
-        sta sg_pl,x                  ;   bytes, which is what makes this one loop
-        dex
-        bpl ?pl
+        rep #$20                     ; the player, parked for sg_bsp's restore:
+        .LONGA ON                    ;   two word moves (2026-09-15)
+        lda zp_px
+        sta sg_pl
+        lda zp_py
+        sta sg_pl+2
+        .LONGA OFF
+        sep #$20
         jsr aif_tpos                 ; ai_tx/ai_ty = TH_TARG resolved: the player
-        ldx #3                       ;   when it is 0, that thing's record when it
-?tg     lda ai_tx,x                  ;   is not. ai_ty follows ai_tx (infight.asm),
-        sta USE_PT_B,x               ;   so the same four-byte loop serves again
-        dex
-        bpl ?tg
+        rep #$20                     ;   when it is 0, that thing's record when it
+        .LONGA ON                    ;   is not. ai_ty follows ai_tx (infight.asm)
+        lda ai_tx
+        sta USE_PT_B
+        lda ai_ty
+        sta USE_PT_B+2
+        .LONGA OFF
+        sep #$20
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; aif_mvis -- aif_isvis' MONSTER-target arm: Y = the target's thing index.
@@ -619,6 +655,7 @@ sgtgt_resume = *
 ;   pillar keeps firing until its next lap of the table. That lag is the port's
 ;   everywhere and DOOM's reactiontime blurs the same edge.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_mvis
         jsr aif_live                 ; `target->health <= 0` first: it is the
         bcc ?no                      ;   cheaper test and the one A_SpidRefire's
@@ -627,12 +664,14 @@ sgtgt_resume = *
         lsr                          ;   (TH_SEEN is 0/1 -- lsr puts it in C)
 ?no     rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sg_seen -- aif_reset's tail: TH_SEEN = 0 for all 256 things. See the note
 ;   there for why a page that only ai_look ever wrote had to start being
 ;   cleared -- bank $01 keeps the previous level's answers otherwise.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sg_seen
         lda #<TH_SEEN                ; 0: the page is 256 B aligned like every
         sta zp_ptr                   ;   other per-thing page (zp_ptr+2 is on
@@ -645,6 +684,7 @@ sgtgt_resume = *
         bne ?clr
         rts
 .endp
+        .endseg
 
 sg_pl   dta 0,0,0,0                  ; the player's x/y across one sight walk
                                      ;   (sg_tgt saves it, sg_bsp puts it back).
@@ -735,6 +775,7 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
 ;   In: ai_t = the monster, sp_ptr = its thing record, sg_dx/sg_dy = the ray.
 ;   Clobbers A/X/Y, m_a, sp_ptr, zp_ptr.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sg_set
         lda #>TH_TARG                ; ONLY A PLAYER TARGET gets a z. A_Look is the
         jsr ai_get                   ;   one path that WAKES anything and its target
@@ -755,14 +796,15 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
         lda pl_z+1
         adc #0
         sta m_a+1
-        sec                          ; sg_th = topslope at frac 1: how far the
-        lda m_a                      ;   eye->target-top line has fallen by the far
-        sbc sg_zs                    ;   end of the ray
+        rep #$20                     ; sg_th = topslope at the far end of the
+        .LONGA ON                    ;   ray, one word subtract; N from it
+        sec                          ;   (drac030 idiom)
+        lda m_a
+        sbc sg_zs
         sta sg_th
-        lda m_a+1
-        sbc sg_zs+1
-        sta sg_th+1
-        bmi ?lo                      ; (sta leaves the sbc's N alone)
+        .LONGA OFF
+        sep #$20                     ; (sep leaves N alone)
+        bmi ?lo
         lda sg_zs                    ; sg_lo = min(eye, target top): under THAT no
         ldy sg_zs+1                  ;   sill reaches the line at any frac in [0,1],
         bra ?st                      ;   and that prefilter is what keeps an open
@@ -793,6 +835,7 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
                                      ;   second caller is ever added, this needs the
                                      ;   stz back -- and three bytes from somewhere.
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; sg_shut -- use_shut PLUS the sill. A = 1 if this seg stops the ray.
@@ -803,6 +846,7 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
 ;   again and stops the ray there, exactly as it does for a shut door. That is
 ;   one repeated crossing test, and only for a seg that really blocks.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sg_shut
         jsr use_shut
         bne ?out                     ; already shut: A = 1, there is nothing to add
@@ -830,21 +874,18 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
         bmi ?open
         jsr use_seg_hit              ; ...and does the ray actually cross it?
         beq ?open                    ;   (coll_bx SURVIVES it: use_seg_hit works out
-        sec                          ;   of m_a/m_ma/cx_*/USE_PT and coll_vptr out
-        lda coll_bx                  ;   of m_prod/zp_ptr -- none of them is zp_X2)
-        sbc sg_zs                    ; cx_a = openbottom - sightzstart
+        rep #$20                     ; cx_a = openbottom - sill, cx_b = the ray's
+        .LONGA ON                    ;   dominant extent, cx_c = target top -
+        sec                          ;   sill: one window (drac030 idiom)
+        lda coll_bx
+        sbc sg_zs
         sta cx_a
-        lda coll_bx+1
-        sbc sg_zs+1
-        sta cx_a+1
-        lda sg_dt                    ; cx_b = the ray's dominant leg
+        lda sg_dt
         sta cx_b
-        lda sg_dt+1
-        sta cx_b+1
-        lda sg_th                    ; cx_c = target top - sightzstart
+        lda sg_th
         sta cx_c
-        lda sg_th+1
-        sta cx_c+1
+        .LONGA OFF
+        sep #$20
         ldx sg_ax                    ; v1 first, then v2 (USE_PT_Q = USE_PT_P+4).
         jsr ?ep                      ;   The crossing lies BETWEEN them, so one
         bcs ?open                    ;   endpoint saying "clear" is the safe answer
@@ -881,6 +922,7 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
 ?nb     sec
         rts
 .endp
+        .endseg
 
 sg_zs   dta a(0)                     ; sightzstart -- the monster's eye
 sg_th   dta a(0)                     ; target top - sightzstart (DOOM's topslope)
@@ -911,6 +953,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
 ;   TH_SEEN). A barrel has a kind too, and E1M1 has fifteen of them -- spending
 ;   the frame's ray on one is the difference between 1k cycles and 100k.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_cand
         jsr ai_bank
         ldy ai_t
@@ -930,6 +973,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; blk_cell -- sp_ptr = a thing record, sol_i = its index: file it in the
@@ -941,10 +985,14 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         ert 'ai_cand outgrew CAND_BASE..CAND_END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org BLKSOL_BASE
+ .endif
 ;--------------------------------------------------------------
 ; blk_tgt -- en_solid's entry: which blockmap cell is the move target in?
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc blk_tgt
         lda coll_cx+1                ; the SAME grid blk_push files things on:
         lsr                          ;   (coord >> 9) & 7
@@ -956,6 +1004,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         sta sol_cy
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; (blk_solid died with the linear sweep) -- Y = thing index -> A = its radius, or 0 (Z set) when it cannot
@@ -965,9 +1014,12 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
 ;   the sweep used to pay for all 255 things.
 ;--------------------------------------------------------------
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > BLKSOL_END+1
         ert 'blk_tgt/blk_solid outgrew BLKSOL_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 
 ;--------------------------------------------------------------
@@ -998,6 +1050,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
 ; blk_fill -- file EVERY thing in the blockmap cell pages. Once per level, from
 ;   en_init (which has three bytes left, hence the jsr and not the loop).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc blk_fill
         lda #<TH_CELL                ; (every bank $01 page has low byte 0)
         sta zp_ptr
@@ -1012,8 +1065,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         sta sp_ptr
         lda th_things+1
         sta sp_ptr+1
-        lda #0
-        sta sol_i
+        stz sol_i
 ?l      lda sol_i
         cmp THINGS_BASE
         bcs ?done
@@ -1030,6 +1082,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         sta zp_ptr+1
 ?out    rts
 .endp
+        .endseg
     .if * > BLKFILL_END+1
         ert 'blk_fill outgrew BLKFILL_BASE..END (memory_map.inc)'
     .endif
@@ -1041,6 +1094,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
 ;   the whole map once a frame instead -- 6k cycles against the 30k a single
 ;   monster step used to pay, and no unlink to get wrong.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc blk_push
         ldy #1                       ; cell = ((y >> 9) & 7) << 3 | (x >> 9) & 7
         lda (sp_ptr),y
@@ -1069,6 +1123,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         sta [zp_ptr],y
         rts
 .endp
+        .endseg
     .if * > BLKPUSH_END+1
         ert 'blk_push outgrew BLKPUSH_BASE..END (memory_map.inc)'
     .endif
@@ -1091,6 +1146,7 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
 
 
         org AILOOK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_look
         lda pl_dead                  ; a corpse is not worth looking for
         bne ?out
@@ -1110,9 +1166,8 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         bne ?ray                     ;   (a monster already chasing still gets
         jsr ai_front                 ;   one -- aif_pvis reads the cached
         bcs ?skip                    ;   answer): back turned costs nothing
-?ray    lda #0                       ; "no ray has run yet": ai_sight's reach
-        sta sg_n                     ;   cull returns without touching sg_n,
-        jsr ai_sight                 ;   sg_shift sets it to 64 for a walk that
+?ray    stz sg_n                     ; "no ray has run yet" (ai_sight starts
+        jsr ai_sight                 ;   with its own lda)
         lda #0                       ;   really happens, and a walk that comes
         rol                          ;   back BLOCKED always stops with at least
         ldx #>TH_SEEN                ;   one sample left (sg_walk tests before
@@ -1128,11 +1183,16 @@ sg_zon  dta 0                        ; 1 while sg_bsp is walking. sh_leaf is the
         bne ?next
 ?out    rts
 .endp
+        .endseg
     .if * > AILOOK_END+1
         ert 'ai_look outgrew AILOOK_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SIGHT_VARS
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 sg_dx   dta a(0)                     ; the sample step, monster -> player
 sg_dy   dta a(0)                     ;   (sg_dy MUST follow sg_dx: both loops
                                      ;    walk the four bytes as one)
@@ -1153,9 +1213,13 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
                                      ;   refreshes TH_SEEN)
                                      ; (sg_pl went to the SGTGT hole, not here --
                                      ;  see the guard below)
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PJSLT_BASE
         ert 'the sight vars outgrew the $82E0 hole (memory_map.inc)'
     .endif
+ .endif
                                      ; THE GUARD USED TO READ `SIGHT_VARS+32`
                                      ; AND THAT IS A PAGE THIS BLOCK DOES NOT
                                      ; OWN (2026-08-25): pj_slot is nailed to
@@ -1173,18 +1237,21 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ;   aligned, so switching between them is one store to zp_ptr+1; this sets the
 ;   common case and the callers step the high byte from there.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_bank
         stz zp_ptr
         lda #>TH_WROW
         sta zp_ptr+1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_ismon -- ai_t = thing index. Z=0 if it is a monster, alive, and not already
 ;   dying: TH_HP nonzero (pack_things only gives health to MF_SHOOTABLE) and
 ;   TH_STATE zero (enemy.asm's death chain owns anything else).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_ismon
         ldy ai_t
         stz zp_ptr
@@ -1205,6 +1272,7 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ?no     lda #0
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_start -- ai_t = thing index: put it into the chase. Caches the kind byte
@@ -1212,6 +1280,7 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ;   enters RUN state 0 with that kind's tics, and leaves movecount 0 / DI_NODIR
 ;   so the first A_Chase picks a direction with no turnaround to avoid.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_start
         jsr ai_bank                  ; the kind byte: en_kfill prefilled it for
         ldy ai_t                     ;   every thing at level init, so the wake
@@ -1271,17 +1340,21 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
         lda RANDOM                   ; the same POKEY LFSR the rest of this port
         and #3                       ;   rolls with, and the same bias DOOM's own
         cmp mk_seen,x                ;   M_Random%3 has (enemy.asm's header)
-        bcc ?pick
-        sec
+        bcc ?pick                    ; (C = 1 past it: no sec)
         sbc mk_seen,x
 ?pick   clc
         adc mk_see,x
+ .if 1
+        jmp snd_qp_ai                ; tail call -- (STEREO: ai_t saw -- sound.asm)
+ .else
         jsr snd_qp_ai                ; (STEREO: ai_t saw -- sound.asm)
         rts
+ .endif
 ?one    lda mk_see,x
         jsr snd_qp_ai
 ?no     rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_setrow -- ai_t = thing: TH_WROW = the walk row its current RUN state draws.
@@ -1295,6 +1368,7 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ;--------------------------------------------------------------
 aisr_resume = *
         org WROT2_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_setrow
         jsr ai_bank
         ldy ai_t
@@ -1350,6 +1424,7 @@ aisr_resume = *
         sta [zp_ptr],y
         rts
 .endp
+        .endseg
     .if * > WROT2_END+1
         ert 'ai_setrow outgrew WROT2_BASE..END (memory_map.inc)'
     .endif
@@ -1361,6 +1436,7 @@ aisr_resume = *
 ;--------------------------------------------------------------
 aitick_resume = *
         org AITICK_BASE              ; FAST: 256 iterations a tic (memory_map.inc)
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_tick
  .if 1
         ; 2026-09-09 (drac030 style): the sweep reads TH_WROW as WORDS -- two
@@ -1382,7 +1458,8 @@ aitick_resume = *
         bne ?hit
 ?next   iny
         iny
-        bne ?lp
+        cpy ai_lim                   ; WATERMARK (2026-09-14): the level's
+        bne ?lp                      ;   n_things, even (E1M1: 90 of the 256)
         sep #$20
         .LONGA OFF
         rts
@@ -1395,8 +1472,9 @@ aitick_resume = *
         lda [zp_ptr],y               ; the odd one (?one puts TH_WROW back)
         beq ?cont
         jsr ?one
-?cont   iny                          ; Z = Y wrapped: the sweep is over (rep
-        rep #$20                     ;   leaves Z alone)
+?cont   iny                          ; Z = Y at the watermark: the sweep is
+        cpy ai_lim                   ;   over (rep leaves Z alone)
+        rep #$20
         .LONGA ON
         bne ?lp
         sep #$20
@@ -1443,6 +1521,7 @@ aitick_resume = *
         jmp ?next
  .endif
 .endp
+        .endseg
     .if * > AITICK_END+1
         ert 'ai_tick outgrew AITICK_BASE..END (memory_map.inc)'
     .endif
@@ -1454,6 +1533,7 @@ aitick_resume = *
 ;   tics are info.c's, and its action -- A_Chase, on every single RUN state --
 ;   runs here.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_state
         jsr ai_ismon                 ; it may have died since the last tic
         bne ?live
@@ -1531,12 +1611,14 @@ aitick_resume = *
         jsr ai_setrow
         jmp ai_chase
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_chase -- A_Chase. The attack branches run first (they can return without
 ;   moving at all), then the movement half:
 ;       if (--movecount < 0 || !P_Move(actor)) P_NewChaseDir(actor);
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_chase
         jsr aif_ttick                ; P_KillMobj clears MF_SHOOTABLE on the dead
         beq ?stand                   ;   player, so A_Chase's target test fails and
@@ -1575,12 +1657,14 @@ aitick_resume = *
 ?new    jmp ai_newdir                ; ...or the move was blocked
 ?done   rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_get / ai_put -- one per-thing AI byte, page A. Everything in here is a
 ;   [zp_ptr],y read or write into bank $01 with the SAME index, so folding it
 ;   into a pair of helpers is what keeps this module inside its hole.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_get
         sta zp_ptr+1
         stz zp_ptr                   ; all the pages share the low byte (0)
@@ -1588,16 +1672,21 @@ aitick_resume = *
         lda [zp_ptr],y
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_put
         sta ai_t2
         stx zp_ptr+1
         stz zp_ptr
         ldy ai_t
-        lda ai_t2
-        sta [zp_ptr],y
+        lda ai_t2                    ; NOT dead: the reload's Z/N are the answer
+        sta [zp_ptr],y               ;   (sg_seen's `jsr ai_put / beq ?blind`,
+                                     ;   2026-09-15 -- removing it woke every
+                                     ;   monster)
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_move -- P_Move. A/Z: nonzero = it moved, zero = blocked, which is what
@@ -1615,6 +1704,7 @@ aitick_resume = *
 ;   FINAL BOSSES are two more speeds (16 and 12), i.e. two more rows -- and
 ;   MKTAB had twelve bytes of slack.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_move
         lda #>TH_DIR
         jsr ai_get
@@ -1659,30 +1749,21 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
                                      ;   ai_t + ai_sx/ai_sy in, everything from
                                      ;   here on is P_TryMove proper.
                                      ;   sp_ptr = the thing record (x at +0, y at +2)
-        ldy #0                       ; candidate = thing.xy + step
-        clc
-        lda (sp_ptr),y
+        rep #$21                     ; candidate = thing.xy + step, and its z: three
+        .LONGA ON                    ;   words (2026-09-15; was 24 byte ops)
+        lda (sp_ptr)
         adc ai_sx
         sta coll_cx
-        iny
-        lda (sp_ptr),y
-        adc ai_sx+1
-        sta coll_cx+1
-        iny
+        ldy #2
         clc
         lda (sp_ptr),y
         adc ai_sy
         sta coll_cy
-        iny
-        lda (sp_ptr),y
-        adc ai_sy+1
-        sta coll_cy+1
         ldy #4                       ; and its z, while sp_ptr is still good
         lda (sp_ptr),y
         sta ai_z
-        iny
-        lda (sp_ptr),y
-        sta ai_z+1
+        .LONGA OFF
+        sep #$20
         jsr coll_mon                 ; the same probe move_player uses, but
                                      ;   at the KIND's radius (p_map.c builds
                                      ;   tmbbox from tmthing->radius)
@@ -1701,77 +1782,56 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
         ;     down one, because its z never changes. DOOM's limit is 24 units in
         ;     BOTH directions -- up is "too big a step up", down is "don't stand
         ;     over a dropoff", and 24 is what makes stairs walkable and ledges not.
-?zstep  lda zp_px                    ; locate_floor point-locates zp_px/zp_py, so
-        sta ai_sv                    ;   lend it the candidate and give the player
-        lda zp_px+1                  ;   its position straight back
-        sta ai_sv+1
+?zstep  rep #$20                     ; locate_floor point-locates zp_px/zp_py:
+        .LONGA ON                    ;   lend it the candidate and take its
+        lda zp_px                    ;   position straight back -- four word
+        sta ai_sv                    ;   moves each way (drac030, 2026-09-14)
         lda zp_py
         sta ai_sv+2
-        lda zp_py+1
-        sta ai_sv+3
         lda coll_cx
         sta zp_px
-        lda coll_cx+1
-        sta zp_px+1
         lda coll_cy
         sta zp_py
-        lda coll_cy+1
-        sta zp_py+1
+        .LONGA OFF
+        sep #$20
         jsr locate_floor             ; -> loc_floor = the destination's floor
+        rep #$20
+        .LONGA ON
         lda ai_sv
         sta zp_px
-        lda ai_sv+1
-        sta zp_px+1
         lda ai_sv+2
-        sta zp_py
-        lda ai_sv+3
-        sta zp_py+1
-        sec                          ; dz = destination floor - the thing's z
-        lda loc_floor
-        sbc ai_z
-        sta ai_dz
-        lda loc_floor+1
-        sbc ai_z+1
-        sta ai_dz+1
-        bpl ?up
-        clc                          ; down: blocked if the drop is more than 24
-        lda ai_dz
+        sta zp_py                    ; (still 16-bit)
+        sec                          ; dz = destination floor - the thing's z, and
+        lda loc_floor                ;   |dz| <= 24 as ONE unsigned test: dz + 24
+        sbc ai_z                     ;   in [0, 48] (2026-09-15 -- the same set
+        sta ai_dz                    ;   the two byte branches accepted)
+        clc
         adc #24
-        lda ai_dz+1
-        adc #0
-        bmi ?no
-        jmp ?ok
-?up     lda ai_dz+1                  ; up: blocked if the step is more than 24
-        bne ?no
-        lda ai_dz
-        cmp #25
+        cmp #49
+        .LONGA OFF
+        sep #$20
         bcc ?ok
 ?no     lda #0
         rts
 ?ok     lda ai_t                     ; commit. collide_blocked and locate_floor
         jsr en_thing.en_th2          ;   both walk the map with zp_ptr/sp_ptr, so
-        ldy #0                       ;   rebuild the record pointer first
+        rep #$20                     ;   rebuild the record pointer first; x, y
+        .LONGA ON                    ;   and the new floor as three words
         lda coll_cx
-        sta (sp_ptr),y
-        iny
-        lda coll_cx+1
-        sta (sp_ptr),y
-        iny
+        sta (sp_ptr)
+        ldy #2
         lda coll_cy
         sta (sp_ptr),y
-        iny
-        lda coll_cy+1
-        sta (sp_ptr),y
-        iny                          ; ...and stand it on the new floor, which is
+        ldy #4                       ; ...and stand it on the new floor, which is
         lda loc_floor                ;   what makes it visibly walk the stairs
         sta (sp_ptr),y
-        iny
-        lda loc_floor+1
-        sta (sp_ptr),y
+        .LONGA OFF
+        sep #$20
         jsr ai_track                 ; it is in a new subsector now, and zp_nid
                                      ;   still holds the leaf locate_floor found
         jmp ai_mcnt                  ; P_TryWalk's movecount roll -- parked with
 .endp                                ;   the thrust code, this block is full
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_newdir -- P_NewChaseDir, structurally DOOM's: build the two axis wishes
@@ -1780,6 +1840,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ;   order swap and the final 8-direction scan; what is kept is the turnaround
 ;   ban, which is what stops a monster oscillating in a doorway.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_newdir
         jsr aif_tpos                 ; actor->target, which is not always the
         lda ai_t                     ;   player any more (infight.asm)
@@ -1938,6 +1999,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
         jsr ai_put                   ;   attempting a missile every state.
 ?done   rts
 .endp
+        .endseg
 
 ;==============================================================
 ; WHERE A MOVING THING IS DRAWN FROM.
@@ -1984,6 +2046,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ; ai_track -- ai_t = thing, zp_nid = the leaf locate_floor just reached. Insert
 ;   or refresh its entry. Called on every committed step and once on waking.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_track
         lda ai_t
         jsr ai_ischase
@@ -2007,6 +2070,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
         bcs ?st                      ; got one: reuse the slot it freed
         bcc ?full                    ; fourteen LIVE chasers: the old fallback
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_evict -- the table is full and a LIVE chaser wants in. Find a slot held by
@@ -2029,6 +2093,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ;   (This is the byte-for-byte replacement of ai_untrack, which was dead code --
 ;   see ai_state.)
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_evict
         jsr ai_bank                  ; zp_ptr = TH_WROW (bank $01)
         ldx #0
@@ -2043,12 +2108,14 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ?got    sec
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_ischase -- A = thing index. Z=0 and X = slot+1 if it is tracked, Z=1 if it
 ;   is not. Called per thing in spr_add's prefix loop, so it stays a plain scan
 ;   over at most AI_DMAX bytes and the caller checks ai_dn first.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_ischase
         ldx ai_dn
 ?lp     beq ?no
@@ -2061,6 +2128,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ?yes    txa                          ; X = slot+1, so it is never 0: Z=0 = tracked.
         rts                          ;   WITHOUT this the flag came from the CMP
 .endp                                ;   above, which is Z=1 on a match -- the same
+        .endseg
                                      ;   answer as "not found". spr_add's dedup then
                                      ;   never fired and every chaser was drawn
                                      ;   TWICE: once from where it stands and once
@@ -2072,6 +2140,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ;   chaser standing in it. Same projection the prefix loop uses, so it needs the
 ;   same thing-record pointer and the same alive test.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_chase
         ldx ai_dn
 ?lp     dex
@@ -2107,16 +2176,19 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
         bcc ?lp
 ?out    rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ai_trywalk -- P_TryWalk: A = the direction to try. Commits it and asks
 ;   P_Move. Z=0 (bne) = it moved.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_trywalk
         ldx #>TH_DIR
         jsr ai_put
         jmp ai_move
 .endp
+        .endseg
 
 ai_resume = *                        ; BEFORE the org, never after: `org label`
                                      ;   with the label defined below it resolves
@@ -2160,6 +2232,7 @@ ai_resume = *                        ; BEFORE the org, never after: `org label`
 ;   at all. The PLAYER's path (en_boom) still calls en_dist directly -- the
 ;   player is not a thing and has no radius here.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_bdist                       ; en_bi = the candidate. C=0 = no damage.
         ldy en_bi                    ; zp_ptr's low byte is 0 already: every
         lda #>TH_RAD                 ;   per-thing page is 256 B aligned and
@@ -2172,6 +2245,7 @@ ai_resume = *                        ; BEFORE the org, never after: `org label`
 ?no     clc                          ; a boss: `return true`, no damage, no kick
         rts                          ;   (a jmp and not a branch: en_dist is at
 .endp                                ;    $EA68 and this block is at $3D9C)
+        .endseg
     .if * > MKTAB_END+1
         ert 'en_bdist outgrew the mk_tables block (MKTAB_END, memory_map.inc)'
     .endif
@@ -2222,12 +2296,14 @@ NOISE_FR equ 30                      ; ~1 s: long enough for ai_look's
 ;--------------------------------------------------------------
 noiseq_resume = *
         org NOISEQ_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_noisealert
         sta snd_pending
         lda #NOISE_FR
         sta ai_noise
         rts
 .endp
+        .endseg
     .if * > NOISEQ_END+1
         ert 'ai_noisealert outgrew NOISEQ_BASE..END (memory_map.inc)'
     .endif
@@ -2273,6 +2349,7 @@ ai_dsh  :AI_DMAX dta 0               ; ...and high
 ;        Z=0 -> C is ai_isvis' answer. `lda` does not touch the carry, which is
 ;               what lets one register bring back both halves.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc aif_pchk
         lda pl_dead
         bne ?dead
@@ -2282,6 +2359,7 @@ ai_dsh  :AI_DMAX dta 0               ; ...and high
 ?dead   lda #0
         rts
 .endp
+        .endseg
 
     .if * > AI_END+1
         ert 'enemy_ai.asm outgrew AI_BASE..AI_END (memory_map.inc)'

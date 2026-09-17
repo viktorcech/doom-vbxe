@@ -45,13 +45,17 @@
 ;==============================================================
 
 vs_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org VIEWSZ_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; vw_apply -- vw_size -> the eight window bytes + a border repaint.
 ;   Called from init_level (boot AND every level, so the size survives an exit)
 ;   and from read_keys on '-' / '='.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc vw_apply
         lda vw_size
         asl                          ; *8 = vw_tab record
@@ -80,11 +84,17 @@ vs_resume = *
         sta vw_dirty                 ;   (triple buffer, 2026-08-11)
         rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;  vw_frame lives in OVLCLR_BASE now -- see the block at the end of this file.
 
 vwf_resume = *
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org OVLCLR_BASE
+ .endif
 ;--------------------------------------------------------------
 ; ovl_frame -- erase the overlay band, but only when someone has to.
 ;
@@ -119,14 +129,17 @@ vwf_resume = *
 ;   OUT OF VIEWSZ (2026-09-10): that block was full to the byte and this now
 ;   FALLS THROUGH into ovl_frame, which costs nothing where a `jmp` cost three.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc vw_frame
         lda vw_dirty
         beq ovl_frame                ; no resize pending -> the band may still
         dec vw_dirty                 ;   need it (fall through, next proc)
         lda #VIEW_BORDER
-        jmp clear_screen             ; tail-call
+        jmp clear_screen             ; tail call (both in bank $01)
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ovl_frame
         lda vw_size
         beq ?ret                     ; FULL view: the render still erases them
@@ -138,9 +151,8 @@ vwf_resume = *
 ?stale  lda ovl_dirty
         beq ?ret
         dec ovl_dirty
-        lda #0                       ; bg_blit's rectangle: cols 0..OVL_W-1,
-        sta bg_x0                    ;   rows 0..OVL_H-1, in the BACK buffer
-        sta bg_top
+        stz bg_x0                    ; bg_blit's rectangle: rows 0..OVL_H-1
+        stz bg_top
         lda #OVL_W
         sta bg_w
         lda #OVL_H-1
@@ -148,17 +160,26 @@ vwf_resume = *
         jmp bg_blit                  ; BG_COLOUR, not VIEW_BORDER: 247 and 0 are
 ?ret    rts                          ;   both rgb(0,0,0), and this saves the byte
 .endp                                ;   a colour argument would cost
+        .endseg
 
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ovl_dirty dta 0                      ; buffers still owing the clear
-
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > OVLCLR_END+1
         ert 'ovl_frame outgrew OVLCLR_BASE..END (memory_map.inc)'
     .endif
+ .endif
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org vwf_resume
+ .endif
 
 ;--------------------------------------------------------------
 ; vw_smaller / vw_bigger -- one step down / up the ladder ('-' / '=').
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc vw_smaller
         lda vw_size
         cmp #VW_NSIZE-1
@@ -167,7 +188,9 @@ ovl_dirty dta 0                      ; buffers still owing the clear
         jmp vw_apply
 ?ret    rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc vw_bigger
         lda vw_size
         beq ?ret                     ; already full size
@@ -175,6 +198,8 @@ ovl_dirty dta 0                      ; buffers still owing the clear
         jmp vw_apply
 ?ret    rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 vw_size dta 0                        ; the ONLY view-size state that has to survive
                                      ;   a level load; it lives here (in the XEX, so
@@ -193,9 +218,13 @@ vw_tab
         dta  50,109,110,  53,115,  60, 1,1    ;  60x63   3/8
         dta  60, 99,100,  63,104,  40, 2,0    ;  40x42   1/4
 
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > VIEWSZ_END+1
         ert 'viewsize outgrew VIEWSZ_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; vw_q34x -- m_prod[0..1] *= 3/4, for the sizes that are not a power of two.
@@ -208,6 +237,7 @@ vw_tab
 ;   from $A000 would cost a Rapidus milliseconds (that bank runs at bus speed).
 ;--------------------------------------------------------------
         org VWQ34_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc vw_q34x
         lda vw_q34
         beq ?ret
@@ -243,6 +273,7 @@ vw_tab
 ?ret    rts
  .endif
 .endp
+        .endseg
     .if * > VWQ34_END+1
         ert 'vw_q34x outgrew VWQ34_BASE..END (memory_map.inc)'
     .endif

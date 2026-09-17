@@ -72,6 +72,7 @@
 ;   Called from seg_draw once per seg per texture slot, not per column.
 ;   Clobbers A/X/Y.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc tex_setix
     .if TEX_RUNS
         ; PAINTED walls (paint.asm): the index is NOT copied into base RAM at
@@ -91,6 +92,19 @@
         ; instead of building a 24-bit pointer and taking an indirect read
         ; through it, and zp_ptr is not touched at all any more (no bank byte to
         ; hand back either).
+ .if 1
+        clc
+        lda MAP_TEXIXLO,x
+        adc #<LVL_TEXSD_C            ; tex_sdram is arena_init's copy of THIS
+        sta wt_ixl                   ;   constant (atr_levels.inc) and nothing
+        lda MAP_TEXIXHI,x            ;   else ever writes it: immediates, not
+        adc #>LVL_TEXSD_C            ;   three cell reads (-6 per call)
+        sta wt_ixh
+        lda #[LVL_TEXSD_C>>16]
+        adc #0
+        sta wt_ixb
+        rts
+ .else
         clc
         lda MAP_TEXIXLO,x
         adc tex_sdram
@@ -102,6 +116,7 @@
         adc #0
         sta wt_ixb
         rts
+ .endif
     .else
         txa
         asl                          ; the offset table is u16 per texid, and a
@@ -117,6 +132,7 @@
         rts
     .endif
 .endp
+        .endseg
 
 wt_ixl  dta 0                        ; tex_setix's answer, read by both callers
 wt_ixh  dta 0

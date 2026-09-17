@@ -37,6 +37,7 @@ ZNEAR     equ 4
 ;--------------------------------------------------------------
 ; frame_setup -- load sin/cos for zp_ang.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc frame_setup
         lda zp_ang                    ; tips #4: skip the ~7.5k-cyc rebuild when the
         cmp frame_ang                ;   angle is unchanged (walking straight) -- zp_sin/
@@ -54,6 +55,7 @@ ZNEAR     equ 4
         jmp build_frac_tables        ; rebuild |sin|/|cos| product tables for fmul_*
 ?same   rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; walk_init -- rs_mpass = 0, then on into the frame entry it displaced.
@@ -74,7 +76,11 @@ ZNEAR     equ 4
 ;   uses for its four gates).
 ;--------------------------------------------------------------
 wki_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org WALKINIT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc walk_init
  .if 1
         stz rs_mpass
@@ -88,20 +94,32 @@ wki_resume = *
         jmp spr_reset
     .endif
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > WALKINIT_END+1
         ert 'walk_init outgrew WALKINIT_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org wki_resume
 
 ;--------------------------------------------------------------
 ; render_world -- clear occlusion, walk the BSP from the root.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc render_world
         ; Only the VIEW WINDOW is re-opened (viewsize.asm): outside it every
         ; column stays solid from vw_apply, which is what makes a smaller window
         ; cheaper -- the walk, the column loops, bg_fill and the sprite clip
         ; snapshots all skip a solid column for free.
+ .if 1
+        lda vw_xend                  ; the loop bound goes INTO the cpx below as an
+        sta.l B1CODE_BASE+rwxe+1     ;   immediate, once a frame (2026-09-15, -2/col)
+ .endif
         ldx vw_x0
+        lda vw_y1                    ; the two constants OUT of the loop: top in
+        xba                          ;   A, bottom in B, swapped per column
+        lda vw_y0                    ;   (2026-09-15: 30 cycles a column, was 32)
 ?cl
  .if 1
         stz solid_arr,x
@@ -109,16 +127,29 @@ wki_resume = *
 	lda #0
         sta solid_arr,x
  .endif
-        lda vw_y0
         sta ytopc_arr,x              ; open window top
-        lda vw_y1
+        xba
         sta ybotc_arr,x              ; open window bottom (status bar starts below)
+        xba
         inx
+ .if 1
+rwxe    cpx #0                       ; operand = vw_xend, patched at the top
+ .else
         cpx vw_xend
+ .endif
         bne ?cl
 
         lda vw_ncol                  ; early-out: columns still open
         sta cols_open
+        inc vc_frame                 ; the vertex cache's frame stamp (seg_draw.asm
+        bne ?vcok                    ;   vc_look): 1..255; on the wrap every stamp
+        ldx #0                       ;   is cleared so an old frame's entry can
+        txa                          ;   never match, and the count restarts at 1
+?vcz    sta.l VCACHE_BASE+VC_STAMP,x
+        inx
+        bne ?vcz
+        inc vc_frame
+?vcok
  .if 1
         stz frame_done
         stz bsp_sp
@@ -177,10 +208,12 @@ wki_resume = *
                                      ;   (l1.png/l2.png: a candelabra swallowed
                                      ;   by the braces). midtex.asm
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; calc_nodeptr -- zp_nodeptr = MAP_NODES + (zp_nid & $7FFF)*NODE_SIZE
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc calc_nodeptr
         ; 16-BIT A (2026-08-31, from a reader of the disassembly): the old
         ; 8-bit ladder was m_a staging + jsr m_x4 + three asl/rol pairs + a
@@ -213,12 +246,14 @@ wki_resume = *
         sep #$20                     ;   by init_level -- nothing else writes +2
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; point_on_side -- A = 0 (front/right) or 1 (back/left) for the player
 ;   vs the node partition. side0 iff (ndy*dxp - dyp*ndx) > 0.
 ;   node: x@0 y@2 dx@4 dy@6.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc point_on_side
         sec                          ; dxp = px - node.x  -> cx_b
  .if 1
@@ -313,6 +348,7 @@ wki_resume = *
 ?s1     lda #1
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; render_node -- recursive BSP walk. zp_nid = node id (bit15=leaf).
@@ -320,6 +356,7 @@ wki_resume = *
 ; tips #5: ITERATIVE walk with an explicit far-child stack (bsp_stack) instead of
 ; recursion -> no per-node jsr/rts, frees the CPU stack for deep maps. Same
 ; near-first (front-to-back) visit order as the old recursion -> identical render.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc render_node
 ?walk   lda frame_done               ; early-out: whole screen already solid
         beq ?live
@@ -337,12 +374,97 @@ wki_resume = *
         jmp ?leaf
 ?node
  .endif
+ .if 1
+        ; calc_nodeptr + point_on_side INLINED (2026-09-15): ONE 16-bit window
+        ; from the node id to the four node words (calc_nodeptr's sep and
+        ; point_on_side's rep cancel), and point_on_side's exits branch
+        ; straight to ?side0/?side1 instead of lda #0/1, rts, bne. Both procs
+        ; stay for their other callers; the code below is theirs verbatim.
+        rep #$20
+        .LONGA ON
+        lda zp_nid                   ; zp_nodeptr = MAP_NODES + nid*28
+        asl @
+        asl @
+        sta m_ma
+        asl @
+        asl @
+        asl @
+        sec
+        sbc m_ma
+        adc #MAP_NODES-1             ; C=1 here (calc_nodeptr)
+        sta zp_nodeptr
+        sec                          ; dxp = px - node.x  -> cx_b
+        lda zp_px
+        sbc [zp_nodeptr]
+        sta cx_b
+        sec                          ; dyp = py - node.y  -> cx_c
+        ldy #2
+        lda zp_py
+        sbc [zp_nodeptr],y
+        sta cx_c
+        ldy #6                       ; cx_a = node.dy
+        lda [zp_nodeptr],y
+        sta cx_a
+        ldy #4                       ; cx_d = node.dx
+        lda [zp_nodeptr],y
+        sta cx_d
+        sep #$20                     ; (sep leaves Z: dx == 0 as a word)
+        .LONGA OFF
+        bne ?pnv
+        lda cx_b                     ; dxp == 0 -> cross 0 -> side1
+        ora cx_b+1
+        beq ?side1
+        lda cx_a+1                   ; sign(ndy) XOR sign(dxp)
+        eor cx_b+1
+        bmi ?side1
+        bpl ?side0
+?pnv    lda cx_a                     ; node.dy == 0 ? -> horizontal split
+        ora cx_a+1
+        bne ?pgen
+        lda cx_c                     ; dyp == 0 -> cross 0 -> side1
+        ora cx_c+1
+        beq ?side1
+        lda cx_c+1                   ; sign(dyp) XOR sign(ndx)
+        eor cx_d+1
+        bmi ?side0
+        bpl ?side1
+?pgen   jsr cross_pos                ; general node: A=1 if cross>0 (side0)
+        eor #1                       ; -> 0 = side0, falls into the test below
+ .else
         jsr calc_nodeptr
         jsr point_on_side            ; A = side
+ .endif
 
+ .if 1                                ; 2026-09-15: the side picks the LOAD ORDER
+        bne ?side1                   ;   -- no pha/pla, no swap, and the far
+?side0  ldy #8                       ;   bbox offset goes straight to cb_off
+	rep #$20                     ;   (cb_fbb only ever fed it)
+	.LONGA ON
+        lda [zp_nodeptr],y           ; side0: near = child_r, far = child_l
+        sta zp_near
+        ldy #10
+        lda [zp_nodeptr],y
+        sta zp_far
+	sep #$20
+	.LONGA OFF
+        lda #20                      ; far = child_l -> bbox@20
+        sta cb_off
+        bra ?have
+?side1  ldy #10
+	rep #$20
+	.LONGA ON
+        lda [zp_nodeptr],y           ; side1: near = child_l, far = child_r
+        sta zp_near
+        ldy #8
+        lda [zp_nodeptr],y
+        sta zp_far
+	sep #$20
+	.LONGA OFF
+        lda #12                      ; far = child_r -> bbox@12
+        sta cb_off
+ .else
         pha
         ldy #8                       ; zp_near = child_r
- .if 1
 	rep #$20
 	.LONGA ON
         lda [zp_nodeptr],y
@@ -352,7 +474,8 @@ wki_resume = *
         sta zp_far
 	sep #$20
 	.LONGA OFF
- .else
+ .endif
+ .if 0                                ; (the old 8-bit load, then the swap)
         lda [zp_nodeptr],y
         sta zp_near
         iny
@@ -364,7 +487,6 @@ wki_resume = *
         iny
         lda [zp_nodeptr],y
         sta zp_far+1
- .endif
         pla
         beq ?side0                   ; side0: near=R(bbox@12), far=L(bbox@20)
 
@@ -385,6 +507,9 @@ wki_resume = *
  .endif
 ?side0  lda #20                      ;    used to store beside it was written twice a
         sta cb_fbb                   ;    node and never read -- 10 B + ~8 cyc/node)
+        lda cb_fbb
+        sta cb_off
+ .endif
 ?have; R_CheckBBox on the FAR child only, exactly like DOOM's R_RenderBSPNode:
         ; the near side always gets walked, the far side is skipped when every
         ; screen column its bounding box covers is already solid. That throws
@@ -398,9 +523,8 @@ wki_resume = *
         ; (The old "over-culls" warning predates the 2026-07-27 saturation fix
         ;  in screenx_signed: the span used to WRAP. Saturation only ever widens
         ;  a span, so it cannot cull something visible.)
-        lda cb_fbb
-        sta cb_off
-        jsr check_bbox               ; A=1 -> subtree wholly invisible
+        jsr check_bbox               ; A=1 -> subtree wholly invisible (cb_off was
+                                     ;   set with the children above)
  .if 1
 	rep #$20
 	.LONGA ON
@@ -449,6 +573,7 @@ wki_resume = *
 
 ?done   rts
 .endp
+        .endseg
 
 ;==============================================================
 ; The $1B00 block: code relocated out of the tight $2000 segment (spare RAM after
@@ -498,8 +623,13 @@ cb_resume = *
 ;==============================================================
 cu_resume = *
         org CALCU_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc calc_u
+ .if 1
+        phx                          ; (2026-09-15: the stack, not cu_savex, -1/call)
+ .else
         stx cu_savex                 ; X is the column loop's index -- umul16/udiv24
+ .endif
  .if 1
 	rep #$21		;absorb CLC
 	.LONGA ON
@@ -508,11 +638,16 @@ cu_resume = *
 	bne ?ok
 	inc
 ?ok	sta m_den
-	stz m_prod
-        lda rs_t1+1
-        sta m_prod+1
-	sep #$20
-	.LONGA OFF
+	stz m_prod                   ; byte 0 = 0 (a 16-bit stz: bytes 0-1), then
+        lda rs_t1+1                  ;   bytes 1-2 = t1 >> 8 -- and A still holds
+        sta m_prod+1                 ;   them, which is what udiv24_q8 takes:
+	.LONGA OFF                   ;   no sep/rep, no prelude (2026-09-15)
+  .ifdef ANTONIA2
+	sep #$20                     ; drac030's udiv24a_v2.asm is icl'd verbatim and
+	jsr udiv24                   ;   has no 16-bit entry: it starts in 8-bit A
+  .else
+	jsr udiv24.udiv24_q8         ; m_quot = 256 * t1/(t1+t2)  (Q8 ratio 0..256)
+  .endif
  .else
         clc                          ; clobber it (this cost one pink screen)
                                      ; den = (t1 + t2) >> 8
@@ -531,8 +666,8 @@ cu_resume = *
         sta m_prod+1
         lda rs_t1+2
         sta m_prod+2
- .endif
         jsr udiv24                   ; m_quot = 256 * t1/(t1+t2)  (Q8 ratio 0..256)
+ .endif
 
         lda rs_uflip
  .if 1
@@ -540,14 +675,13 @@ cu_resume = *
 	.LONGA ON
 	beq ?nofl
 	sec
-	lda #256
-        sbc m_quot
-        sta m_quot
-?nofl
+	lda #256                     ; flipped seg: u runs L .. 0 -- the ratio goes
+        sbc m_quot                   ;   straight to m_b, m_quot is dead here
+	bra ?have                    ;   (2026-09-15)
+?nofl	lda m_quot
+?have	sta m_b
 	lda rs_seglen                ; u = (L * ratio) >> 8
         sta m_a
-        lda m_quot
-        sta m_b
 	sep #$20
 	.LONGA OFF
  .else
@@ -593,14 +727,20 @@ cu_resume = *
         adc rs_segoff+1              ;   whole world units -> it lands in bytes
         sta rs_uacc+2                ;   1-2, same as the product.
  .endif
+ .if 1
+        plx
+ .else
         ldx cu_savex
+ .endif
         rts
 .endp
+        .endseg
         org cu_resume
 
 ;--------------------------------------------------------------
 ; render_subsector -- draw all segs of subsector (zp_nid & $7FFF).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc render_subsector
         jsr spr_add                  ; things first, then the segs (R_Subsector order)
         ; ONE 16-bit window, subsector to seg pointer (2026-08-31, drac030):
@@ -675,6 +815,7 @@ cu_resume = *
 ?done   rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; locate_floor -- floor height of the sector containing (zp_px, zp_py).
@@ -686,6 +827,7 @@ cu_resume = *
 ;--------------------------------------------------------------
 lf_resume = *
         org LOCFLOOR_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc locate_floor
         lda MAP_HROOT                 ; root node index (map header, per level)
         sta zp_nid
@@ -762,6 +904,7 @@ lf_resume = *
         sep #$20
         rts
 .endp
+        .endseg
     .if * > LOCFLOOR_END+1
         ert 'locate_floor outgrew LOCFLOOR_BASE..END (memory_map.inc)'
     .endif
@@ -774,6 +917,7 @@ lf_resume = *
 ;--------------------------------------------------------------
 upz_resume = *
         org UPDPZ_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc update_pz
         jsr pl_zfloor                 ; locate_floor, then P_ZMovement (gravity,
                                       ;   the fall, the landing) and zp_pz =
@@ -801,6 +945,7 @@ upz_resume = *
                                       ;   segment has no room for the jsr)
         jmp update_scroll             ;   and finally the scrolling wall (48)
 .endp                                 ;   (see the note in bsp_main's frame loop)
+        .endseg
     .if * > UPDPZ_END+1
         ert 'update_pz outgrew UPDPZ_BASE..UPDPZ_END (memory_map.inc)'
     .endif
@@ -814,11 +959,17 @@ upz_resume = *
 ; code (load_vertex..) keeps packing the $2000 segment. Keeps RAM tidy.
 ;==============================================================
 coll_seg_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org COLLISION_BASE
+ .endif
         icl 'collision.asm'
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > COLLISION_END
         ert 'collision.asm outgrew the old TWRUNS slot at $AAF0 -- see memory_map.inc'
     .endif
+ .endif
         org coll_seg_resume          ; back to the $2000 engine-code segment
 
 seg_resume = *

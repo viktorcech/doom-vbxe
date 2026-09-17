@@ -58,6 +58,7 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;--------------------------------------------------------------
 ; coll_sq -- m_prod(4,unsigned) = (m_a signed16)^2.  Tail-calls umul16.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_sq
  .if 1
         rep #$20                     ; ---- 16-bit A: |m_a| in the accumulator
@@ -82,11 +83,13 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         jmp umul16
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; coll_d2lt -- A=1 if coll_px^2 + coll_py^2 < PLAYER_R2 (=256), else 0.
 ;   (< 256  <=>  the squared distance's high 3 bytes are all zero.)
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_d2lt
  .if 1
         rep #$20                     ; ---- 16-bit A
@@ -166,6 +169,7 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; coll_dist_hit -- A=1 if candidate (coll_cx,coll_cy) is within PLAYER_R of
@@ -173,6 +177,7 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;   gui.py seg_hit): endpoint regions use true squared distance, the interior
 ;   uses the perpendicular distance cross^2 < r2*dd.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_dist_hit
  .if 1
         rep #$20                     ; ---- 16-bit A: the four deltas
@@ -268,9 +273,8 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         cmp coll_dd                  ;   (a 32-bit unsigned compare: low word sets
         lda coll_t+2                 ;    the borrow, the high word's sbc reads it)
         sbc coll_dd+2
-        bcc ?perp                    ; t < dd -> interior
-        sec                          ; px = cx-bx ; py = cy-by
-        lda coll_cx
+        bcc ?perp                    ; t < dd -> interior (C = 1 past it: no sec)
+        lda coll_cx                  ; px = cx-bx ; py = cy-by
         sbc coll_bx
         sta coll_px
         sec
@@ -500,9 +504,8 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sbc coll_dd+2
         lda coll_t+3
         sbc coll_dd+3
-        bcc ?perp                    ; t < dd -> interior
-        sec                          ; px = cx-bx ; py = cy-by
-        lda coll_cx
+        bcc ?perp                    ; t < dd -> interior (C = 1 past it: no sec)
+        lda coll_cx                  ; px = cx-bx ; py = cy-by
         sbc coll_bx
         sta coll_px
         lda coll_cx+1
@@ -612,10 +615,12 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; coll_vptr / coll_secptr -- zp_ptr = table base + index(m_a)*stride.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_vptr                      ; MAP_VERTS + idx*4 (EXT bank offset)
  .if 1
         rep #$20                     ; ---- 16-bit A: MAP_VERTS + idx*4 in the
@@ -640,10 +645,12 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; coll_secheights -- sector index m_a -> coll_ax = floor_h, coll_ay = ceil_h.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_secheights
  .if 1
         rep #$20                     ; ---- 16-bit A: MAP_SECTORS + idx*8, then
@@ -686,6 +693,7 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; coll_seg -- zp_sptr -> seg record. A=1 if this seg BLOCKS the candidate:
@@ -710,13 +718,16 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;   `cross^2 < r2*dd` into a byte shift. A general r2 needs a 16x32 multiply in
 ;   the hottest routine in the engine; a power of two keeps it a shift.
 ;--------------------------------------------------------------
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 coll_k    dta 0                      ; 0 = R16, 1 = R32, 3 = R128
 coll_rp1  dta a(17)                  ; R+1, the axis fast path's compare. A
                                      ;   WORD: collide_blocked compares 16-bit;
                                      ;   the high byte is a permanent 0 (every
                                      ;   writer stores a byte)
 coll_rtab dta 17,33,0,129            ; ...indexed by coll_k (2 is unused)
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_shl2k                     ; coll_t <<= 2*coll_k
  .if 1
         phx
@@ -752,18 +763,23 @@ coll_rtab dta 17,33,0,129            ; ...indexed by coll_k (2 is unused)
         rts
  .endif
 .endp
+        .endseg
 
 collf_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org COLLFAST_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_seg
  .if 1
         ldy #SEG_BACK                ; back_sec
         lda [zp_sptr],y
         cmp #NO_SECTOR               ; one-sided?
-        beq ?wall
-        ldy #SEG_WALL                ; ML_BLOCKING? col_a bit7 -> impassable 2-sided line
-        lda [zp_sptr],y
-        bmi ?wall
+        jeq ?wall                    ; (Jcc: the step rule pushed ?wall past the
+        ldy #SEG_WALL                ;   short-branch window, 2026-09-15)
+        lda [zp_sptr],y              ; ML_BLOCKING? col_a bit7 -> impassable 2-sided line
+        jmi ?wall
         ldy #SEG_FRONT               ; front sector heights -> acc in coll_bx/coll_by
         lda [zp_sptr],y
         sta m_a
@@ -773,6 +789,9 @@ collf_resume = *
         .LONGA ON
         lda coll_ax                  ; max-floor acc = ffloor
         sta coll_bx
+ .if 1
+        sta coll_cr                  ; ...and the FRONT floor kept for the step rule
+ .endif                               ;   (scratch: coll_dist_hit rewrites it anyway)
         lda coll_ay                  ; min-ceil acc = fceil
         sta coll_by
         ldy #SEG_BACK                ; back sector heights -> coll_ax/coll_ay
@@ -800,12 +819,78 @@ collf_resume = *
 ?mc     bpl ?keepc                   ; bceil >= acc -> keep
         lda coll_ay
         sta coll_by
-?keepc  sec                          ; opening = min-ceil - max-floor = coll_by - coll_bx
+?keepc
+ .if 1
+        ; BUG FIX 2026-09-15 (E2M1 1510,-497: "cez toto okno mozem niekedy prejst
+        ; a spadnem dole"). p_map.c P_CheckPosition takes tmfloorz = the HIGHEST
+        ; floor over every line the mover's box touches, and P_TryMove refuses
+        ; "tmfloorz - thing->z > 24" -- too big a step up. This port only asked
+        ; locate_floor at the destination CENTRE (coll_step_ok), so a 16-deep
+        ; window sill (floor 32) with a drop behind it was stepped OVER: a
+        ; 24-unit move put the centre past the sill, into the pit, and a drop is
+        ; no climb. The rule belongs to the seg: max floor - the mover's feet
+        ; (cur_floor) > MAXSTEP blocks, for the PLAYER's probe (coll_plrs sets
+        ; coll_stepchk; monsters and the ball keep their test).
+        lda coll_stepchk             ; (a byte: mask the neighbour)
+        and #$00FF
+        beq ?nostep
+  .if 1
+        ; REGRESSION FIX, same day ("nemozem vyjst po schodoch na zaciatku E1M1,
+        ; hned vlavo"). DOOM's thing->z is mo->floorz: the highest floor under
+        ; the whole BOX, so on a 16-rise flight with shallow treads the box is
+        ; already standing on the next step when it reaches the one after it.
+        ; cur_floor is the floor under the CENTRE -- one step low -- and
+        ; "max - cur_floor" read 32 on those stairs. Measure from
+        ; max(the seg's LOWER side, cur_floor): a seg blocks only when its two
+        ; sides differ by more than MAXSTEP AND its high side is more than
+        ; MAXSTEP above the feet. The E2M1 sill still blocks (0|32 from 0, and
+        ; 32|-64 from max(-64,0) = 0: both 32); a 16-rise flight never does.
+        sec                          ; lo = min(front floor, back floor):
+        lda coll_ax                  ;   coll_cr = front (saved at the load),
+        sbc coll_cr                  ;   coll_ax = back
+        bvc ?sv1
+        eor #$8000
+?sv1    bmi ?blo
+        lda coll_cr
+        bra ?hlo
+?blo    lda coll_ax
+?hlo    sta coll_cr+2                ; ref = max(lo, cur_floor)
+        sec
+        sbc cur_floor
+        bvc ?sv2
+        eor #$8000
+?sv2    bpl ?ref
+        lda cur_floor
+        sta coll_cr+2
+?ref    sec
+        lda coll_bx                  ; the higher floor of the two sides
+        sbc coll_cr+2                ;   minus the reference
+  .else
+        sec
+        lda coll_bx                  ; the higher floor of the two sides
+        sbc cur_floor                ;   minus the feet
+  .endif
+        bvc ?sv
+        eor #$8000
+?sv     bmi ?nostep                  ; level or a drop: no climb
+        cmp #MAXSTEP+1
+        bcs ?wall                    ; too big a step up
+?nostep
+ .endif
+        sec                          ; opening = min-ceil - max-floor = coll_by - coll_bx
         lda coll_by
         sbc coll_bx
         bmi ?wall                    ; opening < 0 (overlap/closed) -> blocks
         cmp #256
         bcs ?notblock                ; opening >= 256 -> open
+ .if 1                                ; DRAC_PLAN 5: no 8-bit window: A < 256 here (the bcs
+cs_hmin = *+1                        ;   above), so the 16-bit cmp is the byte
+        cmp #PLAYER_H                ;   compare; cs_hmin still names the LOW
+        bcs ?notblock                ;   byte bl_wall patches (?notblock seps)
+        tay                          ; Z from the low byte, as before
+        bne ?wall
+        inc coll_solid               ; a 16-bit cell now (bsp_main_player.asm)
+ .else
         sep #$20                     ; (the low byte is the opening)
         .LONGA OFF
 cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
@@ -817,6 +902,7 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
         bne ?wall                    ;   barrier the PICKUP must not reach through
         inc coll_solid               ;   (mp_clamp acts on this and clears it --
                                      ;   the .else side has the whole story)
+ .endif
 ?wall   rep #$20                     ; ---- 16-bit A (reached in either mode: rep
                                      ;   is idempotent): v1 -> endpoint A, v2 -> B,
         .LONGA ON                    ;   each a word index and two word reads
@@ -979,12 +1065,14 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; collide_leaf -- test every seg of the subsector (zp_nid leaf). A=1 if any
 ;   blocking seg is within radius of the candidate. (Same seg indexing as
 ;   render_subsector, but calls coll_seg.)
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc collide_leaf
  .if 1
         rep #$20                     ; ---- 16-bit A
@@ -1014,9 +1102,7 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
         lda zp_sptr
         adc #SEG_SIZE
         sta zp_sptr
-        lda zp_segcnt
-        dec @
-        sta zp_segcnt
+        dec zp_segcnt                ; (one 16-bit RMW, 2026-09-15)
         sep #$20                     ; (sep keeps Z: the count's)
         .LONGA OFF
         bne ?loop
@@ -1083,6 +1169,8 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
         rts
  .endif
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_shr2k                     ; coll_t >>= 2*coll_k, so coll_d2lt's
  .if 1
         phx                          ;   "< 256" means "< 256 << 2k"
@@ -1118,10 +1206,14 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
         rts
  .endif
 .endp
+        .endseg
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > COLLFAST_END+1
         ert 'coll_seg/collide_leaf outgrew COLLFAST_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org collf_resume
 
 ;--------------------------------------------------------------
@@ -1139,6 +1231,7 @@ cbsp_resume = *
                                      ; inside the accelerator's fast window --
                                      ; the right home for the routine every
                                      ; monster step and every player step runs.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc collide_blocked
  .if 1
         stz bsp_sp
@@ -1663,12 +1756,32 @@ cbsp_resume = *
         rts
  .endif
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_plr                       ; ...and the PLAYER's probe (and ball.asm's
         stz coll_k                   ;   -- MT_TROOPSHOT's radius is 6, so 16 is
         ldy #17                      ;   what it always meant). Naming the radius
         sty coll_rp1                 ;   at the call site beats trusting whoever
         jmp collide_blocked          ;   ran last to have put it back.
 .endp
+        .endseg
+ .if 1
+;   coll_plrs -- move_player's probe: coll_plr WITH the step-up rule (coll_seg,
+;   BUG FIX 2026-09-15). stz sets no flag, so the caller's `bne` still reads
+;   collide_blocked's answer.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc coll_plrs
+        lda #1
+        sta coll_stepchk
+        jsr coll_plr
+        stz coll_stepchk
+        rts
+.endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a
+coll_stepchk dta 0                   ; 1 = coll_seg applies P_TryMove's step-up rule
+        .endseg
+ .endif
 
     .if * > COLLBSP_END+1
         ert 'collide_blocked outgrew COLLBSP_BASE..END (memory_map.inc)'
@@ -1685,6 +1798,7 @@ cbsp_resume = *
 coll_svx  = zp_X1                    ; saved player pos across the floor probe
 coll_svy  = zp_Z1                    ;   (dead render scratch; coll_step_ok runs
                                      ;    before collide_blocked, no overlap)
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_step_ok
  .if 1
         pei (zp_px)                  ; the real player pos, parked on the stack
@@ -1761,4 +1875,5 @@ coll_svy  = zp_Z1                    ;   (dead render scratch; coll_step_ok runs
         rts
  .endif
 .endp
+        .endseg
 

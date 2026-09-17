@@ -111,7 +111,11 @@ SND_VTOP equ (SND_NV-1)*2            ; the top DOUBLED voice index -- every loop
 ;   $0400 block (which also had to find 5 B for snd_play's bank seed).
 ;--------------------------------------------------------------
 sndld_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SNDLD2_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_sounds
     .if SND_CHUNKS = 0               ; no blob on the ATR (wadsound.py not run):
         jmp load_weapons             ;   silent build.
@@ -124,9 +128,14 @@ sndld_resume = *
 ?reg    lda snd_rch,x                ; chunks in this region (0 = skip, do NOT
         beq ?next                    ;   stop: a later region may still be live)
         sta snd_ldn
+ .if 1
+        stz ll_dst                   ;   own bank, and never crosses it (a
+        stz ll_dst+1                 ;   region is at most one 64 KB bank)
+ .else
         lda #0                       ; every region starts at offset 0 of its
         sta ll_dst                   ;   own bank, and never crosses it (a
         sta ll_dst+1                 ;   region is at most one 64 KB bank)
+ .endif
         lda snd_rbk,x
         sta ll_bank
         stx snd_ldi
@@ -146,6 +155,8 @@ sndld_resume = *
                                      ;   main's boot sequence)
     .endif
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 snd_rbk dta SND_RBK0, SND_RBK1       ; ONE row per wadsound.py REGION, and the
 snd_rbk_e                            ;   ert is not decoration: the weapon loader
 snd_rch dta SND_RCH0, SND_RCH1       ;   once read past a short table and
@@ -154,9 +165,13 @@ snd_ldi dta 0
     .if snd_rbk_e - snd_rbk != SND_NREG || snd_rch_e - snd_rch != SND_NREG
         ert 'snd_rbk/snd_rch rows != SND_NREG -- add a row per wadsound REGION'
     .endif
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SNDLD2_END+1
         ert 'load_sounds outgrew SNDLD2_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org sndld_resume
 
 ;--------------------------------------------------------------
@@ -206,6 +221,7 @@ sf_rd   lda.l SND_EXT                ; SMC operand = this voice's byte address
 ;--------------------------------------------------------------
 snda_resume = *
         org SNDALLOC_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_alloc
  .if 1
         ldy snd_vmax                 ; the TOP voice the allocator may hand out
@@ -239,6 +255,7 @@ snda_resume = *
 ?take   ldy snd_best
 ?got    rts                          ; (the pitch roll would fit beautifully as
 .endp                                ;   a tail call from here -- Y = voice*2
+        .endseg
                                      ;   and X = the SFX id are exactly
                                      ;   snd_pstep's inputs -- but this block
                                      ;   ends flush at $BE52 with PLTHR5 next,
@@ -256,6 +273,7 @@ snda_resume = *
 ;   BREAK. snd_arm turns the timer on, and the IRQ turns it back off when the
 ;   last voice goes quiet -- no interrupt at all in a silent frame.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_init
  .if 1
         sei
@@ -275,7 +293,7 @@ snda_resume = *
                                      ;   serial -- the OS boots it at $C0
         sta VBXE_MEMAC_B             ; window off
  .endif
-        jsr snd_stop                 ; every voice idle, every AUDCn at 0, timer
+        jsl snd_stop_w0 ; every voice idle, every AUDCn at 0, timer
                                      ;   off (and IRQEN with it)
         lda #$FF
         sta snd_pending
@@ -292,6 +310,7 @@ snda_resume = *
         cli
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; snd_play -- start SFX X (0..SFX_COUNT-1) on whichever voice snd_alloc hands
@@ -299,6 +318,7 @@ snda_resume = *
 ;   Nothing is "the" channel any more: the sample lands wherever there is room,
 ;   and only a full mixer costs anything (see snd_alloc).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_play
     .if SND_CHUNKS = 0               ; silent build: no blob on the ATR
         rts
@@ -322,7 +342,7 @@ snda_resume = *
         sta sv_rh,y
         tya
         tax                          ; the SFX id is spent -- X is the voice now
-        jsr snd_fetch                ; prime the first byte. No blitter wait any
+        jsl snd_fetch_w0 ; prime the first byte. No blitter wait any
                                      ;   more: the samples are in Rapidus RAM.
         jsr snd_vgo                  ; STEREO: the trigger's pan -> this voice,
                                      ;   then sv_act = 1 (the old two lines
@@ -332,6 +352,7 @@ snda_resume = *
         ; fall through
     .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; snd_arm -- start Timer-1, the clock EVERY voice runs on. Whichever snd_play
@@ -340,6 +361,7 @@ snda_resume = *
 ;   the divider, which would shorten one tick for the voices already playing --
 ;   a click on the old sound every time a new one starts.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_arm
         lda #15                      ; re-assert the rate: nothing else programs
         sta AUDF1_R                  ;   POKEY, but a stray write must not detune
@@ -353,6 +375,7 @@ snda_resume = *
 ?on     cli
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; snd_irq -- Timer-1 handler: ONE 4-bit sample for every live voice, then the
@@ -494,7 +517,12 @@ snda_resume = *
         lsr                          ;  `beq ?out` back INTO this loop)
 ?nib    and #$0F
         ora #$10
-        jsr snd_out                  ; output ASAP -- less jitter. STEREO
+        bit sv_side,x                ; snd_out INLINE on the sample path
+        bmi ?so_r                    ;   (2026-09-15: the jsr/rts went, ~3,960
+        sta AUDC1_R,x                ;   times a second while anything plays).
+        bvs ?so_d                    ;   N = right-only, V = left-only, 0 = both
+?so_r   sta AUDC1_R+$10,x
+?so_d                                ; output ASAP -- less jitter. STEREO
                                      ;   (2026-08-31): the voice's side routes
                                      ;   it to POKEY1/POKEY2/both -- same 3 B
                                      ;   as the old `sta AUDC1_R,x`, this block
@@ -633,19 +661,27 @@ snda_resume = *
 ;   that way, so a gunshot stored over it stays at the centre.
 ;--------------------------------------------------------------
 sndpth_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SNDPTH_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qm_last                    ; A = SFX -> the monster voice; en_last cried
         sta en_snd_q
         lda en_last
         sta en_snd_th
         rts
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qm_ai                      ; ... ai_t cried (the attack grunt)
         sta en_snd_q
         lda ai_t
         sta en_snd_th
         rts
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qp_ai                      ; A = SFX -> the frame's SFX slot, from
         sta snd_pending              ;   where thing ai_t stands (A_Look's
         sta snd_pid                  ;   seesound, the A_Chase grunt, hoof/metal,
@@ -653,6 +689,8 @@ sndpth_resume = *
         jsr snd_panth                ;   launch). Preserves X and Y.
         bra snd_qp_take
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qp_ball                    ; A = SFX at the imp's ball (bl_x/bl_y):
         sta snd_pending              ;   the fireball's burst. Preserves X/Y.
         sta snd_pid
@@ -670,6 +708,8 @@ sndpth_resume = *
         .LONGA OFF
         bra snd_qp_pan
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qp_pj                      ; A = SFX at the player's missile (pj_x/pj_y
         sta snd_pending              ;   of the slot pj_load swapped in): the
         sta snd_pid                  ;   rocket/plasma burst. Preserves X/Y.
@@ -687,12 +727,16 @@ sndpth_resume = *
         .LONGA OFF
         ; fall through
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qp_pan                     ; sda_sx/sda_sy -> the pending pan
         phx
-        jsr snd_setpan               ; quadrant x facing -> snd_side (eats X)
+        jsl snd_setpan_w0               ; quadrant x facing -> snd_side (eats X)
         plx
         ; fall through
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_qp_take                    ; snd_side -> snd_ppan. The pan is computed
         bcs ?far                     ;   at QUEUE time and parked here: snd_side
         lda snd_side                 ;   itself goes to the NEXT snd_play, which
@@ -703,11 +747,13 @@ sndpth_resume = *
         sta snd_pending              ;   nothing at all -- unqueue it
         rts
 .endp
+        .endseg
 ;--------------------------------------------------------------
 ; snd_panth -- A = the thing whose voice snd_play starts next ($FF = nobody:
 ;   the centre stays). Preserves X (the SFX id snd_play wants). Native mode
 ;   only (the frame loop): en_th2 and the word subtracts are 16-bit blocks.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_panth
         cmp #$FF
         beq ?none
@@ -727,13 +773,15 @@ sndpth_resume = *
         sta sda_sy
         sep #$20
         .LONGA OFF
-        jsr snd_setpan               ; angle x facing -> snd_side; C=1 = too
+        jsl snd_setpan_w0               ; angle x facing -> snd_side; C=1 = too
         ply                          ;   far to hear at all (S_CLIPPING_DIST)
         plx
         rts
 ?none   clc                          ; nobody: audible, centre (the cmp left C=1)
         rts
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_dispatch
  .if 1
         stz snd_menu                 ; the game is running: the pitch rolls again
@@ -755,7 +803,8 @@ sndpth_resume = *
         bne ?pl                      ;   queued? then the pan it was queued with
         lda snd_ppan                 ;   goes to the voice; the player's own
         sta snd_side                 ;   sounds never match it (posit/bgsit/
-?pl     jmp snd_play                 ;   claw/firxpl... are never his)
+?pl     jsr snd_play                 ;   claw/firxpl... are never his)
+        rts                          ;   (tail call across the bank line)
  .else
         ldx en_snd_q                 ; the monster's voice takes a voice of its
         bmi ?sfx                     ;   own: the cry and the gunshot both play,
@@ -777,6 +826,8 @@ sndpth_resume = *
                                      ;  see music.asm's header for how to put
                                      ;  the four hooks back.)
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 en_snd_th dta $FF                    ; who queued en_snd_q ($FF = nobody)
 snd_menu  dta 0                      ; nonzero = the MENU is up (mn_head bumps
                                      ;   it, the frame loop's snd_dispatch
@@ -787,9 +838,13 @@ snd_ppan  dta 0                      ; the pan snd_pending's sound was queued wi
 snd_pid   dta $FF                    ;   ...and the id it was queued as, so a
                                      ;   player sound stored over it (a different
                                      ;   id) plays at the centre
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SNDPTH_END+1
         ert 'snd_panth + the stereo queue helpers outgrew SNDPTH_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org sndpth_resume
 
 ;--------------------------------------------------------------
@@ -901,6 +956,7 @@ side_tab dta $00,$40,$40,$40         ; relative octant 0 (ahead) centre, 1-3 LEF
 ;   hole -- SNDPAN2 could not take both.
 sndpst_resume = *
         org SNDPST_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_pstep
         lda #0
         sta sv_frc,y
@@ -935,6 +991,7 @@ sndpst_resume = *
         sta sv_stp,y
         rts
 .endp
+        .endseg
     .if * > SNDPST_END+1
         ert 'snd_pstep outgrew SNDPST_BASE..END (memory_map.inc)'
     .endif
@@ -951,7 +1008,11 @@ sndpst_resume = *
 ;   with the ROM in OR out, so an under-ROM home would fetch OS bytes.
 ;--------------------------------------------------------------
 sout_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SNDOUT_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 .proc snd_out
         bit sv_side,x                ; N = right-only, V = left-only, 0 = centre
         bmi ?r
@@ -961,9 +1022,13 @@ sout_resume = *
 ?done   rts
 .endp
 sv_side dta 0,0,0,0,0,0,0            ; per voice slot: 0 centre / $40 L / $80 R
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SNDOUT_END+1
         ert 'snd_out outgrew SNDOUT_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org sout_resume
 
 ;==============================================================
@@ -980,7 +1045,10 @@ sv_side dta 0,0,0,0,0,0,0            ; per voice slot: 0 centre / $40 L / $80 R
 ; and the flags and preserve X and Y unless noted.
 ;==============================================================
 sndq2_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SNDQ2_BASE
+ .endif
 
 ;--------------------------------------------------------------
 ; snd_dispatch -- start what this frame's events queued: the monster's cry and
@@ -999,26 +1067,35 @@ sndq2_resume = *
 ; the manual toggle queues SFX_DORCLS itself in snd_door_toggle below. Deleted
 ; 2026-08-14 (6 B).
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_q_noway                    ; USE pressed and nothing there
         lda #SFX_NOWAY
         sta snd_pending
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_q_pstart                   ; lift/floor starts moving
         lda #SFX_PSTART
         sta snd_pending
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_q_pstop                    ; lift back at the top
         lda #SFX_PSTOP
         sta snd_pending
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SNDQ2_END+1
         ert 'the snd_q_* wrappers outgrew SNDQ2_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org sndq2_resume
 
 ;--------------------------------------------------------------
@@ -1033,7 +1110,11 @@ sndq2_resume = *
 ;   has been naming for weeks instead.
 ;--------------------------------------------------------------
 snddt_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SNDDT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_door_toggle
         jsr door_toggle
         lda.l DOOR_STATE,x
@@ -1046,9 +1127,13 @@ snddt_resume = *
         sta snd_pending
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SNDDT_END+1
         ert 'snd_door_toggle outgrew SNDDT_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org snddt_resume
 
 ;--------------------------------------------------------------
@@ -1058,6 +1143,7 @@ snddt_resume = *
 ;   weapons, 22-24 keys. DOOM: sfx_wpnup for a weapon, sfx_itemup for the rest
 ;   (DSGETPOW is not in DOOM.WAD, so powerups use itemup too).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_bonus
         jsr give_bonus
         bcc ?no                      ; not usable now -> left on the floor, silent
@@ -1073,6 +1159,7 @@ snddt_resume = *
 ?no     clc
         rts
 .endp
+        .endseg
 
 ;==============================================================
 ; The level-exit SIO bracket -- exit_level (bsp_main.asm) swaps its
@@ -1086,11 +1173,15 @@ snddt_resume = *
 ; (pl_reload flows through the same two calls).
 ;==============================================================
 sndsio_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SNDSIO_BASE
+ .endif
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_sio                        ; BEFORE the loaders: DAC silent, Timer-1
  .if 1
-        jsr snd_stop                 ;   disarmed, and the OS load noise off
+        jsl snd_stop_w0 ;   disarmed, and the OS load noise off
         stz SOUNDR_R                 ;   for mid-game loads (boot keeps it: the
                                      ;   OS cold-starts SOUNDR back to 3)
  .else
@@ -1100,7 +1191,9 @@ sndsio_resume = *
  .endif
         jmp load_level_c
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_pokey                      ; AFTER them: put POKEY back the way
  .if 1
         sei                          ;   snd_init left it
@@ -1110,7 +1203,7 @@ sndsio_resume = *
         lda #0
         sta AUDCTL_R                 ; 64 kHz base, no serial pairing
  .endif
-        jsr snd_stop                 ; every voice idle + Timer-1 off (SIO left
+        jsl snd_stop_w0 ; every voice idle + Timer-1 off (SIO left
                                      ;   AUDCTL and channels 3/4 its way)
         lda #15
         sta AUDF1_R                  ; Timer-1 -> ~3959 Hz (PAL)
@@ -1120,18 +1213,24 @@ sndsio_resume = *
         cli                          ;   does not exist on the new map
         rts
 .endp
+        .endseg
 
 ; BOOT takes the same medicine since the menu moved snd_init in FRONT of the
 ; loaders (bsp_main.asm): every one of them hands POKEY to SIO and hands it back
 ; detuned, which is the 2026-08-04 squeal. main calls snd_pokey on its own, so
 ; the restore and "now start the level" are two labels instead of one.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_resume
         jsr snd_pokey
-        jmp init_level
+        jmp init_level               ; (DRAC_PLAN 4b) snd_resume is bank-$01 code too
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SNDSIO_END+1
         ert 'snd_sio/snd_resume outgrew SNDSIO_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org sndsio_resume
 
 ;==============================================================
@@ -1239,6 +1338,7 @@ snd_stage
 ; byte, so update_movers grinds by RETARGETING two jsrs (zero growth there):
 ; ?climb calls mv_raiseg instead of mv_raise, ?fall calls mv_stepg instead of
 ; mv_step. The code rides in this block's slack behind the SFX tables.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_q_grind                    ; every 8th jiffy (p_floor.c gates on
         lda RTCLOK3                  ;   leveltime&7 too), WEAK-queued: the
         and #7                       ;   grind must never eat a real event -- a
@@ -1249,12 +1349,16 @@ snd_stage
         sta snd_pending
 ?no     rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mv_raiseg                      ; a state-4 raise IS T_MoveFloor: stairs,
         jsr mv_raise                 ;   the donut, every to-target floor --
         jmp snd_q_grind              ;   they all grind on the way up
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mv_stepg                       ; the state-1 descent: a STAY slot is a
         jsr mv_step                  ;   W1/SR FLOOR (T_MoveFloor grinds), no
         ldx mv_slot                  ;   STAY is a lift (T_PlatRaise slides in
@@ -1262,12 +1366,14 @@ snd_stage
         bmi snd_q_grind              ;   directly -- a lift must not grind.
         rts
 .endp
+        .endseg
 
 ; en_reach -- en_shoot's ?have gate, parked in this block's slack because the
 ; ENEMY block is full to the byte. X = en_best on exit; C=0 = nothing under
 ; the crosshair, or an A_Punch/A_Saw swing out of MELEERANGE: scale is
 ; VFOCAL*256/Z, so "within arm's reach" (Z <= ~96, 64 + the fat demon's
 ; radius) means scale >= $01AB. A whiff does no damage and makes no thump.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_reach
         ldx en_best
         bmi ?no                      ; $FF -> nothing under the crosshair
@@ -1310,11 +1416,13 @@ snd_stage
 ?no     clc
         rts
 .endp
+        .endseg
 
 ; en_die_snd -- P_KillMobj's cry, from info.c via mk_tables. The A_Scream
 ; variant roll made it outgrow the ENINIT block (and MKTAB is 14 B too small):
 ; mk_death is the family BASE (podth1/bgdth1) and mk_dthn how many consecutive
 ; ids follow -- same contract as mk_see/mk_seen, same roll + bias as ai_start.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_die_snd
         ldx en_kind
         beq ?no
@@ -1327,8 +1435,7 @@ snd_stage
         lda RANDOM                   ; POKEY LFSR, the port's P_Random
         and #3
         cmp mk_dthn,x
-        bcc ?pick
-        sec
+        bcc ?pick                    ; (C = 1 past it: no sec)
         sbc mk_dthn,x
 ?pick   sta en_t
         pla
@@ -1338,11 +1445,13 @@ snd_stage
 ?no     rts                          ;   grunt AFTER the gunshot (enemy.asm).
                                      ;   STEREO: en_last is the one that died
 .endp
+        .endseg
 
 ; snd_q_nowayx -- try_use's miss, one hop out of the use-ray run (which ends
 ; 9 B short of ENLFIND_BASE): the "plain wall" that stopped the ray may be the
 ; EXIT switch -- then the click is p_switch.c's swtchx (specials 11/51), not
 ; the "uh-uh". EXIT_REQ is still up here; main consumes it after the flip.
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc snd_q_nowayx
         lda EXIT_REQ
         beq ?wall
@@ -1351,6 +1460,7 @@ snd_stage
         rts
 ?wall   jmp snd_q_noway
 .endp
+        .endseg
 
 ; k7 -- ball.asm's aim table, round(7*256/m) for m = 8..127: MT_TROOPSHOT's
 ; 7 units/VBLANK over the reduced aim deltas. Data only; both ball holes
@@ -1377,7 +1487,11 @@ k7      dta 224,199,179,163,149,138,128,119,112,105
 ;   per-SFX arrays, and this block had ONE byte left. It went to WPSAWI_BASE,
 ;   which fits it to the byte.
 sawidl_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org WPSAWI_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_sawidl
         ldx wp_cur
         cpx #WP_CHAINSAW
@@ -1391,9 +1505,13 @@ sawidl_resume = *
         sta snd_pending
 ?no     rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > WPSAWI_END+1
         ert 'wp_sawidl outgrew WPSAWI_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org sawidl_resume
     .if * > SNDTAB_END+1
         ert 'sound_tables.inc + snd_q_grind outgrew SNDTAB_BASE..END -- see memory_map.inc'

@@ -19,7 +19,11 @@
 ; setup_memac -- MEMAC-A 4K window at MEMW, CPU access, bank $0A
 ;==============================================================
 .proc setup_memac
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+        lda #MEMW_HI | MC_CPU | MC_16K
+ .else
         lda #MEMW_HI | MC_CPU | MC_4K
+ .endif
  .if 1
         sta VBXE_MEMAC_CTL
         stz VBXE_MEMAC_B
@@ -73,6 +77,7 @@ xdlstg_resume = *
 ;   flash is an XDL byte instead of an upload (see the PALETTE FLASH block in
 ;   memory_map.inc).
 ;==============================================================
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc setup_palette
  .if 1
         sta VBXE_PSEL
@@ -106,6 +111,7 @@ xdlstg_resume = *
         bne ?lp                      ; 256 iterations (X wraps 255->0)
         rts
 .endp
+        .endseg
 
 ;==============================================================
 ; setup_bcbs -- upload the vline + clear BCB templates to VRAM
@@ -222,7 +228,8 @@ setchn_resume = *
         sta MEMW+MEMW_VL_OFF+2*BCB_SIZE+BCB_HEIGHT
         lda #BLT_COPY|BLT_NEXT       ; A chains to B; B's template CTRL ends it
         sta MEMW+MEMW_VL_OFF+BCB_SIZE+BCB_CTRL
-        rts
+        rts                          ; (the $FF source byte + pc_colw+1: ptc_stamp,
+                                     ;  bank $01 -- this bank-0 hole ends at $4B9E)
 ?one    ldy #BCB_SIZE-1
 ?s0     lda bcb_tex8_tmpl,y
         sta (zp_ptr),y
@@ -269,12 +276,16 @@ setchn_resume = *
 ;--------------------------------------------------------------
     .if TEX_RUNS
 pfr_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PTCFRAME_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ptc_frame
         jsr ptc_stamp                ; the chain's DST-bank stamp -- and the
                                      ;   MEMAC window pointed at the BCBs FIRST
                                      ;   (PTCSTAMP_BASE, memory_map.inc)
-        jsr blitter_wait             ; a menu/hud blit can still be running --
+        jsr blitw_hard               ; a menu/hud blit can still be running --
                                      ;   and `lda BL_BUSY / bne` is NOT proof it
                                      ;   is done. BUSY (D1) drops between chained
                                      ;   BCB fetches (vbxe.cpp IsBlitterActive is
@@ -304,33 +315,49 @@ pfr_resume = *
         sta VBXE_BL_ADR1             ; ADR2 is 0 for good (see ptc_tail)
         lda #1
         sta VBXE_BL_START            ; async -- overlaps the BSP walk's start
-        jsr ptc_open
+        jsl ptc_open_w0
         jmp spr_reset
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PTCFRAME_END+1
         ert 'ptc_frame outgrew PTCFRAME_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org pfr_resume
     .endif                           ; TEX_RUNS (ptc_frame)
 
 ;==============================================================
 ; clear_screen -- fill whole framebuffer with colour in A
 ;==============================================================
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc clear_screen
         sta MEMW+MEMW_CL_OFF+BCB_XOR
         lda zback_hi                 ; clear the BACK buffer
         sta MEMW+MEMW_CL_OFF+BCB_DST_ADDR+2
-        jsr blitter_wait
+        jsr blitw_hard  
+ .if 1
+        stz VBXE_BL_ADR0             ; <VRAM_BCB_CLEAR = 0 and its bank byte too
+        lda #>VRAM_BCB_CLEAR
+        sta VBXE_BL_ADR1
+        stz VBXE_BL_ADR2
+    .if [VRAM_BCB_CLEAR & $FF] != 0 || [VRAM_BCB_CLEAR >> 16] != 0
+        ert 'VRAM_BCB_CLEAR moved off a page in bank 0: put the lda #< / #>>16 back'
+    .endif
+ .else
         lda #<VRAM_BCB_CLEAR
         sta VBXE_BL_ADR0
         lda #>VRAM_BCB_CLEAR
         sta VBXE_BL_ADR1
         lda #[VRAM_BCB_CLEAR>>16]
         sta VBXE_BL_ADR2
+ .endif
         lda #1
         sta VBXE_BL_START
-        jmp blitter_wait
+        jmp blitw_hard  
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ptc_stamp -- ptc_frame's first act: stamp THIS frame's zback_hi into the two
@@ -351,18 +378,29 @@ pfr_resume = *
 ;   ends at $BC32 and check_xex caught the overlap.
 ;--------------------------------------------------------------
 ptcs_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org PTCSTAMP_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ptc_stamp
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
         lda zback_hi
         sta MEMW+MEMW_VL_OFF+BCB_SIZE+BCB_XOR
         sta MEMW+MEMW_VL_OFF+2*BCB_SIZE+BCB_XOR
-        rts
+        lda #$FF                     ; the painter links' source byte (VRAM_BCB_FF,
+        sta MEMW+MEMW_VL_OFF+64      ;   2026-09-14): the window is on the overhead
+        stz pc_colw+1                ;   bank here. pc_colw+1 = 0 for the emits'
+        rts                          ;   16-bit column word (low byte: process_seg)
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > PTCSTAMP_END+1
         ert 'ptc_stamp outgrew PTCSTAMP_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org ptcs_resume
 
 ;==============================================================
@@ -382,6 +420,7 @@ ptcs_resume = *
 ;   owns sits in the $00Axxx overhead bank). Fires, then flips tw_chn so the
 ;   next chain builds in the other buffer while this one runs. Clobbers A.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ptc_tail
         sta VBXE_BL_ADR0
         lda tw_chn                   ; $97/$9B window page -> $A7/$AB VRAM page
@@ -390,6 +429,7 @@ ptcs_resume = *
         sta VBXE_BL_ADR1
         jmp ptc_go                   ; ...and the launch itself, which has to WAIT
 .endp                                ;   (PTCGO_BASE, memory_map.inc)
+        .endseg
 
 ;--------------------------------------------------------------
 ; ptc_go -- ptc_tail's tail: wait for the blitter, launch, flip the builder.
@@ -420,10 +460,21 @@ ptcs_resume = *
 ;--------------------------------------------------------------
 ptcgo_resume = *
         org PTCGO_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ptc_go
+ .if 1                                ; 2026-09-15: NO second wait. Both paths into
+                                     ;   ptc_tail -- ptc_fire (textures.asm) and
+                                     ;   spr_chfire -- run blitw_hard themselves
+                                     ;   right before, and nothing STARTS a blit
+                                     ;   between that wait and this store (the
+                                     ;   CTRL re-arm/terminate are BCB writes).
+                                     ;   104 redundant waits a frame = 4 chip-bus
+                                     ;   BUSY reads each (~11k cycles in the sim).
+ .else
         phx                          ; blitw_hard eats X, and ptc_tail's callers
-        jsr blitter_wait             ;   rely on it surviving (paint.asm)
+        jsr blitw_hard               ;   rely on it surviving (paint.asm)
         plx
+ .endif
         lda #1
         sta VBXE_BL_START
         lda tw_chn                   ; build the NEXT chain in the other buffer
@@ -431,6 +482,7 @@ ptcgo_resume = *
         sta tw_chn
         rts
 .endp
+        .endseg
     .if * > PTCGO_END+1
         ert 'ptc_go outgrew PTCGO_BASE..END (memory_map.inc)'
     .endif
@@ -444,11 +496,12 @@ ptcgo_resume = *
 ;   chains are all closed by now (ptc_fbg fired the last one before sprites),
 ;   so flipping tw_chn here keeps both users on the same selector. Clobbers A.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_chfire
         lda tw_x1st
         bne ?skip
         phx                          ; the previous chain/blit must finish first --
-        jsr blitter_wait             ;   and it MUST be blitw_hard, not a lone
+        jsr blitw_hard               ;   and it MUST be blitw_hard, not a lone
         plx                          ;   `lda BL_BUSY / bne`: BUSY blinks off
                                      ;   between chained BCB fetches, so a single
                                      ;   clean read fires MID-CHAIN and takes the
@@ -467,6 +520,7 @@ ptcgo_resume = *
         sta tw_x1st
 ?skip   rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; ptc_fire_wait -- close + launch the open painter chain (if any), then wait
@@ -476,14 +530,18 @@ ptcgo_resume = *
 ; ptc_fbg -- the render_world seam: the walk is done, fire what is left, then
 ;   bg_fill as before (its bg_blit calls go through ptc_fire_wait themselves).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ptc_fire_wait
-        jsr ptc_fire
-        jmp blitter_wait
+        jsl ptc_fire_w0
+        jmp blitw_hard               ; tail call (both in bank $01)
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ptc_fbg
-        jsr ptc_fire
+        jsl ptc_fire_w0
         jmp bg_fill
 .endp
+        .endseg
     .else                            ; !TEX_RUNS: the shared-BCB span submit
 ; 2026-06-03: ASYNC blitter (tips.txt #1). The previous version spun in a 2nd
 ; blitter_wait after BL_START while VBXE filled -- pure idle. Now we wait ONCE at
@@ -539,11 +597,14 @@ ptcgo_resume = *
 ;==============================================================
 ; blitter_wait -- spin until idle
 ;==============================================================
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc blitter_wait
         jmp blitw_hard               ; hardened wait (BLITW_BASE, 2026-08-11)
 .endp
+        .endseg
 blw_resume = *
         org BLITW_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc blitw_hard
 ?ag     ldx #4                       ; BUSY must read 0 FOUR times in a row: the
 ?ck     lda VBXE_BL_BUSY             ;   FX core can drop BUSY for an instant
@@ -552,6 +613,7 @@ blw_resume = *
         bne ?ck                      ;   frame whose last ceiling chains (the
         rts                          ;   TOP rows: the farthest walls draw last)
 .endp                                ;   were still being blitted -- the old
+        .endseg
                                      ;   VBLANK spin used to mask exactly this
     .if * > BLITW_END+1
         ert 'blitw_hard outgrew BLITW_BASE..END (memory_map.inc)'

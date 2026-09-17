@@ -69,6 +69,7 @@ fin_resume = *
 ;     MAP_HFINEP == 0   = an ordinary exit switch.
 ;--------------------------------------------------------------
         org FINEXIT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fin_exit
         ldx EXIT_REQ
         dex                          ; X = mn_open's entry index (WI_E_INTER)
@@ -76,9 +77,11 @@ fin_resume = *
         lda MAP_HFINEP               ; still readable: the map slot is untouched
         beq ?wi                      ;   until exit_level runs
         lda #BANK_EN | FINOVL_BANK
-        jmp mn_open                  ; ...which lands in fin_head below
+        jsl mn_open_w0 ; ...which lands in fin_head below
+        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
 ?wi     jmp wi_exit
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; fin_esc -- M_StartControlPanel from inside the finale, and the ONE part of
@@ -126,20 +129,33 @@ fin_resume = *
 ;   ends nothing and starts nothing (f_finale.c: F_Ticker sets no gameaction for
 ;   a non-commercial episode), so there is nothing for one to do.
 ;--------------------------------------------------------------
+FIN2_WIN        equ MEMW16+[[FIN2_BANK&3]<<12]     ; DRAC_PLAN 3b: 16 KB window: stage 2's chunk
 .proc fin_head
         lda #BANK_EN | FIN2_BANK
         sta VBXE_BANK_SEL
         ldx #0
+ .if 1
 ?s2     txa                          ; page X of the chunk -> page X of the slot
         clc
-        adc #>MEMW
+        adc #>FIN2_WIN
+        sta ?src+2                   ; >FIN2_WIN+X cannot carry (ert below), so
+        adc #<[[>FIN2_RUN]-[>FIN2_WIN]]  ;   the second add rides on C=0 and A
+        sta ?dst+2                   ;   instead of a fresh txa/clc (wi_head's)
+    .if [>FIN2_WIN] + [[FIN2_END+1-FIN2_RUN]/256] > 255
+        ert 'fin_head: >FIN2_WIN + page carries -- put the txa/clc back'
+    .endif
+ .else
+?s2     txa                          ; page X of the chunk -> page X of the slot
+        clc
+        adc #>FIN2_WIN
         sta ?src+2
         txa
         clc
         adc #>FIN2_RUN
         sta ?dst+2
+ .endif
         ldy #0
-?src    lda MEMW,y
+?src    lda FIN2_WIN,y
 ?dst    sta FIN2_RUN,y
         iny
         bne ?src
@@ -328,13 +344,13 @@ fin_loop jsr fin_tic
         stz zback_hi
         stz ZFRONT
         stz XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
-        lda #>VRAM_XDL_A
- .else
-        lda #0
+        lda #>VRAM_XDL_L             ; the LEGACY list, like wi_show: the finale
+ .else                                ;   paints a full 160x200 page into FRAME_A
+        lda #0                       ;   (xdl.asm)
         sta zback_hi
         sta ZFRONT
         sta XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
-        lda #>VRAM_XDL_A
+        lda #>VRAM_XDL_L
  .endif
         sta VBXE_XDLA1
         rts
@@ -360,8 +376,7 @@ fin_loop jsr fin_tic
         bne ?no
         lda fn_karm
         beq ?no
-        lda #0
-        sta fn_karm
+        stz fn_karm
         sec
         rts
 ?up     lda #1
@@ -389,7 +404,7 @@ fin_loop jsr fin_tic
         sta ld_chunks
         lda #FIN_ARBANK
         sta ld_bank0
-        jsr rom_in
+        jsr rom_in_t
         lda #$40
         sta NMIEN
         cli
@@ -403,10 +418,10 @@ fin_loop jsr fin_tic
         sta SOUNDR_R                 ;   it was mid-way through squeals for the
  .endif
                                      ;   whole read (the 2026-08-04 bug)
-        jsr load_vram
+        jsr load_vram_t
         sei
-        jsr rom_out
-        jmp snd_pokey                ; ...and POKEY back the way snd_init left it
+        jsr rom_out_t
+        jmp snd_pokey_t ; ...and POKEY back the way snd_init left it
 .endp
 
 ;--------------------------------------------------------------
@@ -490,8 +505,8 @@ fin_loop jsr fin_tic
         sta fn_tsp
         jsr fin_getc
         bne ?ch
-        sta fn_tdone                 ; A = 0 here...
-        inc fn_tdone                 ;   ...so this is the cheapest "= 1"
+        inc fn_tdone                 ; fn_tdone is 0 here (the bne ?out above), so
+                                     ;   the inc alone IS "= 1" -- no store first
 ?out    rts
 ?ch     cmp #$0A                     ; '\n': cx = 10, cy += 11
         bne ?g
@@ -625,6 +640,16 @@ fin_loop jsr fin_tic
 .proc fin_getc
         lda fn_tbk
         sta VBXE_BANK_SEL
+ .if 1
+fin_rd  lda $FFFF                    ; patched by fin_setup
+        ldx #BANK_EN | BANK_OVERHEAD ; the BCBs, before anything blits again
+        stx VBXE_BANK_SEL
+        inc fin_rd+1                 ; memory incs: A keeps the byte, so no
+        bne ?nc                      ;   pha/pla -- only Z has to be rebuilt
+        inc fin_rd+2                 ;   for the caller's bne (ora #0)
+?nc     ora #0
+        rts
+ .else
 fin_rd  lda $FFFF                    ; patched by fin_setup
         pha
         inc fin_rd+1
@@ -634,6 +659,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         stx VBXE_BANK_SEL
         pla
         rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -711,10 +737,9 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
 .endp
 
 .proc fin_full
-        lda #0
-        sta fb_dst
-        sta fb_dst+1
-        sta fb_dst+2
+        stz fb_dst                   ; (A is dead: fin_page loads it first)
+        stz fb_dst+1
+        stz fb_dst+2
         ; fall through
 .endp
 
@@ -800,10 +825,9 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         lda #[FIN_PFUB2A>>16]
         adc #0
         sta fb_src+2
-        lda #0
-        sta fb_dst
-        sta fb_dst+1
-        sta fb_dst+2
+        stz fb_dst
+        stz fb_dst+1
+        stz fb_dst+2
         sec
         lda #SCREEN_WIDTH-1
         sbc fn_scrv
@@ -875,7 +899,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         bcs ?out                     ; END6 is the last one -- "THE END"
         inc fn_endst
         ldx #SFX_PISTOL
-        jsr snd_play
+        jsr snd_play_t
         jmp fin_endblit
 ?out    rts
 .endp
@@ -981,15 +1005,23 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         lda fb_ctrl
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
         jsr hud_blit.hud_fire
-        jmp blitter_wait
+        jmp blitter_wait_t
 .endp
 
 ;==============================================================
 ; The per-episode tables. Three entries each, indexed by MAP_HFINEP-1.
 ;==============================================================
 ;   finaletext, as a MEMAC window address + the bank byte it is in
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+fin_txlo  dta <[MEMW16+[[[FIN_BANK+[FIN_TEXT1>>12]]&3]<<12]+[FIN_TEXT1&$FFF]], <[MEMW16+[[[FIN_BANK+[FIN_TEXT2>>12]]&3]<<12]+[FIN_TEXT2&$FFF]], <[MEMW16+[[[FIN_BANK+[FIN_TEXT3>>12]]&3]<<12]+[FIN_TEXT3&$FFF]]
+ .else
 fin_txlo  dta <[MEMW+[FIN_TEXT1&$FFF]], <[MEMW+[FIN_TEXT2&$FFF]], <[MEMW+[FIN_TEXT3&$FFF]]
+ .endif
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+fin_txhi  dta >[MEMW16+[[[FIN_BANK+[FIN_TEXT1>>12]]&3]<<12]+[FIN_TEXT1&$FFF]], >[MEMW16+[[[FIN_BANK+[FIN_TEXT2>>12]]&3]<<12]+[FIN_TEXT2&$FFF]], >[MEMW16+[[[FIN_BANK+[FIN_TEXT3>>12]]&3]<<12]+[FIN_TEXT3&$FFF]]
+ .else
 fin_txhi  dta >[MEMW+[FIN_TEXT1&$FFF]], >[MEMW+[FIN_TEXT2&$FFF]], >[MEMW+[FIN_TEXT3&$FFF]]
+ .endif
 fin_txbk  dta BANK_EN|[FIN_BANK+[FIN_TEXT1>>12]], BANK_EN|[FIN_BANK+[FIN_TEXT2>>12]], BANK_EN|[FIN_BANK+[FIN_TEXT3>>12]]
 ;   strlen(finaletext)*TEXTSPEED + TEXTWAIT + 1 -- F_Ticker's `>` made a `>=`
 fin_wtlo  dta <[FIN_TLEN1*FIN_SPEED+FIN_WAIT+1], <[FIN_TLEN2*FIN_SPEED+FIN_WAIT+1], <[FIN_TLEN3*FIN_SPEED+FIN_WAIT+1]

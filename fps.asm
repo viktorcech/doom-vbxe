@@ -52,6 +52,7 @@ fps_resume = *
 ;   number a person wants. FPS_HOLD+1 is a power of two, so the divide is two
 ;   shifts and the sum stays in a byte.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_tail
         lda fd_sum                   ; this frame joins the window
         clc
@@ -64,6 +65,7 @@ fps_resume = *
         jmp fps_draw2
 ?out    rts
 .endp
+        .endseg
     .if * > FPSTEN_END+1
         ert 'hud_tail outgrew FPSTEN_BASE..END (memory_map.inc)'
     .endif
@@ -81,6 +83,7 @@ fps_resume = *
 ;   fd_d0 that now held 50's UNITS -- zero -- and drew 0,00. Same mechanism
 ;   turned 25,00 into 5,00. The draw may not edit what it draws from.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_tens
         ldy #0
         sec
@@ -94,6 +97,7 @@ fps_resume = *
         lda fd_w
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; fps_dig -- A = a digit 0..9, in the big STTNUM face. Those ARE in HUD_TAB
@@ -101,6 +105,7 @@ fps_resume = *
 ;   hands back the glyph's width, which is what the pen advances by: STTNUM1 is
 ;   three bytes narrower than the rest and a fixed pitch would gap around it.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_dig
         clc
         adc #HUD_DIG0
@@ -115,6 +120,7 @@ fps_resume = *
         sta fd_x
         rts
 .endp
+        .endseg
     .if * > FPSDIG_END+1
         ert 'fps_dig outgrew FPSDIG_BASE..END (memory_map.inc)'
     .endif
@@ -131,6 +137,7 @@ fps_resume = *
 ;   FPS_COMMAY drops it to the digits' baseline: the glyph is 4 rows and they
 ;   are 16, and hud_blit SUBTRACTS the record's top from the row.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_glyph
         lda #<HUDV_COMMA
         sta fps_rec
@@ -142,6 +149,7 @@ fps_resume = *
         sta fps_rec+6
         jmp fps_emit
 .endp
+        .endseg
     .if * > FPSGLY_END+1
         ert 'fps_glyph outgrew FPSGLY_BASE..END (memory_map.inc)'
     .endif
@@ -152,6 +160,7 @@ fps_resume = *
 ;   hud_blit takes its 7-byte record through zp_ptr and does not care that every
 ;   other caller's comes out of HUD_TAB.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_emit
         lda #<fps_rec
         sta zp_ptr
@@ -166,6 +175,7 @@ fps_resume = *
         sta fd_x
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; fps_blit -- hud_blit with the destination bank borrowed. hud_blit defaults to
@@ -174,14 +184,16 @@ fps_resume = *
 ;   inside the view and has to land in the BACK buffer. Put back immediately,
 ;   so no other caller can be surprised.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_blit
         lda zback_hi
         sta hud_blit.hb_dbnk+1
-        jsr hud_blit
+        jsl hud_blit_w0
         lda #[VRAM_SCREEN>>16]
         sta hud_blit.hb_dbnk+1
         rts
 .endp
+        .endseg
     .if * > FPSEMIT_END+1
         ert 'fps_emit/fps_blit outgrew FPSEMIT_BASE..END (memory_map.inc)'
     .endif
@@ -204,6 +216,7 @@ fps_resume = *
 ;   frame_dt clamps dt_vbl to DOOR_DTMAX and hud_tail saturates the sum at
 ;   255, so sum-4 lands in 0..251 -- exactly the tables' length.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_fetch
         lda fd_sum
         cmp #4                       ; four 1-VBLANK frames is the fastest
@@ -221,6 +234,7 @@ fps_resume = *
 ?none   clc
         rts
 .endp
+        .endseg
     .if * > FPSFET_END+1
         ert 'fps_fetch outgrew FPSFET_BASE..END (memory_map.inc)'
     .endif
@@ -234,6 +248,7 @@ fps_resume = *
 ;   every frame ("fps musi byt presne a stabilne"). Nothing is averaged, so
 ;   nothing is blurred -- what stands is still one real frame's real rate.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_draw2
         dec fd_hold
         bpl ?paint
@@ -268,6 +283,7 @@ fps_resume = *
         jsr fps_dig
 ?out    rts
 .endp
+        .endseg
     .if * > FPSD2_END+1
         ert 'fps_draw2 outgrew FPSD2_BASE..END (memory_map.inc)'
     .endif
@@ -279,6 +295,7 @@ fps_resume = *
 ;   path, 0 for a held ESC. The mn_arm edge is SHARED with ESC -- only one key
 ;   can be down at a time, so each press still acts exactly once.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_key
         cmp #KEY_F
         bne ?no
@@ -288,25 +305,34 @@ fps_resume = *
         jmp fps_tog
 ?no     jmp mn_pend                  ; carry on down read_keys' old tail
 .endp
+        .endseg
     .if * > FPSKEY_END+1
         ert 'fps_key outgrew FPSKEY_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org FPSTOG_BASE
+ .endif
 ;--------------------------------------------------------------
 ; fps_tog -- the press: flip the readout. It used to buy a status-bar repaint
 ;   as well, to rub the digits off the ARMS box on the way out; the digits are
 ;   in the VIEW now and the next frame's render erases them unasked.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_tog
         lda fps_on
         eor #1
         sta fps_on
         jmp mn_pend
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > FPSTOG_END+1
         ert 'fps_tog outgrew FPSTOG_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
         org FPSDRW_BASE
 fps_rec   dta a(0), [HUDV_COMMA>>16], HUDV_YSW, HUDV_COMMAH, 0, 0
@@ -327,7 +353,11 @@ fd_d2     dta 0
         ert 'the fps_* state outgrew FPSDRW_BASE..END (memory_map.inc)'
     .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org FPSSUM_BASE
+ .endif
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; The EXACT-rate tables (see fps_fetch): entry s-4 holds the three decimal
 ; digits of 200/s, s = the 4-frame window's VBLANK sum, 4..255. Truncated,
@@ -347,7 +377,11 @@ FPS_SUMD2
         .rept 252,#
         dta [20000/[#+4]]%10
         .endr
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > FPSSUM_END+1
         ert 'the FPS sum tables outgrew FPSSUM_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org fps_resume

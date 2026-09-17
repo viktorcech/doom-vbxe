@@ -23,10 +23,9 @@
 ; buffers now (VRAM_HUDROWS + the XDL's second entry), so one repaint is the
 ; whole job and hud_blit always targets bank 0.
 ;==============================================================
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc draw_hud
-        lda #HUD_BAR                 ; background first
-        ldx #0
-        jsr hud_blit_bg
+        jsr bar_bg                   ; background first -- 320x32, its own BCB
         jsr hud_ammo                 ; the ready weapon's own ammo type
         lda PSTATE+PS_HEALTH
         ldx #ST_HEALTHX
@@ -48,20 +47,24 @@
         jsr hud_top
         jmp hud_keys                 ; STKEYS icons for the PS_KEYS bits
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_top -- A = HUD_TAB index, X = x: a graphic that sits on the bar's top row.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_top
         jsr hud_entry
         ldy #HUD_BAR_Y
-        jmp hud_blit
+        jmp bar_blit                 ; ...which is bank $01 too: a plain jsr
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_num -- A = value (0..255), X = right edge column. STlib_drawNum: digits are
 ;   emitted right to left and leading zeros are not drawn.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_num
         sta hd_val
         stx hd_x
@@ -72,11 +75,9 @@
         sbc #10
         inx
         bne ?div
-?have   sta hd_dig
-        stx hd_val
-        clc                          ; each glyph is one width to the left
-        lda hd_dig
-        adc #HUD_DIG0
+?have   stx hd_val                   ; (A = the digit: sta sets no flags and the
+        clc                          ;   hd_dig copy was never read -- hud_glyph_left
+        adc #HUD_DIG0                ;   overwrites it with the width)
         ldx hd_x
         jsr hud_glyph_left
         stx hd_x                     ; hud_glyph_left returns the new left edge
@@ -84,12 +85,14 @@
         bne ?dloop
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_glyph / hud_glyph_left -- A = HUD_TAB index, X = x. hud_glyph puts the
 ;   glyph's LEFT edge at x; hud_glyph_left puts its RIGHT edge there and returns
 ;   the new left edge in X (that is how the number loop walks leftwards).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_glyph_left
         jsr hud_entry                ; -> zp_ptr, width in A
         sta hd_dig                   ; width
@@ -99,16 +102,19 @@
         tax
         stx hd_x
         ldy #ST_NUMY
-        jsr hud_blit
+        jsr bar_blit
         ldx hd_x
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_glyph
         jsr hud_entry
         ldy #ST_NUMY
-        jmp hud_blit
+        jmp bar_blit
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_entry -- A = HUD_TAB index -> zp_ptr = &entry, A = width.
@@ -126,7 +132,41 @@
 ;   entries into it all read exactly the seven bytes they always read.
 hent_resume = *
         org HUDENT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_entry
+ .if 1
+        asl                          ; index*6 = *4 + *2 (six, not seven: see
+        sta m_a+1                    ;   HUD_TAB_HI above): *2 parked, *4 in A
+        asl
+        clc
+        adc m_a+1
+        clc
+        adc #<HUD_TAB                ; HUD_TAB is an OFFSET inside bank $01
+        sta zp_ptr
+        lda #0
+        adc #>HUD_TAB
+        sta zp_ptr+1
+        lda #MAP_EXT_BANK            ; SET THE BANK BYTE, do not inherit it (the
+        sta zp_ptr+2                 ;   .else side says why)
+        rep #$20                     ; ---- 16-bit A: the 6-byte record as three
+        .LONGA ON                    ;   words -- vram lo/mid, then w/h and
+        lda [zp_ptr]                 ;   left/top one byte up (HUD_TAB_HI sits
+        sta hud_ent                  ;   between them in hud_ent). The two byte
+        ldy #2                       ;   loops were ~110 cycles; this is ~45.
+        lda [zp_ptr],y
+        sta hud_ent+3
+        ldy #4
+        lda [zp_ptr],y
+        sta hud_ent+5
+        lda #hud_ent                 ; ...and zp_ptr -> the copy (one word store)
+        sta zp_ptr
+        sep #$20
+        .LONGA OFF
+        lda #HUD_TAB_HI              ; ...and the byte the table stopped storing
+        sta hud_ent+2
+        lda hud_ent+3                ; the width, as before
+        rts
+ .else
         sta m_a                      ; index*6 = *4 + *2 (six, not seven: see
         asl                          ;   HUD_TAB_HI above)
         sta m_a+1
@@ -140,6 +180,11 @@ hent_resume = *
         adc #>HUD_TAB
         sta zp_ptr+1
         lda #MAP_EXT_BANK            ; SET THE BANK BYTE, do not inherit it:
+                                     ;   (HUD_TAB sits in bank01.asm's block,
+                                     ;   and b1_to_ext copies that block into
+                                     ;   the DATA bank too, 2026-09-13 -- so
+                                     ;   this and every map reader after it
+                                     ;   agree on the bank)
         sta zp_ptr+2                 ;   init_level parks it here for the map
                                      ;   readers, but the save/load picker draws
                                      ;   these digits at the TITLE too, before
@@ -163,7 +208,9 @@ hent_resume = *
         sta zp_ptr+1
         lda hud_ent+3                ; the width, as before
         rts
+ .endif
 .endp
+        .endseg
     .if * > HUDENT_END+1
         ert 'hud_entry outgrew HUDENT_BASE..END (memory_map.inc)'
     .endif
@@ -176,7 +223,11 @@ hent_resume = *
 ;   widget region ($AF40) is tight.
 ;--------------------------------------------------------------
 hk_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org HUDKEYS_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_keys
 ?l      ldx hk_i
         lda hk_bit,x
@@ -189,21 +240,26 @@ hk_resume = *
         ldx hk_i
         ldy hk_row,x
         ldx #ST_KEYX
-        jsr hud_blit
+        jsr bar_blit
 ?next   inc hk_i
         lda hk_i
         cmp #3
         bcc ?l
-        lda #0                       ; rewind for the next frame
-        sta hk_i
+        stz hk_i                     ; rewind for the next frame
         rts
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 hk_bit  dta 1,2,4                    ; PS_KEYS bits (= BN_AMT of bonus ids 22-24)
 hk_row  dta ST_KEY0Y, ST_KEY0Y+10, ST_KEY0Y+20
 hk_i    dta 0
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > HUDKEYS_END+1
         ert 'hud_keys outgrew HUDKEYS_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org hk_resume
 
 ;--------------------------------------------------------------
@@ -216,6 +272,7 @@ hk_i    dta 0
 ;--------------------------------------------------------------
 hdyn_resume = *
         org HUDDYN_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc draw_hud_gate
         jsr update_flash             ; ST_doPaletteStuff: the damage/pickup tint
         jsr am_wgate                 ; = draw_weapon, unless the AUTOMAP is up:
@@ -231,6 +288,7 @@ hdyn_resume = *
         jsr draw_hud
 ?tail   jmp msg_tick                 ; HU_Drawer's message line, which tail-calls
 .endp                                ;   hud_tail (no byte left here for a jsr of
+        .endseg
                                      ;   its own: see HUDDYN in memory_map.inc)
 
 ;--------------------------------------------------------------
@@ -243,6 +301,7 @@ hdyn_resume = *
 ;   here. Pain outranks the idle face (priority 7/6 against nothing), which is
 ;   the order st_stuff.c walks.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_face_upd
         lda face_t                   ; VBLANK countdown, like the door timers
         sec
@@ -274,6 +333,7 @@ hdyn_resume = *
 ?keep   sta face_t
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; hud_hurt -- ST_updateFaceWidget priorities 7 and 6, the ones the port never
@@ -314,11 +374,26 @@ hdyn_resume = *
 ;   the pain state, so the grunt no longer talks over the death cry.
 ;--------------------------------------------------------------
 hp_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org HUDPAIN_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_hurtfx                      ; A = the damage that got through
         jsr fl_damage                ; damagecount += it (the red screen flash)
         pha                          ; ...and hand its A back untouched: the E1M8
                                      ;   finale test in update_damage reads it
+ .if 1                                ; THE TINT AT THE EVENT (2026-09-15, "ked
+        phx                          ;   stojim v kyseline ... s texturami
+        jsr update_flash             ;   neblika"). The frame's own update_flash
+        plx                          ;   runs after wp_think, whose tic batch
+ .else                                ;   decays fl_dmg first: a textured frame is
+        ;nothing                     ;   14-16 VBLANKs = ~10 tics, so the
+ .endif                               ;   nukage's 5 was always back to 0 (flat,
+                                     ;   6-7 VBLANKs, sometimes left 1). The
+                                     ;   hud_hurt note above, for the palette.
+                                     ;   X is update_damage's damage class and
+                                     ;   xdl_att takes X; Y is not touched.
         lda #SFX_PLPAIN              ; A_Pain: MT_PLAYER painchance is 255, so a
         sta snd_pending              ;   hit that lands always grunts
         lda #1
@@ -343,9 +418,13 @@ hp_resume = *
 ?out    pla                          ;   the face never lets go while you stand
         rts                          ;   in it
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > HUDPAIN_END+1
         ert 'hud_pain outgrew HUDPAIN_BASE..HUDPAIN_END (memory_map.inc)'
     .endif
+ .endif
         org hp_resume
 
 ;--------------------------------------------------------------
@@ -357,7 +436,11 @@ hp_resume = *
 ;   2026-08-10: parked at HUDAMMO_BASE -- the HUDDYN bytes were wanted elsewhere.
 ;--------------------------------------------------------------
 ham_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org HUDAMMO_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_ammo
         ldx wp_cur
         ldy wi_ammo,x
@@ -367,9 +450,13 @@ ham_resume = *
         jmp hud_num
 ?none   rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > HUDAMMO_END+1
         ert 'hud_ammo outgrew HUDAMMO_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org ham_resume
 
 ;--------------------------------------------------------------
@@ -384,6 +471,7 @@ ham_resume = *
 ;   so BEFORE the assignment, so a medikit at full health must stay silent and
 ;   say nothing -- which is exactly the bcc above.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pickup_bonus
         jsr snd_bonus                ; Y = bonus id, preserved
         bcc ?out                     ; not usable -> nothing changed
@@ -402,6 +490,7 @@ ham_resume = *
         sec                          ; restore "taken"
 ?out    rts
 .endp
+        .endseg
     .if * > HUDDYN_END+1
         ert 'draw_hud_gate/hud_face_upd/pickup_bonus outgrew HUDDYN (memory_map.inc)'
     .endif
@@ -423,59 +512,67 @@ ham_resume = *
 ;   hud_dirty (pl_hurtfx, pickup_bonus, savegame) -> the full repaint runs
 ;   and hud_faceup2 skips this proc.
 ;--------------------------------------------------------------
-FF_X      equ ST_FACEX+3             ; 74: every face lump has left = -3
+FF_X      equ ST_FACEX+3             ; 146: every face lump has left = -3
 FF_Y      equ HUD_BAR_Y+1            ; 169: the earliest face top (hud.tab)
-FF_W      equ 12
+FF_W      equ 24                     ; DOOM pixels -- a byte is one on the bar
 FF_H      equ 31
-FF_SRCOFF equ [FF_Y-HUD_BAR_Y]*SCREEN_WIDTH+FF_X
+FF_ROW    equ FF_Y-HUD_BAR_Y         ; ...and the bar's OWN row, 0-based
+FF_SRCOFF equ FF_ROW*HUDV_BARW+FF_X
 hffx_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org HUDFFIX_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_faceup2
         lda hud_dirty                ; a full repaint is pending and includes
         bne ?skip                    ;   the face -> nothing to do here
         jmp hud_facefix
 ?skip   rts
 .endp
+        .endseg
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc hud_facefix
-        lda #HUD_BAR
-        jsr hud_entry                ; hud_ent+0..2 = the STBAR graphic's VRAM
-        clc                          ; SRC = STBAR + 1*160+74: the cell's own
-        lda hud_ent                  ;   pixels inside the bar image
-        adc #<FF_SRCOFF
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        lda hud_ent+1
-        adc #>FF_SRCOFF
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
-        lda hud_ent+2                ; no bank carry: the blob is nowhere near
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2    ; a 64 KB edge (pack_hud.py)
-        lda #SCREEN_WIDTH            ; sub-rectangle: the source steps by the
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ; BAR's row, not by its width
+        lda #<[HUDV_STBAR+FF_SRCOFF] ; SRC = STBAR + row 1, column 146: the
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR      ; cell's own pixels inside the
+        lda #>[HUDV_STBAR+FF_SRCOFF]           ; bar image. A CONSTANT now --
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1    ; STBAR left HUD_TAB when it grew
+        lda #[[HUDV_STBAR+FF_SRCOFF]>>16]      ; past the row's width byte, so
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2    ; there is no entry to look up
+        lda #<HUDV_BARW              ; sub-rectangle: the source steps by the
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ; BAR's row (320), not by its
+        lda #>HUDV_BARW                        ; width -- which is why this
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ; builds its own BCB at all
         lda #1
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        ldx #FF_Y                    ; DST = row 169 + 74 -- bank 0, the SHARED
-        lda row_lo,x                 ;   bar rows, like every hud_blit
-        clc
-        adc #FF_X
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        lda row_hi,x
-        adc #0
+        lda #<[VRAM_BAR320+FF_ROW*HUDV_BARW+FF_X]
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR      ; DST = the same cell on the bar,
+        lda #>[VRAM_BAR320+FF_ROW*HUDV_BARW+FF_X]      ; also a constant
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        lda #BLT_COPY                ; = 0: opaque -- and so are the dst bank
-        sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; and the step's high byte
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ; (mn_box's trick)
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        lda #[VRAM_BAR320>>16]
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY = 0: opaque
         lda #FF_W-1
         sta MEMW+MEMW_HD_OFF+BCB_WIDTH
         lda #FF_H-1
         sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        jsr hud_blit.hud_fire        ; wait out the previous blit, fire this one
+        jsr bar_fire                 ; wait out the previous blit, fire this one
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ; ...and the 16-bit step back to
+                                     ;   a byte: the BCB is LATCHED at start
+                                     ;   (alt-src vbxe.cpp LoadBlitter reads all
+                                     ;   21 bytes), so this cannot disturb the
+                                     ;   blit that is running
         lda face_cur                 ; ...and the face itself: ONE stencil blit
         ldx #ST_FACEX                ;   (hb_ctrl rests at BLT_BSTENCIL)
         jmp hud_top
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > HUDFFIX_END+1
         ert 'hud_facefix outgrew HUDFFIX_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org hffx_resume
 
 ;==============================================================
@@ -501,12 +598,16 @@ hffx_resume = *
 ; left; a single frame of a 4-second message is not visible.
 ;==============================================================
 mtk_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org MSGTICK_BASE
+ .endif
 ;--------------------------------------------------------------
 ; msg_tick -- HU_Ticker + HU_Drawer in one, called as draw_hud_gate's TAIL (it
 ;   inherits the frame's blitter state and the MEMAC window on BANK_OVERHEAD)
 ;   and leaving through hud_tail, which is the tail it displaced.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc msg_tick
         lda msg_t                    ; nothing showing -> the whole widget is
         beq ?none                    ;   two loads and a branch
@@ -520,13 +621,20 @@ mtk_resume = *
         jsr am_title.strip_blit
 ?none   jmp hud_tail                 ; ...and on to whatever draws over the view
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > MSGTICK_END+1
         ert 'msg_tick outgrew MSGTICK_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org mtk_resume
 
 mst_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org MSGSET_BASE
+ .endif
 ;--------------------------------------------------------------
 ; msg_set -- Y = the bonus id that was just TAKEN -> the message for it, armed
 ;   for MSG_VB. p_inter.c assigns player->message inside every arm of the
@@ -539,6 +647,7 @@ mst_resume = *
 ;   pickup was usable, so POST-add health < 50 is EXACTLY pre-add < 25 (the
 ;   cap at 100 cannot pull a sum below 50). Y is preserved for the caller.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc msg_set
         cpy #2                       ; the medikit is bonus id 2 (GOTMEDIKIT)
         bne ?norm
@@ -557,28 +666,27 @@ msg_arm                              ; A = a RAW strip index: door_keymsg's
         sta msg_t
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > MSGSET_END+1
         ert 'msg_set outgrew MSGSET_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org mst_resume
 
 hud_split_resume = *
         org HUDBLIT_BASE             ; the blit half lives below the MEMAC window
 ;--------------------------------------------------------------
-; hud_blit / hud_blit_bg -- blit the entry at zp_ptr to column X, row Y.
-;   The bar goes down with BLT_COPY, glyphs with BLT_BSTENCIL (index 0 = clear).
+; hud_blit -- blit the entry at zp_ptr to column X, row Y of the FRAMEBUFFER:
+;   160 bytes a row, one byte = two hardware pixels. The gun, the message strip,
+;   the FPS readout, the menus, the intermission and the finale all come through
+;   here. THE STATUS BAR DOES NOT ANY MORE -- it is a 320-byte-a-row SR surface
+;   of its own and bar_blit draws it (2026-09-16).
+;   hud_blit_bg went with it: the only caller was draw_hud's STBAR fill, and at
+;   320 that is 320 bytes wide -- more than the 7-byte record's width byte can
+;   say -- so it is bar_bg's hand-built BCB now.
 ;--------------------------------------------------------------
-.proc hud_blit_bg
-        jsr hud_entry                ; NOTE: this clobbers Y, so the row is set
-        ldy #HUD_BAR_Y               ; AFTER it (that cost one broken screenshot)
-        lda #BLT_COPY
-        sta hb_ctrl
-        jsr hud_blit
-        lda #BLT_BSTENCIL
-        sta hb_ctrl
-        rts
-.endp
-
 .proc hud_blit
  .if 1
         ; 2026-09-09 (drac030 style), 8-BIT ON PURPOSE: the boot menu calls
@@ -640,7 +748,7 @@ hud_fire                             ; menu.asm's mn_erase builds its own BCB
                                      ;   7-byte table format cannot express) and
                                      ;   jumps in HERE to fire it -- the tail is
                                      ;   the same wait-and-start either way
-        jsr blitter_wait
+        jsr blitter_wait_t
         lda #<VRAM_BCB_HUD
         sta VBXE_BL_ADR0
         lda #>VRAM_BCB_HUD
@@ -742,3 +850,167 @@ hb_ctrl dta BLT_BSTENCIL             ; COPY for the bar, stencil for the glyphs
         ert 'hud_blit outgrew HUDBLIT_BASE..END (memory_map.inc)'
     .endif
         org hud_split_resume
+
+;==============================================================
+; THE SR STATUS BAR (2026-09-16).
+;--------------------------------------------------------------
+; The bar is not part of the framebuffer any more. The XDL's bottom eight
+; entries scan VRAM_BAR320 in SR -- 320 bytes a row, one byte per hardware
+; pixel -- while everything above them stays LR at 160 (xdl.asm), so STBAR, the
+; big red digits and the face have twice the horizontal samples they used to.
+;
+; That makes the bar a SECOND SURFACE, and the three routines below are what
+; hud_blit would be if its destination were that surface instead of the
+; framebuffer. They differ in exactly two things, which is also the whole list
+; of what menu.asm's mn_sdraw/mn_sdst differ in (same trick, same reason -- the
+; boot menu draws into the 320-wide title picture):
+;
+;   * the destination steps 320 bytes a row, not SCREEN_WIDTH. That is a
+;     property of the SCREEN, so bar_fire sets it around the start and puts it
+;     back -- the HUD BCB is shared with the gun, the message strip and the FPS
+;     readout, which are all still 160-wide;
+;   * the row is row_lo/row_hi DOUBLED, and the column is NOT doubled at all:
+;     x is a DOOM pixel and a byte is a DOOM pixel here. The x equs went back to
+;     st_stuff.c's own numbers (memory_map.inc ST_AMMOX 44, ST_HEALTHX 90 ...).
+;
+; NO ZOOM. mn_sdraw blits 160-wide patches into a 320-wide picture and leans on
+; BLT_ZOOM_2X to stretch them; these lumps are packed at full width
+; (tools/pack_hud.py), so the zoom stays 0 and the pixels are DOOM's own.
+;==============================================================
+    .if [VRAM_BAR320 & $FF] != 0
+        ert 'VRAM_BAR320 must be page-aligned: bar_blit adds only its HIGH byte'
+    .endif
+    .if VRAM_BAR320 + HUDV_BARW*HUDV_BARH > $080000
+        ert 'the SR bar runs past the 512 KB VRAM top and would wrap onto FRAME_A'
+    .endif
+    .if HUDV_BARH != 200-HUD_BAR_Y
+        ert 'STBAR is not ST_HEIGHT rows -- the XDL scans exactly 32 (xdl.asm)'
+    .endif
+;   DRAC_PLAN 3a: NO org and NO ert -- this is bank-$01 code, and the B1
+;   segment has no fixed block addresses. MADS fails the build itself when it
+;   outgrows B1SEG_LEN (memory_map.inc).
+;--------------------------------------------------------------
+; bar_blit -- zp_ptr = a 7-byte hud_ent, X = column, Y = row. hud_blit's
+;   contract exactly, so hud_top/hud_glyph/hud_num/hud_keys reach it by swapping
+;   one jsr.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc bar_blit
+        stx hd_x
+        sty hd_dig                   ; row (parked: Y indexes the entry below)
+        lda (zp_ptr)                 ; SRC = the graphic in VRAM
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        ldy #1
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        iny
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        iny                          ; width: SRC_STEPY = width, WIDTH = width-1
+        lda (zp_ptr),y
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ; draw_weapon shares this BCB and
+        lda #1                                 ;   SCALES the source with the
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX     ;   view window; the bar is 1:1
+        iny
+        lda (zp_ptr),y               ; height
+        dec @
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        iny                          ; V_DrawPatch: the patch's own offsets shift
+        lda hd_x                     ;   it (every face lump has left = -3)
+        sec
+        sbc (zp_ptr),y
+        sta hd_x
+        iny
+        lda hd_dig
+        sec
+        sbc (zp_ptr),y
+        sec
+        sbc #HUD_BAR_Y               ; ...and the screen row becomes the BAR's
+        tax                          ;   own row, 0..31
+        lda row_lo,x                 ; row*160 DOUBLED is row*320 -- mn_sdst's
+        asl                          ;   trick, and the reason there is no second
+        pha                          ;   table. The low half is PARKED, not
+        lda row_hi,x                 ;   stored: two bytes and no RAM cell
+        rol                          ; C OUT is bit 7 of row_hi, and the biggest
+                                     ;   row_hi here is 31*160>>8 = $13 -- so C
+                                     ;   is 0 and the adc below adds exactly
+        adc #>VRAM_BAR320            ; (its low byte is 0: the ert above)
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        pla
+        clc
+        adc hd_x                     ; + the column, UNDOUBLED: one byte is one
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR      ; DOOM pixel on an SR surface
+        bcc ?nc
+        inc MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+?nc     lda #[VRAM_BAR320>>16]       ; row*320 + x <= 10,167, so the bank byte is
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ; a constant -- no carry into it
+        lda hb_ctrl
+        sta MEMW+MEMW_HD_OFF+BCB_CTRL
+        jsr bar_fire
+        ldx hd_x
+        rts
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; bar_bg -- the whole 320x32 STBAR onto the bar, opaque. draw_hud's first act.
+;   Its own BCB because the 7-byte record holds the width in ONE byte and this
+;   one is 320 wide -- which is also why STBAR left HUD_TAB (tools/pack_hud.py)
+;   and arrives as the HUDV_STBAR constant.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc bar_bg
+        lda #<HUDV_STBAR
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
+        lda #>HUDV_STBAR
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
+        lda #[HUDV_STBAR>>16]
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
+        lda #<HUDV_BARW              ; the source IS the screen here, so its row
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ; pitch is the bar's own 320
+        lda #>HUDV_BARW
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
+        lda #1
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+        lda #<[HUDV_BARW-1]          ; 319 -- the one blit in the port that needs
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH         ; WIDTH's ninth bit
+        lda #>[HUDV_BARW-1]
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
+        lda #HUDV_BARH-1
+        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
+        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR      ; VRAM_BAR320, row 0 column 0
+        lda #>VRAM_BAR320
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        lda #[VRAM_BAR320>>16]
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
+        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY = 0: opaque
+        jsr bar_fire
+        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1       ; ...and the two 16-bit fields
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ;   back to bytes for everyone
+        rts                          ;   else. Safe after the start: the BCB is
+.endp                                ;   LATCHED (alt-src vbxe.cpp LoadBlitter
+        .endseg                      ;   reads all 21 bytes before the first row)
+
+;--------------------------------------------------------------
+; bar_fire -- the destination stride is a property of the SCREEN, not of the
+;   graphic, and this BCB is shared with everything that draws in the VIEW
+;   (draw_weapon, strip_blit, fps_emit, the menus). So the 320 goes on right
+;   before the start and comes off right after it -- the same "poke it and put
+;   it back" hud_blit's hb_dbnk does for the destination bank.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc bar_fire
+        lda #<HUDV_BARW
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY
+        lda #>HUDV_BARW
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY+1
+        jsl hud_fire_w0              ; wait out the previous blit, fire this one
+        lda #SCREEN_WIDTH
+        sta MEMW+MEMW_HD_OFF+BCB_DST_STEPY
+        stz MEMW+MEMW_HD_OFF+BCB_DST_STEPY+1
+        rts
+.endp
+        .endseg

@@ -113,6 +113,13 @@ if ($weapDo) {
 & $py tools\pack_cmap.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'colormap extract failed'; exit 1 }
 
+# 1c-2b. DOOM's sky (SKY1-3) -> sky.bin, the columns seg_draw.asm sky_clip
+#        paints an F_SKY1 ceiling with. Rides behind the COLORMAP
+#        (make_atr_doom.py SKY_EXT), so it too must exist before the layout.
+#        pack_sky skips itself when sky.bin is newer than its inputs.
+& $py tools\pack_sky.py
+if ($LASTEXITCODE -ne 0) { Write-Error 'sky extract failed'; exit 1 }
+
 # 1c-3. status bar + every widget glyph -> hud.bin/hud.tab. Ran by hand until
 #       2026-08-07 and it bit exactly the way pack_things once did: adding the
 #       OUCH faces moved the table, the engine indexed face 26 and the ATR still
@@ -264,6 +271,22 @@ Lap 'mads'
 #     check_xex.py looks (and before the boot loader ever writes it to RAM).
 & $py tools\split_menu_ovl.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu overlay split failed'; exit 1 }
+
+# 3a'. the bank-$01 code segment (drac.txt: code to $010000-$01FFFF) out of
+#      the XEX and back in as INIT chunks staged at B1STAGE ($9000). AFTER the
+#      overlay split: FINOVL/EPIOVL park at $9000/$9100 in the raw XEX and are
+#      lifted out by the step above, which is what frees the stage.
+& $py tools\split_b1.py
+if ($LASTEXITCODE -ne 0) { Write-Error 'bank $01 split failed'; exit 1 }
+# ...and the guard that replaces ert for that code: no jsr/jmp/branch into the
+# other bank, no jsl to non-code, no 16-bit operand naming a bank-$01 label.
+& $py tools\b1_check.py | Select-Object -First 6
+if ($LASTEXITCODE -ne 0) { Write-Error 'b1_check: cross-bank reference (build/b1_check.txt)'; exit 1 }
+# 3a''. no two XEX blocks may load over each other (2026-09-14: setup_chains
+#       grew into the block at $4B9E and nothing noticed -- check_xex is off
+#       while ram_map.py is missing). B1STAGE chunks are the only allowed case.
+& $py tools\tests\check_overlap.py
+if ($LASTEXITCODE -ne 0) { Write-Error 'XEX blocks overlap (tools/tests/check_overlap.py)'; exit 1 }
 
 # 3b. no segment may land in RAM that is overwritten at runtime (TEX_STAGE!)
 #     Both are cheap (~0.1 s) and they fail the build on a real defect, so they
@@ -446,6 +469,8 @@ if ($Antonia2) {
   if ($LASTEXITCODE -ne 0) { Write-Error 'stock re-assemble failed'; exit 1 }
   & $py tools\split_menu_ovl.py | Out-Null
   if ($LASTEXITCODE -ne 0) { Write-Error 'stock overlay split failed'; exit 1 }
+  & $py tools\split_b1.py | Out-Null
+  if ($LASTEXITCODE -ne 0) { Write-Error 'stock bank $01 split failed'; exit 1 }
   & $py tools\make_atr_doom.py $lvls | Out-Null
   if ($LASTEXITCODE -ne 0) { Write-Error 'stock atr rebuild failed'; exit 1 }
   Write-Host ('OK -> build/doom_bsp_ant2.atr  ANTONIA II ONLY, not Rapidus  ({0:N1}s)' -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green

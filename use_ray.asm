@@ -44,6 +44,7 @@
 ;--------------------------------------------------------------
 us_resume = *
         org USESIDE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_side
  .if 1
         rep #$20                     ; ---- 16-bit A: four word subtractions
@@ -101,6 +102,7 @@ us_resume = *
         jmp cross_pos                ; A = 1 if cx_a*cx_b - cx_c*cx_d > 0
  .endif
 .endp
+        .endseg
     .if * > PJGO_BASE
         ert 'use_side overran its $5432 slot (pj_go at $5480; memory_map.inc)'
     .endif
@@ -112,6 +114,7 @@ us_resume = *
 ;   this seg. Both segments straddle each other's line -- the textbook 4-sign test,
 ;   which needs no intersection point (so no divide).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_seg_hit
  .if 1
         rep #$20                     ; ---- 16-bit A: v1 -> USE_PT_P, v2 -> USE_PT_Q,
@@ -228,6 +231,7 @@ us_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; use_shut -- zp_sptr -> two-sided seg. A = 1 if its opening is <= 0, i.e.
@@ -251,6 +255,7 @@ us_resume = *
 ;   shut, and that is the normal state of every closed door in the WAD. The extra
 ;   -1 comes free from starting the last subtraction with CLC instead of SEC.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_shut
  .if 1
         ldy #SEG_FRONT               ; front sector -> coll_ax = floor, coll_ay = ceil
@@ -323,6 +328,7 @@ us_resume = *
         rts
  .endif
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; us_open -- use_shut's tail. coll_ax/coll_ay = the BACK sector's floor/ceil,
@@ -335,7 +341,11 @@ us_resume = *
 
 ;--------------------------------------------------------------
 usop_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org USSHUT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc us_open
  .if 1
         rep #$20                     ; ---- 16-bit A (idempotent: use_shut arrives
@@ -397,7 +407,11 @@ usop_resume = *
         rts
  .endif
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > USSHUT_END+1
         ert 'us_open outgrew USSHUT_BASE..USSHUT_END (memory_map.inc)'
     .endif
+ .endif
         org usop_resume

@@ -14,7 +14,11 @@ bcbt_resume = *
         org BCBT_STAGE
 ; vline: 1 px wide, height patched, colour via XOR (AND=0)
 bcb_vline_tmpl
-        dta $00,$00,$00              ; src addr
+        dta <VRAM_BCB_FF,>VRAM_BCB_FF,[VRAM_BCB_FF>>16]   ; src addr: ONE $FF byte,
+                                     ;   steps 0 -> every pixel = ($FF AND and_mask)
+                                     ;   XOR 0 = and_mask. The painter's colour is
+                                     ;   the AND byte since 2026-09-14: it sits next
+                                     ;   to HEIGHT, so one 16-bit store writes both
         dta a($0000)                 ; src stepY
         dta $00                      ; src stepX
         dta <VRAM_SCREEN             ; dst addr (patched)
@@ -73,7 +77,10 @@ bcb_spr_tmpl
 
 ; The two one-shot THINGS loaders live up here rather than in the packed $2000
 ; segment (which butts against the streamed map at $4000): they run once at boot.
+ .if 1                                ; DRAC_PLAN 3a: nothing lives here any more (the
+ .else                                ;   loaders are bank $01, their data segment D0)
         org $8640
+ .endif
 
 ;--------------------------------------------------------------
 ; load_sprites -- B1 (docs/VRAM-PLAN.md par.5): the .spr never lands in VRAM.
@@ -86,18 +93,26 @@ bcb_spr_tmpl
 ;   the per-byte work is read_sectors' -- which took this proc's fast run.
 ;--------------------------------------------------------------
 sprld2_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org SPRLD2_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_sprites
         rts                          ; B2 (2026-08-18): the sprite pool rides
 .endp                                ;   the POOL region -- load_textures'
+        .endseg
                                      ;   drain streams it with the textures,
                                      ;   so nothing per-level is sprite-shaped
                                      ;   any more (LVL_SPRCH died with the
                                      ;   atr_levels.inc tables). The hole this
                                      ;   frees (SPRLD2_BASE..END) is free RAM.
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > SPRLD2_END+1
         ert 'load_sprites outgrew SPRLD2_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; arena_init -- the per-level B1 reset, chained off load_sprcol: FARENA
@@ -109,6 +124,7 @@ sprld2_resume = *
 ;   win2.
 ;--------------------------------------------------------------
         org ARINIT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc arena_init
         lda #MAP_EXT_BANK            ; load_sprcol streamed into bank $08 and
         sta ll_bank                  ;   left ll_bank there; its own block is
@@ -167,6 +183,7 @@ sprld2_resume = *
         sta tex_sdram+2
         jmp arena_prefetch           ; warm both arenas NOW (load time), so
 .endp                                ;   play has no first-look copy hitches
+        .endseg
 
 ;--------------------------------------------------------------
 ; arena_prefetch -- fetch every sprite frame into the arena at LEVEL LOAD, in
@@ -184,9 +201,31 @@ sprld2_resume = *
 ;   to the SIO. Parked at APREF_BASE (the slow $8000+ window: fine here).
 ;--------------------------------------------------------------
 apref_resume = *
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org APREF_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc arena_prefetch
         stz apf_i                    ; (stz/the ora loop below buy the 4 B the
+ .if 1
+?spr    lda apf_i                    ; FTAB[id]: zp_ptr = FTAB_EXT + id*8, in A:
+        asl                          ;   lo = (id<<3) & $FF, hi = >FTAB_EXT | (id>>5)
+        asl                          ;   (<FTAB_EXT = 0 and id>>5 <= 7 sits in the
+        asl                          ;   clear low bits of >FTAB_EXT, so the ora IS
+        sta zp_ptr                   ;   the add: ert below). 30 cycles for the old
+        lda apf_i                    ;   60 of asl/rol pairs on the cell.
+        lsr
+        lsr
+        lsr
+        lsr
+        lsr
+        ora #>FTAB_EXT
+        sta zp_ptr+1
+    .if [FTAB_EXT & $FF] != 0 || [[>FTAB_EXT] & 7] != 0
+        ert 'arena_prefetch: FTAB_EXT is not $xx00 with >FTAB_EXT bits 0-2 clear -- put the adds back'
+    .endif
+ .else
 ?spr    stz zp_ptr+1                 ;  bank store costs: $80F5 is mtx_pegf's)
         lda apf_i                    ; FTAB[id]: zp_ptr = FTAB_EXT + id*8
         sta zp_ptr
@@ -203,6 +242,7 @@ apref_resume = *
         lda zp_ptr+1
         adc #>FTAB_EXT
         sta zp_ptr+1
+ .endif
         lda #SPRCOL_BANK             ; 2026-08-25: the FTAB is in bank $08 and
         sta zp_ptr+2                 ;   THIS loop never said so -- it rode the
                                      ;   bank read_ext happened to leave behind.
@@ -248,11 +288,17 @@ apref_resume = *
 ?tex    rts                          ; the frame list ended, or the next frame
                                      ;   would not fit: leave the tail lazy
 .endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 apf_i   dta 0
 apf_t   dta 0,0
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > APREF_END+1
         ert 'arena_prefetch outgrew APREF_BASE..END (memory_map.inc)'
     .endif
+ .endif
         org apref_resume
     .if * > ARINIT_END+1
         ert 'arena_init outgrew ARINIT_BASE..END (memory_map.inc)'
@@ -265,6 +311,7 @@ apf_t   dta 0,0
 ;   load_sprites: they use the same RAM as their SIO staging buffer. From here
 ;   on $B000 holds live data (also PLAYPAL, which setup_palette reads).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_things
         lda #<THG_SEC1
         sta ll_sec
@@ -338,9 +385,12 @@ apf_t   dta 0,0
         bpl ?mv
         jmp load_things2             ; the blob's PIECE 2 -> THINGS2_BASE, then on
 .endp                                ;   into load_dtab: still inside the SIO
+        .endseg
                                      ;   window, ROM in. Nothing between the read
                                      ;   above and here touches ll_sec, so the
                                      ;   second read simply continues (diskio.asm)
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ps_started dta 0                     ; 0 until the boot-time PSTATE init has run
+        .endseg
         org bcbt_resume
 

@@ -22,6 +22,7 @@ wi_resume = *
 ; wi_tick -- leveltime. update_pz's `jsr update_damage` points here instead, so
 ;--------------------------------------------------------------
         org WITICK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wi_tick
         lda wi_time
         clc
@@ -31,6 +32,7 @@ wi_resume = *
         inc wi_time+1
 ?nc     jmp wi_secr
 .endp
+        .endseg
     .if * > WITICK_END+1
         ert 'wi_tick outgrew WITICK_BASE..END (memory_map.inc)'
     .endif
@@ -39,15 +41,26 @@ wi_resume = *
 ; wi_secr -- p_spec.c P_PlayerInSpecialSector's `case 9: SECRET SECTOR`, then
 ;--------------------------------------------------------------
         org WISECR_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wi_secr
+ .if 1
+        ldy #7
+        lda (zp_ptr),y               ;   b4 SECRET (pack_map.py)
+        bit #$10                     ; already clear (the usual case): nothing to
+        beq ?out                     ;   write, and no and/cmp round trip to see it
+        and #$EF
+        sta (zp_ptr),y
+ .else
         ldy #7
         lda (zp_ptr),y               ;   b4 SECRET (pack_map.py)
         and #$EF
         cmp (zp_ptr),y
         beq ?out
         sta (zp_ptr),y
+ .endif
 ?out    jmp update_damage
 .endp
+        .endseg
     .if * > WISECR_END+1
         ert 'wi_secr outgrew WISECR_BASE..END (memory_map.inc)'
     .endif
@@ -56,12 +69,15 @@ wi_resume = *
 ; wi_exit -- the frame loop's EXIT_REQ tail. main used to `jsr exit_level`
 ;--------------------------------------------------------------
         org WIEXIT_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wi_exit
         ldx EXIT_REQ
         dex
         lda #BANK_EN | WIOVL_BANK
-        jmp mn_open                  ; ...which lands in wi_head below
+        jsl mn_open_w0 ; ...which lands in wi_head below
+        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
 .endp
+        .endseg
     .if * > WIEXIT_END+1
         ert 'wi_exit outgrew WIEXIT_BASE..END (memory_map.inc)'
     .endif
@@ -70,6 +86,7 @@ wi_resume = *
 ; wi_newlvl -- G_DoLoadLevel's `leveltime = 0`, in front of load_things: both
 ;--------------------------------------------------------------
         org WINEW_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wi_newlvl
  .if 1
         stz wi_time
@@ -82,6 +99,7 @@ wi_resume = *
         jmp load_things
  .endif
 .endp
+        .endseg
     .if * > WINEW_END+1
         ert 'wi_newlvl outgrew WINEW_BASE..END (memory_map.inc)'
     .endif
@@ -97,6 +115,16 @@ wi_resume = *
 ;--------------------------------------------------------------
 .proc wi_head
         ldy #0
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+WIOVL_WIN       equ MEMW16+[[WIOVL_BANK&3]<<12]
+?p      lda WIOVL_WIN+$100,y
+        sta MENU_RUN+$100,y
+        lda WIOVL_WIN+$200,y
+        sta MENU_RUN+$200,y
+        lda WIOVL_WIN+$300,y
+        sta MENU_RUN+$300,y
+        lda WIOVL_WIN+$400,y
+ .else
 ?p      lda MEMW+$100,y
         sta MENU_RUN+$100,y
         lda MEMW+$200,y
@@ -104,6 +132,7 @@ wi_resume = *
         lda MEMW+$300,y
         sta MENU_RUN+$300,y
         lda MEMW+$400,y
+ .endif
         sta MENU_RUN+$400,y
         iny
         bne ?p
@@ -151,7 +180,7 @@ wi_resume = *
 ;--------------------------------------------------------------
 .proc wi_pre
         lda #MUS_INTER               ; wi_stuff.c:1514 S_ChangeMusic(mus_inter):
-        jsr mus_reset                ;   the stats screen gets its own song, and
+        jsr mus_reset_t ;   the stats screen gets its own song, and
                                      ;   mus_play loops it at the $FF marker for
                                      ;   as long as the screen is up.
         lda MAP_HNSECR
@@ -207,7 +236,7 @@ wi_next     dta 0
 ?v      lda RTCLOK3
 ?w      cmp RTCLOK3
         beq ?w
-        jsr mus_play                 ; ONE frame of the song per VBLANK, not
+        jsr mus_play_t ; ONE frame of the song per VBLANK, not
                                      ;   per DOOM tic: the stream is authored
                                      ;   at the PAL frame rate, and this loop
                                      ;   can spin several VBLANKs before the
@@ -250,7 +279,7 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
     .endif
         stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
         jsr hud_blit.hud_fire
-        jmp blitter_wait
+        jmp blitter_wait_t
  .else
         lda #0
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
@@ -629,9 +658,10 @@ wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
         sta ZFRONT
         sta XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
  .endif
-        lda #>VRAM_XDL_A
-        sta VBXE_XDLA1
-        rts
+        lda #>VRAM_XDL_L             ; the LEGACY list (2026-09-16): the stats
+        sta VBXE_XDLA1               ;   screen is a full 160x200 picture in
+        rts                          ;   FRAME_A and its bottom 32 rows are not
+                                     ;   the SR status bar (xdl.asm)
 .endp
 
 wc_src      dta 0,0,0
@@ -654,7 +684,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ;--------------------------------------------------------------
 ; WI_XLOAD -- the across-the-load driver, and the ONLY part of stage 1 above
 ;--------------------------------------------------------------
-        jsr exit_level
+        jsr exit_level_t
         lda #1
         sta zback_hi                 ;   goes to FRAME_B, NOT FRAME_A.
         lda #EXIT_MELT
@@ -681,6 +711,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda #[WIPE_START>>16]
         sta wa_b+2
         jsr wi_grab
+        jsr wi_bgsel                 ; WIMAP%d: before anything draws the map
         jsr wi_stats
         jsr wi_initstats             ; WI_initStats
         jsr wi_slam
@@ -712,7 +743,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda #[WIPE_START>>16]
         sta wa_b2+2
         jsr wi_page
-        jsr mus_stop                 ; the stats screen is over: drop AUDC2/3/4
+        jsr mus_stop_t ; the stats screen is over: drop AUDC2/3/4
                                      ;   before WI_XLOAD, or the last note of
                                      ;   the song hangs through the level load
                                      ;   (SIO takes POKEY over whole -- the same
@@ -747,8 +778,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ?lp     cpx THINGS_BASE              ; the packed thing count
         bcs ?time
         stx wi_i
-        txa
-        tay
+        txy
         lda #<TH_KIND
         sta zp_ptr
         lda #>TH_KIND
@@ -765,7 +795,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda [zp_ptr],y
         bne ?gotkill
         ldx wi_i
-        jsr thing_alive_bit          ;   en_kill just cleared the ALIVE bit
+        jsr thing_alive_bit_t          ;   en_kill just cleared the ALIVE bit
         bne ?next
 ?gotkill inc wi_kills
         jmp ?next
@@ -780,7 +810,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         beq ?next
         inc wi_maxitems
         ldx wi_i
-        jsr thing_alive_bit          ; taken = spr_take cleared its bit
+        jsr thing_alive_bit_t          ; taken = spr_take cleared its bit
         bne ?next
         inc wi_items
 ?next   clc                          ; the record is 8 B, like en_kfill's
@@ -797,7 +827,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda wi_time+1
         sta wi_m+1
         lda #50
-        jsr wi_div16                 ; wi_m /= 50
+        jsr wi_div16_t                 ; wi_m /= 50
         lda wi_m
         sta wi_secs
         lda wi_m+1
@@ -922,7 +952,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         jsr wi_finals
  .endif
         ldx #SFX_BAREXP
-        jsr snd_play
+        jsr snd_play_t
         lda #10
         sta wi_sp
         jmp wi_redraw
@@ -950,7 +980,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ?done   lda wi_accelst               ; state 10: one more press leaves
         beq ?out
         ldx #SFX_SGCOCK              ; wi_stuff.c:1416's own sound
-        jsr snd_play
+        jsr snd_play_t
         lda #WI_ST_DONE
         sta wi_state
         rts
@@ -961,7 +991,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ;--------------------------------------------------------------
 .proc wi_ratio
         stx wi_row
-        jsr wi_pctof                 ; A = the row's true percentage
+        jsr wi_pctof_t                 ; A = the row's true percentage
         sta wi_t
         ldx wi_row
         lda wi_cnt,x
@@ -972,7 +1002,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         and #3
         bne ?nosnd
         ldx #SFX_PISTOL
-        jsr snd_play
+        jsr snd_play_t
 ?nosnd  ldx wi_row
         lda wi_cnt,x
         cmp wi_t
@@ -980,7 +1010,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda wi_t                     ; landed: clamp, bang, next state
         sta wi_cnt,x
         ldx #SFX_BAREXP
-        jsr snd_play
+        jsr snd_play_t
         inc wi_sp
 ?draw   jmp wi_redraw
 .endp
@@ -993,7 +1023,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         and #3
         bne ?not
         ldx #SFX_PISTOL
-        jsr snd_play
+        jsr snd_play_t
 ?not    clc                          ; cnt_time += 3, clamped at stime
         lda wi_ctime
         adc #3
@@ -1035,7 +1065,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         cmp wi_secs
         bne ?draw
         ldx #SFX_BAREXP
-        jsr snd_play
+        jsr snd_play_t
         inc wi_sp
 ?draw   jmp wi_redraw
 .endp
@@ -1046,7 +1076,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 .proc wi_finals
         ldx #2
 ?r      stx wi_row
-        jsr wi_pctof
+        jsr wi_pctof_t
         ldx wi_row
         sta wi_cnt,x
         dex
@@ -1194,9 +1224,8 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_slam -- WI_slamBackground + WI_drawLF: the background, the ten animations,
 ;--------------------------------------------------------------
 .proc wi_slam
-        lda #0
-        sta wi_tmode
-        jmp wi_slambg                ; ...whose anim pass tail-draws the whole
+        stz wi_tmode
+        jmp wi_slambg                ; (it loads A itself)
 .endp                                ;   layer above it (wi_over: LF title +
                                      ;   the five labels)
 
@@ -1204,8 +1233,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_labels -- the five static rows of WI_drawStats. Drawn once: the per-tic
 ;--------------------------------------------------------------
 .proc wi_labels
-        lda #0
-        sta wi_row
+        stz wi_row
 ?l      ldx wi_row
         lda wi_rowy,x
         sta wi_arg
@@ -1231,8 +1259,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_redraw -- the animated half: three percentages and two times, each erased
 ;--------------------------------------------------------------
 .proc wi_redraw
-        lda #0
-        sta wi_row
+        stz wi_row
 ?l      ldx wi_row
         lda wi_rowy,x
         sta wi_py
@@ -1295,9 +1322,9 @@ wi_erasew
         adc wi_px                    ;   the column is a plain add.
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
         lda row_hi,x
-        adc #>WI_VRAM
+        adc WI_TAB+1                 ; the background's base = its row 0's address:
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1  ; and threw the carry away -- and it
-        lda #[WI_VRAM>>16]
+        lda WI_TAB+2                 ;   WI_VRAM, or WI_BGARENA after wi_bgsel
         adc #0                       ;   the TIME row alone is +$6900, so
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
         lda #SCREEN_WIDTH
@@ -1340,7 +1367,7 @@ wi_erasew
  .if 1
         stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY: opaque, this IS the
         jsr hud_blit.hud_fire                  ;   background (ert in wi_rect)
-        jmp blitter_wait
+        jmp blitter_wait_t
 .endp
 
 ;--------------------------------------------------------------
@@ -1445,7 +1472,7 @@ wi_erasew
         lda wi_cur+1
         sta wi_m+1
         lda #60
-        jsr wi_div16                 ; wi_m = minutes
+        jsr wi_div16_t                 ; wi_m = minutes
         lda wi_m
         sta wi_mins
         jsr wi_mul60
@@ -1760,14 +1787,18 @@ wi_erasew
 ;--------------------------------------------------------------
 .proc wi_yahput
         ldx wi_next
-        lda wi_nodey,x
-        sta wi_arg
-        lda wi_nodex,x
+        ldy wi_nodey,x
+        lda wi_yahdx,x               ; WI_drawOnLnode's WIURH0/WIURH1 pick, made
+        asl @                        ;   at pack time: C = the sign = WIURH1
+        lda wi_nodex,x               ;   (lda/tax leave C alone)
         tax
         lda #WI_I_YAH0
-        ldy wi_arg
+        adc #0                       ; + C
         jmp wi_put
 .endp
+    .if WI_I_YAH1 != WI_I_YAH0+1
+        ert 'wi_yahput adds the WIURH1 pick to WI_I_YAH0: WIURH1 must be the next lump'
+    .endif
 
 ;--------------------------------------------------------------
 ; wi_yah -- A = 1 to show the "YOU ARE HERE" pointer on the next level's node,
@@ -1785,23 +1816,18 @@ wi_erasew
         bne wi_yahput
  .endif
         ldx wi_next                  ; OFF: erase its box back to the map
-        lda wi_nodey,x
-        sta wi_arg
-        ldx wi_next
-        lda wi_nodex,x
-        tax
         lda #WI_YAHW
         sta wi_ew
         lda #WI_YAHH
         sta wi_eh
-        txa
-        clc
-        adc #WI_YAHDX
-        tax
-        lda wi_arg
+        lda wi_nodey,x
         sec
         sbc #WI_YAHDY
         tay
+        lda wi_nodex,x
+        clc
+        adc wi_yahdx,x               ; SIGNED: +1 for WIURH0, -31 for WIURH1
+        tax
         jmp wi_erase.wi_erasew
 ?out    rts
 .endp
@@ -1829,6 +1855,44 @@ wi_erasew
  .endif
         jmp wi_anim
 .endp
+
+;--------------------------------------------------------------
+; wi_bgsel -- WI_loadData's background: WIMAP%d for wbs->epsd (wi_stuff.c:1548).
+;   WI_TAB row 0 is WIMAP0 at WI_VRAM, the one world map the boot stream has
+;   room for, and until 2026-09-16 every episode got it -- E2/E3's splats and
+;   "you are here" pointer sat at their own lnodes on episode 1's picture. Their
+;   maps are in Rapidus SDRAM now (WIMAP_BANK, load_music), so an E2/E3 level
+;   copies its own into WI_BGARENA and points row 0 there. wi_slambg and
+;   wi_erase both reach the background through row 0, and stage 2 is copied
+;   fresh out of VRAM for every intermission, so the patch dies with this one.
+;   Called right behind wi_grab, whose blitter wait frees the MEMAC window
+;   spr_fcopy borrows.
+;--------------------------------------------------------------
+.proc wi_bgsel
+        ldx current_level
+        lda wi_bgm,x
+        cmp #255                     ; 255 = WIMAP0: row 0 is already right
+        beq ?out
+        stz sf_src                   ; both low bytes are 0 (the source by
+        stz sp_addr                  ;   pack_wi's stride, the arena by the ert)
+        rep #$20
+        .LONGA ON
+        and #$00FF                   ; (B is junk from the 8-bit load)
+        ora #[WIMAP_BANK<<8]
+        sta sf_src+1                 ; source WIMAP_BANK:mid00, mid + bank
+        lda #[WI_BGARENA>>8]
+        sta sp_addr+1                ; destination, mid + bank...
+        sta WI_TAB+1                 ; ...and row 0's (its low byte is WI_VRAM's 0)
+        lda #[SCREEN_WIDTH*WIPE_H]
+        sta sf_size
+        sep #$20
+        .LONGA OFF
+        jsl B1CODE_BASE+spr_fcopy_w1
+?out    rts
+.endp
+    .if [WI_BGARENA&$FF] != 0 .or [WI_VRAM&$FF] != 0
+        ert 'wi_erase adds no low byte to row 0: WI_BGARENA and WI_VRAM must be page-aligned'
+    .endif
 
         icl 'wi_tables.inc'          ; mk_ckill / bn_citem, from info.c
         icl 'wi_syms.inc'
@@ -1906,13 +1970,17 @@ wi_d        dta 0
 ; tools/split_menu_ovl.py only lifts the half that starts there -- the other
 ; half then lands in the map slot and check_xex.py stops the build.
 ;==============================================================
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org WIPCT_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 4b: bank $01
 .proc wi_pctof
         lda wi_max,x
         beq ?none
         sta wi_t2
         lda wi_val,x
-        jsr wi_mul100
+        jsl wi_mul100_w0
         lda wi_t2
         jsr wi_div16
         lda wi_m
@@ -1920,11 +1988,19 @@ wi_d        dta 0
 ?none   lda #100
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > WIPCT_END+1
         ert 'wi_pctof outgrew WIPCT_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org WIDIV_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 4b: bank $01
 .proc wi_div16
         sta wi_d
         lda #0
@@ -1942,6 +2018,10 @@ wi_d        dta 0
         bne ?l
         rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > WIDIV_END+1
         ert 'wi_div16 outgrew WIDIV_BASE..END (memory_map.inc)'
     .endif
+ .endif

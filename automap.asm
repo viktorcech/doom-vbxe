@@ -51,6 +51,7 @@
 ;--------------------------------------------------------------
 am_resume = *
         org AMMARK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc am_mark
         rep #$30                     ; 16-bit A + X (native mode, see above)
         lda rs_segi                  ; A = seg index
@@ -61,12 +62,134 @@ am_resume = *
         sta.l AM_BANK0,x             ; ...and store it INTO that slot: any
                                      ;   non-zero value means SEEN, and the
                                      ;   address is one, so no constant is needed
-        sep #$30                     ; back to the frame loop's 8-bit discipline
-        jmp seg_len                  ; the call this routine displaced
+        sep #$10                     ; X back to 8 bits; A stays 16-bit, which is
+        jmp seg_len.seg_len16        ;   what seg_len opens with (2026-09-15)
 .endp
+        .endseg
     .if * > AMMARK_END+1
         ert 'am_mark outgrew AMMARK_BASE..END (memory_map.inc)'
     .endif
+
+;--------------------------------------------------------------
+; sg_amout / sg_amin -- BUG FIX 2026-09-15: the SEEN marks go into the save.
+;   DOOM keeps them as ML_MAPPED in the line flags, and P_ArchiveWorld writes
+;   every line's flags, so a loaded game shows the map you had uncovered. This
+;   port's marks are AMSEEN (above) and the save never had them: a load starts
+;   from the level's shipped zeros, i.e. a blank automap.
+;   savegame.asm's SGK_AMB region calls these with jsl, one 128-byte sector at
+;   a time through SG_BUF: bit k of the bitmap = AMSEEN slot k non-zero, bit 7
+;   of each byte first. sg_src (the overlay's own cell) = the byte this sector
+;   starts at (0, 128). Raw the marks are 2 B a linedef = 15 pages; as bits the
+;   whole AMSEEN capacity is 221 B, one page.
+;   The overlay runs in NATIVE mode with the ROM out (rom_in is a no-op since
+;   DRAC_PLAN 4a; only siov_r leaves native), so an NMI/IRQ taken in here pushes
+;   PBR and bank-$01 code is safe. 8-bit throughout: cold code, twice a slot.
+;   zp_ptr+2 goes back to MAP_EXT_BANK on the way out -- the engine keeps it
+;   parked there for every [zp_ptr],y reader (pj_slot, en_shoot, ...).
+;--------------------------------------------------------------
+AM_SEEN_N equ [MAP_AMFLG-MAP_AMSEEN]/2
+    .if AM_SEEN_N > 2*128*8
+        ert 'AMSEEN holds more linedefs than the save bitmap page (SGK_AMB)'
+    .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc sg_amout                       ; AMSEEN -> SG_BUF (save)
+        jsr sg_amptr
+        ldx #0
+?byte   lda #8
+        sta sg_ambc
+?bit    lda zp_ptr                   ; past the table? AMFLG follows it: a 0 bit
+        cmp #<MAP_AMFLG
+        lda zp_ptr+1
+        sbc #>MAP_AMFLG
+        bcc ?in
+        clc
+        bcc ?put                     ; (always)
+?in     ldy #0
+        lda [zp_ptr],y
+        iny
+        ora [zp_ptr],y
+        cmp #1                       ; C = the slot is non-zero (SEEN)
+?put    rol SG_BUF,x
+        jsr sg_amnext
+        dec sg_ambc
+        bne ?bit
+        inx
+        bpl ?byte
+        lda #MAP_EXT_BANK            ; the parked bank back, then home (a jsl'd
+        sta zp_ptr+2                 ;   proc carries its own rtl: b1_check)
+        rtl
+.endp
+        .endseg
+
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc sg_amin                        ; SG_BUF -> AMSEEN (load, over the fresh zeros)
+        jsr sg_amptr
+        ldx #0
+?byte   lda #8
+        sta sg_ambc
+?bit    asl SG_BUF,x                 ; bit 7 first, the order sg_amout rol'd in
+        bcc ?nx
+        lda zp_ptr                   ; never past the table (that is AMFLG)
+        cmp #<MAP_AMFLG
+        lda zp_ptr+1
+        sbc #>MAP_AMFLG
+        bcs ?nx
+        ldy #0                       ; the slot's OWN address, which is exactly
+        lda zp_ptr                   ;   what am_mark stores there
+        sta [zp_ptr],y
+        iny
+        lda zp_ptr+1
+        sta [zp_ptr],y
+?nx     jsr sg_amnext
+        dec sg_ambc
+        bne ?bit
+        inx
+        bpl ?byte
+        lda #MAP_EXT_BANK            ; the parked bank back, then home (a jsl'd
+        sta zp_ptr+2                 ;   proc carries its own rtl: b1_check)
+        rtl
+.endp
+        .endseg
+
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc sg_amptr                       ; zp_ptr = AMSEEN slot of bit sg_src*8, bank $03
+        lda sg_src
+        sta zp_ptr
+        lda sg_src+1
+        sta zp_ptr+1
+        ldx #4                       ; *16: 8 bits a byte, 2 B a slot
+?s      asl zp_ptr
+        rol zp_ptr+1
+        dex
+        bne ?s
+        clc
+        lda zp_ptr
+        adc #<MAP_AMSEEN
+        sta zp_ptr
+        lda zp_ptr+1
+        adc #>MAP_AMSEEN
+        sta zp_ptr+1
+        lda #MAP_SEG_BANK
+        sta zp_ptr+2
+        rts
+.endp
+        .endseg
+
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc sg_amnext                      ; zp_ptr += 2 (the next linedef's slot)
+        lda zp_ptr
+        clc
+        adc #2
+        sta zp_ptr
+        bcc ?r
+        inc zp_ptr+1
+?r      rts
+.endp
+        .endseg
+
+        .segment D0                  ; DRAC_PLAN 3a
+sg_ambc dta 0                        ; bits left in the current bitmap byte
+        .endseg
         org am_resume
 am_amb = *                           ; the ambient PC: everything below orgs its
                                      ;   own home, so this file emits nothing
@@ -93,18 +216,26 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;   into it -- or into render_world. The overlay's own rts still returns to
 ;   main: jml pushes nothing.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AMGATE_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc am_gate
         jml B1CODE_BASE+b1_amgate    ; the WHOLE gate runs in bank $01 now
 .endp                                ;   (b1_amgate: test am_on, serve page 1 of
+        .endseg
                                      ;   the overlay from AMOVL_EXT, jml into
                                      ;   MENU_RUN or render_world) -- 4 bytes
                                      ;   here where 12 did not fit, and the
                                      ;   every-frame world path trades win2
                                      ;   fetches for full-speed SRAM ones
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AMGATE_END+1
         ert 'am_gate outgrew AMGATE_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; am_kgate -- while the map is up, read_keys must NOT run: '-'/'=' are the ZOOM
@@ -113,32 +244,48 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;   ESC (the control panel), TAB (am_key, below) and 'F' (the FPS readout) --
 ;   which is what DOOM's automap also leaves working.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AMKGATE_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc am_kgate
         lda am_on
         beq ?keys
         jmp mn_key
 ?keys   jmp read_keys
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AMKGATE_END+1
         ert 'am_kgate outgrew AMKGATE_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; am_wgate -- no player sprite over the map. DOOM's automap replaces the view,
 ;   gun and all; the status bar stays, which is why only draw_weapon is gated
 ;   and draw_hud_gate's other three calls run as usual.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AMWGATE_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc am_wgate
         lda am_on
         bne ?skip
         jmp draw_weapon
 ?skip   rts
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AMWGATE_END+1
         ert 'am_wgate outgrew AMWGATE_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; am_key -- TAB toggles the map (AM_STARTKEY / AM_ENDKEY, am_map.c:96-97).
@@ -159,7 +306,11 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;   everything is released -- so TAB cannot repeat while held, and the TAB that
 ;   opens the map cannot also be the TAB that closes it.
 ;--------------------------------------------------------------
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
         org AMKEY_BASE
+ .endif
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc am_key
         cmp #KEY_TAB
         bne ?ret
@@ -202,9 +353,13 @@ am_amb = *                           ; the ambient PC: everything below orgs its
                                      ;   3 is not KEY_F, so the tail is safe.
 ?ret    jmp fps_key                  ; the tail this displaced
 .endp
+        .endseg
+ .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ .else
     .if * > AMKEY_END+1
         ert 'am_key outgrew AMKEY_BASE..END (memory_map.inc)'
     .endif
+ .endif
 
 ;--------------------------------------------------------------
 ; am_title / strip_blit -- ALL of hu_stuff.c's HU_Drawer, in one blit.
@@ -225,11 +380,12 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;   menu already makes, and it is only affordable because the set of lines is
 ;   CLOSED: nine level names and one message per bonus id.
 ;
-;   The strips are TITLE_STRIDE (1024) apart, which is what keeps the address
-;   arithmetic to two shifts: only the middle byte of the source address moves,
-;   by 4 per strip (40 strips = $A0, so it cannot carry into the bank byte).
-;   All of them are padded to TITLE_W, so there is no width table -- and the
-;   padding is index 0, which BLT_BSTENCIL leaves alone.
+;   HU_TAB SAYS WHERE EACH STRIP IS (2026-09-16). They used to sit TITLE_STRIDE
+;   (1024) apart and all be padded to TITLE_W, so this needed two shifts and no
+;   table at all -- and 63 strips cost 64,512 B of VRAM to hold 38,624 B of ink.
+;   That 25,699 B of padding is what the SR status bar is made of (xdl.asm), so
+;   the strips are packed end to end and three `lda.l` into HU_TAB (Rapidus bank
+;   $01, bank01.asm) replace the shifts: offset lo, offset hi, width.
 ;
 ;   It builds its OWN BCB rather than calling hud_blit, and that is the whole
 ;   reason it is resident instead of overlay code: hud_blit forces the
@@ -247,40 +403,42 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;   address byte (a constant) moved down into their place.
 ;--------------------------------------------------------------
         org AMTITLE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc am_title                       ; the AUTOMAP's line: this level's name
         ldx #TITLE_Y
         lda current_level
 strip_blit                           ; ...and the shared entry: A = strip index,
-        asl                          ;     X = screen row. Stride 1024 = 4
-        asl                          ;     banks-of-256 per strip, so the low
-        clc                          ;     byte never moves and the middle one
-        adc #>TITLE_VRAM             ;     cannot carry
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
-        lda #<TITLE_VRAM             ; --- SRC = TITLE_VRAM + index*TITLE_STRIDE
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        lda #[TITLE_VRAM>>16]
+        txy                          ;     X = screen row. The row goes to Y --
+        tax                          ;     X is what indexes HU_TAB, and long
+                                     ;     addressing is X-indexed only.
+        lda.l HU_OLO_EXT,x           ; --- SRC = TITLE_VRAM's bank : this strip's
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR    ;   own offset. The offset is 16-bit
+        lda.l HU_OHI_EXT,x                   ;   and TITLE_VRAM is 64 KB-aligned,
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1  ;   so there is nothing to ADD -- the
+        lda #[TITLE_VRAM>>16]                ;   two bytes ARE the low address.
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
-        lda #TITLE_W                 ; SRC_STEPY = the strip's own row pitch
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
-        lda #0                       ; draw_weapon SCALES this BCB's source for
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ; the view window; undo that, the
-        lda #1                       ; strip is 1:1 (hud_blit does the same)
+        lda.l HU_W_EXT,x             ; SRC_STEPY = the strip's own row pitch, and
+        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY   ; WIDTH is one less. They used to be
+        dec @                                ; the constant TITLE_W: every strip
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH       ; was padded to the widest line, and
+        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1 ; that padding is the SR bar now
+        lda #1
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda #TITLE_W-1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
         lda #TITLE_H-1
         sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        lda row_lo,x                 ; --- DST = column 0 of row X, in the BACK
+        lda row_lo,y                 ; --- DST = column 0 of row Y, in the BACK
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR    ;   buffer (NOT bank 0 -- header)
-        lda row_hi,x
+        lda row_hi,y
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
         lda zback_hi
         sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
         lda #BLT_BSTENCIL            ; index 0 = clear: the padding costs nothing
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
-        jmp hud_blit.hud_fire        ; ...and out through hud_blit's own tail
+        jsl hud_fire_w0        ; ...and out through hud_blit's own tail
+        rts                          ;   (tail call across the bank line)
                                      ;   (the .proc-scoped name menu.asm uses)
 .endp
+        .endseg
     .if * > AMTITLE_END+1
         ert 'am_title outgrew AMTITLE_BASE..END (memory_map.inc)'
     .endif
@@ -366,13 +524,13 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
 ;--------------------------------------------------------------
 .proc am_head
         ldx #0
-?p      lda.l B1CODE_BASE+AMOVL_EXT+$100,x
+?p      lda.l EXT_BASE+AMOVL_EXT+$100,x
         sta MENU_RUN+$100,x
-        lda.l B1CODE_BASE+AMOVL_EXT+$200,x
+        lda.l EXT_BASE+AMOVL_EXT+$200,x
         sta MENU_RUN+$200,x
-        lda.l B1CODE_BASE+AMOVL_EXT+$300,x
+        lda.l EXT_BASE+AMOVL_EXT+$300,x
         sta MENU_RUN+$300,x
-        lda.l B1CODE_BASE+AMOVL_EXT+$400,x
+        lda.l EXT_BASE+AMOVL_EXT+$400,x
         sta MENU_RUN+$400,x
         inx
         bne ?p
@@ -394,10 +552,10 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         jsr am_keys                  ; AM_Ticker: the zoom keys
  .endif
         lda #AM_BG
-        jsr clear_screen             ; AM_clearFB (resident: rows 0..167 only)
+        jsr clear_screen_t ; AM_clearFB (resident: rows 0..167 only)
         jsr am_walls                 ; AM_drawWalls
         jsr am_arrow                 ; AM_drawPlayers
-        jmp am_title                 ; HU_Drawer's `if (automapactive)` half: the
+        jmp am_title_t                 ; HU_Drawer's `if (automapactive)` half: the
 .endp                                ;   level name. LAST, because am_arrow is
                                      ;   what puts the MEMAC window back on the
                                      ;   BCB bank -- and its tail (hud_fire's
@@ -726,14 +884,14 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         sta zp_vidx
         lda am_v1+1
         sta zp_vidx+1
-        jsr load_vertex
+        jsr load_vertex_t
         ldx #0                       ; am_proj stores THROUGH X -- see below
         jsr am_proj
         lda am_v2
         sta zp_vidx
         lda am_v2+1
         sta zp_vidx+1
-        jsr load_vertex
+        jsr load_vertex_t
         ldx #am_x2-am_x1
         jsr am_proj
         jmp am_line
@@ -910,10 +1068,19 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         ldy #0
 ?run    stx am_ma
         sty am_mi
+ .if 1
+        lda am_dx                    ; err = major >> 1 ; n = major + 1, so the loop
+        lsr @                        ;   end is ONE dec/bne (2026-09-15, -6 a pixel,
+        sta am_err                   ;   +7 once a line)
+        lda am_dx
+        inc @
+        sta am_n
+ .else
         lda am_dx                    ; n = major ; err = major >> 1
         sta am_n
         lsr @
         sta am_err
+ .endif
 ?l      jsr am_plot                  ; (X survives it, Y does not)
         sec                          ; err -= minor
         lda am_err
@@ -931,11 +1098,16 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         clc
         adc am_stx,x
         sta am_x1,x
+ .if 1
+        dec am_n                     ; n+1 pixels: the count hits 0 right after the
+        bne ?l                       ;   last pixel's step, where the old test was
+ .else
         lda am_n                     ; n counts the major axis: a line is n+1
         beq ?done                    ;   pixels, so the test is AFTER the plot
         dec @
         sta am_n
         bra ?l
+ .endif
 ?done   sep #$20
         .LONGA OFF
         rts
@@ -1154,7 +1326,11 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         sta zp_ptr
         lda row_hi,y
         adc #0
+ .if 1
+        tay                          ; the row is done with Y: vaddr>>8 parks there,
+ .else                                ;   not in am_t (2026-09-15, -4 a pixel)
         sta am_t
+ .endif
         lsr                          ; bank = (zback_hi<<4) | (vaddr>>12): the
         lsr                          ;   zback half is am_bnk, built once a
         lsr                          ;   frame by am_head
@@ -1164,9 +1340,19 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         beq ?same
         sta am_lastbk
         sta VBXE_BANK_SEL
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+  .if 1
+?same   tya                          ; (vaddr>>8, parked in Y above)
+  .else
+?same   lda am_t
+  .endif
+        and #$3F                     ; the 14-bit offset in the 16 KB page
+        ora #>MEMW16
+ .else
 ?same   lda am_t
         and #$0F
         ora #>MEMW
+ .endif
         sta zp_ptr+1
         lda am_col
         sta (zp_ptr)
@@ -1209,9 +1395,15 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         beq ?same
         sta am_lastbk
         sta VBXE_BANK_SEL
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+?same   lda am_t
+        and #$3F                     ; the 14-bit offset in the 16 KB page
+        ora #>MEMW16
+ .else
 ?same   lda am_t
         and #$0F
         ora #>MEMW
+ .endif
         sta zp_ptr+1
         ldy #0
         lda am_col
@@ -1255,9 +1447,8 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         clc                          ; the TIP: centre + the facing vector
         adc #AM_CX                   ;   |offset| <= 16 against a centre of 80,
         sta am_x2                    ;   so this never leaves 0..255 and every
-        lda #0                       ;   high byte below is a plain zero
-        sta am_x2+1
-        lda am_t2                    ; the TAIL: centre - half of it
+        stz am_x2+1
+        lda am_t2
         cmp #$80
         ror
         sta am_t
@@ -1265,9 +1456,8 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda #AM_CX
         sbc am_t
         sta am_x1
-        lda #0
-        sta am_x1+1
-        lda zp_sin+1                 ; --- y, subtracted: screen rows grow DOWN
+        stz am_x1+1
+        lda zp_sin+1
         cmp #$80                     ;     while world y grows north
         ror
         cmp #$80
@@ -1282,8 +1472,7 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda #AM_CY
         sbc am_t
         sta am_y2
-        lda #0
-        sta am_y2+1
+        stz am_y2+1
         lda am_t2
         cmp #$80
         ror
@@ -1292,9 +1481,8 @@ AM_SH0      equ 4                    ;   because an LR pixel is two hw pixels)
         lda #AM_CY
         adc am_t
         sta am_y1
-        lda #0
-        sta am_y1+1
-        jsr am_line
+        stz am_y1+1
+        jsr am_line                  ; (it loads A itself)
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
         rts

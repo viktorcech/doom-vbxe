@@ -110,6 +110,7 @@ mtx_resume = *
 ;   without them, rs_wtexid comes back $FF and the column loop paints the span
 ;   in its dominant colour -- ugly, not fatal. Clobbers A/X.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mid_planes
         ldx ms_i                     ; the entry mseg_draw is replaying ...
         lda ms_ixa,x                 ; ... and its MIDTEX row
@@ -128,15 +129,17 @@ mtx_resume = *
         lda.l MTXBHI_EXT,x
         sbc zp_pz+1
         sta rs_wbot+1
+        rep #$20                     ; worldh = top - bottom, one word subtract
+        .LONGA ON                    ;   (drac030 idiom)
         sec
         lda rs_wtop
         sbc rs_wbot
         sta rs_worldh
-        lda rs_wtop+1
-        sbc rs_wbot+1
-        sta rs_worldh+1
+        .LONGA OFF
+        sep #$20
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; The three one-line stand-ins process_seg calls in place of instructions it
@@ -145,6 +148,7 @@ mtx_resume = *
 ;--------------------------------------------------------------
 mtx_peg_resume = *
         org MTXPEG_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mtx_pegf                       ; = lda rs_pegf
         lda rs_mpass
         beq ?wall
@@ -157,6 +161,7 @@ mtx_peg_resume = *
 ?wall   lda rs_pegf                  ;   is what a middle texture wants
         rts
 .endp
+        .endseg
     .if * > MTXPEG_END+1
         ert 'mtx_pegf outgrew MTXPEG_BASE..END (memory_map.inc)'
     .endif
@@ -167,6 +172,7 @@ mtx_peg_resume = *
 ;   at the same point: the WALK defers such a seg (mseg_snap), the masked pass
 ;   prepares the window arrays for it (mseg_prime).
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mtx_hook
         jsr seg_yoff
         lda rs_mpass
@@ -182,6 +188,7 @@ mtx_peg_resume = *
 ?ret    rts
 ?snap   jmp mseg_snap
 .endp
+        .endseg
 
 
 ; --- the other stand-ins. They lived in win2 ("nowhere fast left") until
@@ -190,6 +197,7 @@ mtx_peg_resume = *
 ;     back at ~29 mid-segs (memory_map.inc).
 mtx_back_resume = *
         org MTXBACK_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mtx_back                       ; = cmp #NO_SECTOR
         ldy rs_mpass
         beq ?real
@@ -197,7 +205,9 @@ mtx_back_resume = *
 ?real   cmp #NO_SECTOR
         rts
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mtx_occ                        ; = ldx zp_xa
         lda rs_mpass
         beq ?keep
@@ -205,7 +215,9 @@ mtx_back_resume = *
 ?keep   ldx zp_xa                    ;   -- put the snapshot back before the
         rts                          ;   "all solid, drop the seg" scan sees them
 .endp
+        .endseg
 
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mtx_flat                       ; = lda tex_flat
         lda rs_mpass                 ; 'T' FLATTENS WALLS, NOT STRUTS. The toggle
         bne ?on                      ;   exists to take the per-column texture
@@ -220,6 +232,7 @@ mtx_back_resume = *
                                      ;   ("no hint of it there") -- the wrong
                                      ;   half of the choice.
 .endp
+        .endseg
     .if * > MTXBACK_END+1
         ert 'mtx_back/mtx_occ outgrew MTXBACK_BASE..END (memory_map.inc)'
     .endif
@@ -240,6 +253,7 @@ mtx_back_resume = *
 ;   wrongly clipped one is a strut floating over the wall in front of it.
 ;   IN: zp_xa/zp_xb, rs_segi. Clobbers A/X/Y, cx_b/cx_d.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mseg_snap
         lda ms_n
         cmp #MSEG_MAX
@@ -308,12 +322,20 @@ mtx_back_resume = *
         iny
         cpy #2
         beq ?first
+ .if 1
+        cmp mtx_b0                   ; A still holds mtx_b (iny/cpy leave it): test
+        bne ?unot                    ;   the bottom first, one load fewer -- the two
+        lda mtx_t                    ;   equalities have no order (2026-09-15)
+        cmp mtx_t0
+        beq ?nx
+ .else
         lda mtx_t
         cmp mtx_t0
         bne ?unot
         lda mtx_b
         cmp mtx_b0
         beq ?nx
+ .endif
 ?unot
  .if 1
 	stz ms_uni
@@ -323,14 +345,20 @@ mtx_back_resume = *
         sta ms_uni
         beq ?nx                      ; (always: A = 0)
  .endif
+ .if 1
+?first  sta mtx_b0                   ; (A = mtx_b here as well; A is dead at ?nx)
+        lda mtx_t
+        sta mtx_t0
+ .else
 ?first  lda mtx_t
         sta mtx_t0
         lda mtx_b
         sta mtx_b0
+ .endif
 ?nx     cpx zp_xb
         beq ?done
         inx
-        jmp ?snap		;bra?
+        bra ?snap		;bra?
 
 ?done   lda ms_uni
         beq ?keep
@@ -362,6 +390,7 @@ mtx_back_resume = *
         inc ms_n
         rts
 .endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; mseg_win -- the masked pass's per-column clip, called from the column loop
@@ -370,6 +399,7 @@ mtx_back_resume = *
 ;   ceiling and floor fills to empty ranges (see the header). C = 1 -> nothing
 ;   open in this column and the loop skips it. Preserves X.
 ;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mseg_win
         lda #$FF                     ; never merge a masked column: the copy
         sta cm_x                     ;   would carry the background showing
@@ -398,6 +428,7 @@ mtx_back_resume = *
 ?closed sec
         rts
 .endp
+        .endseg
 
     .if * > MSEG_END+1
         ert 'mid_planes/mseg_snap/mseg_win outgrew MSEG_BASE..MSEG_END (memory_map.inc)'
@@ -412,6 +443,7 @@ mtx_back_resume = *
 ;   Clobbers A/X/Y.
 ;--------------------------------------------------------------
         org MSEGPRE_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mseg_prime
         lda ms_cur                   ; sp_clip+1 is $07 already and cannot be
         and #$FE                     ;   anything else: CLIP_BASE is page
@@ -435,6 +467,19 @@ mtx_back_resume = *
         stz solid_arr,x              ; 65816 stz abs,x: 2 cycles and 2 bytes off
                                      ;   EVERY replayed column (drac030
                                      ;   hand-review, 2026-08-31)
+ .if 1
+        cpx zp_xb                    ; the snapshot samples every FOURTH column
+        beq ?done                    ;   (mseg_snap ?put): the three between it
+        inx                          ;   reuse the pair just read, and the cursor
+        txa                          ;   steps when the NEXT column starts a
+        and #3                       ;   group of four -- (new X & 3) == 0 is
+        bne ?p                       ;   the old (X & 3) == 3, tested after the
+        tya                          ;   end test (a step past xb was dead work)
+        clc
+        adc ms_cstep
+        tay
+        bra ?p
+ .else
         txa                          ; the snapshot samples every FOURTH column
         and #3                       ;   (mseg_snap ?put): the three between it
         cmp #3                       ;   reuse the pair just read, and the cursor
@@ -451,8 +496,10 @@ mtx_back_resume = *
  .else
         jmp ?p
  .endif
+ .endif
 ?done   rts
 .endp
+        .endseg
     .if * > MSEGPRE_END+1
         ert 'mseg_prime outgrew MSEGPRE_BASE..END (memory_map.inc)'
     .endif
@@ -464,6 +511,7 @@ mtx_back_resume = *
 ;   after spr_draw -- vanilla's own order.
 ;--------------------------------------------------------------
         org MSEGDRW_BASE
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mseg_draw
         lda ms_n
         bne ?go
@@ -478,7 +526,7 @@ mtx_back_resume = *
                                      ;   byte below load_dtab.)
 ?go     sta ms_i
     .if TEX_RUNS
-        jsr ptc_open                 ; RE-SYNC THE PAINTER'S BUILDER before
+        jsl ptc_open_w0                 ; RE-SYNC THE PAINTER'S BUILDER before
                                      ;   emitting anything. It is a no-op in the
                                      ;   order render_world uses today (the walk
                                      ;   left zp_pt and tw_chn agreeing, and
@@ -520,7 +568,8 @@ mtx_back_resume = *
         bne ?loop
         sta rs_mpass                 ; A = 0 -- the loop just ended on it
     .if TEX_RUNS
-        jmp ptc_fire                 ; LAUNCH what is still in the painter's
+        jsl ptc_fire_w0                 ; LAUNCH what is still in the painter's
+        rts                          ;   (tail call across the bank line)
                                      ;   chain. Everything after render_world
                                      ;   only ever blits and waits (spr_draw,
                                      ;   draw_weapon, the status bar), so this
@@ -531,6 +580,7 @@ mtx_back_resume = *
         rts
     .endif
 .endp
+        .endseg
     .if * > MSEGDRW_END+1
         ert 'mseg_draw outgrew MSEGDRW_BASE..END (memory_map.inc)'
     .endif

@@ -69,6 +69,16 @@ sg_amb = *                           ; the ambient PC (the map-slot staging bloc
 ;--------------------------------------------------------------
 .proc sg_head
         ldy #0
+ .if 1                                ; DRAC_PLAN 3b: 16 KB window
+SGOVL_WIN       equ MEMW16+[[SGOVL_BANK&3]<<12]
+?p      lda SGOVL_WIN+$100,y
+        sta MENU_RUN+$100,y
+        lda SGOVL_WIN+$200,y
+        sta MENU_RUN+$200,y
+        lda SGOVL_WIN+$300,y
+        sta MENU_RUN+$300,y
+        lda SGOVL_WIN+$400,y
+ .else
 ?p      lda MEMW+$100,y
         sta MENU_RUN+$100,y
         lda MEMW+$200,y
@@ -76,6 +86,7 @@ sg_amb = *                           ; the ambient PC (the map-slot staging bloc
         lda MEMW+$300,y
         sta MENU_RUN+$300,y
         lda MEMW+$400,y
+ .endif
         sta MENU_RUN+$400,y
         iny
         bne ?p
@@ -104,11 +115,36 @@ SGK_UROM equ 1                       ; under the OS ROM: SIOV *is* the ROM, so
                                      ;   the ROM banked out for the copy alone
 SGK_EXT  equ 2                       ; Rapidus bank $01: same staging, with the
                                      ;   65816 long addressing read_ext uses
+ .if 1
+SGK_AMB  equ 3                       ; the automap's SEEN marks (AMSEEN, bank $03,
+                                     ;   r_segs.c ML_MAPPED) as ONE BIT a linedef:
+                                     ;   sg_amout/sg_amin in automap.asm (BUG FIX
+                                     ;   2026-09-15, "do save sa neuklada odokryta
+                                     ;   mapa" -- DOOM archives ML_MAPPED with the
+                                     ;   line flags, P_ArchiveWorld). Raw it is 15
+                                     ;   pages and the slot had 1 sector left.
+; The LOW region stops at the end of MAP_TEXADDRHI: the header, MAP_SECTORS and
+; the three texture ADDRESS tables (update_scroll moves them) are below it; past
+; it (MAP_TEXWMASK..MAP_YVAL) nothing in the engine writes a byte -- the level
+; load lays those tables down again. That is 8 pages instead of 12 today, and it
+; is what pays for the bitmap without growing SAVE_SECTORS.
+SG_LOWPG equ [[MAP_TEXWMASK+255]/256]-[MAP_LOAD/256]
+    .if MAP_SECTORS >= MAP_TEXADDRLO
+        ert 'map_syms.inc reordered the LOW tables -- recheck SG_LOWPG'
+    .endif
+    .if MAP_TEXADDRHI >= MAP_TEXWMASK
+        ert 'map_syms.inc reordered the LOW tables -- recheck SG_LOWPG'
+    .endif
+ .endif
 
 sg_tab
         dta a($0F00), 1,  SGK_RAM    ; the player page (PSTATE/weapon/items)
         dta a($7200), 1,  SGK_RAM    ; MV_TAB: movers still in flight
+ .if 1
+        dta a($4000), SG_LOWPG, SGK_RAM ; the map's LOW region: SECTOR HEIGHTS
+ .else                                ;   + the scrolled texture addresses
         dta a($4000), 12, SGK_RAM    ; the map's LOW region: SECTOR HEIGHTS
+ .endif
         dta a($C000), 16, SGK_UROM   ; the THINGS blob: every thing's position
         dta a($E400), 1,  SGK_UROM   ; mv_used, the WALKOVER TRIGGERS. It is in
                                      ;   the MVUSED block ($E400) under the OS
@@ -139,6 +175,9 @@ sg_tab
                                      ;   became one, so the table did not grow.
         dta a($7700), 9,  SGK_EXT    ; the chase state
         dta a($FF00), 1,  SGK_EXT    ; ...and the thresholds, the bank's last page
+ .if 1
+        dta a(0), 1, SGK_AMB         ; the automap bitmap: sg_src = its byte offset
+ .endif
 SG_TAB_N equ * - sg_tab
 ; The header's second magic byte doubles as the FORMAT version. Bump it whenever
 ; sg_tab's regions change: a slot written by an older build has the same sectors
@@ -147,8 +186,13 @@ SG_TAB_N equ * - sg_tab
 ; 'M' was the original; 'N' is the DOOR_EXT layout (2026-08-18); 'O' moved
 ; TH_TARG/TH_THRS off PJSLOT_EXT (2026-08-20); 'P' took mv_used out of sg_vars
 ; and made it a UROM region, because sg_vars was reading it through the OS ROM.
+ .if 1
+SG_MAGIC2 equ 'Q'                    ; 'Q' trimmed LOW to SG_LOWPG and appended the
+SG_PAGES equ 1+1+SG_LOWPG+16+1+3+7+9+1+1   ;   automap bitmap (2026-09-15)
+ .else
 SG_MAGIC2 equ 'P'
 SG_PAGES equ 1+1+12+16+1+3+7+9+1       ; -> SG_PAGES*2 + 1 sectors per slot
+ .endif
 
     .if SG_PAGES*2 + 1 > SAVE_SECTORS
         ert 'the save regions no longer fit SAVE_SECTORS (tools/make_atr_doom.py)'
@@ -204,7 +248,11 @@ sg_cnt  dta 0
         sta DAUX1
         lda ll_sec+1
         sta DAUX2
+ .if 1
+        jsr siov_r                   ; DRAC_PLAN 4a: SIOV with the ROM banked in
+ .else
         jsr SIOV
+ .endif
         sty sio_status
         cpy #1
         bne ?err
@@ -249,9 +297,8 @@ sg_cnt  dta 0
 ;   is past sector 27000, so both halves matter).
 ;--------------------------------------------------------------
 .proc sg_slot_sec
-        lda #0
-        sta ll_sec
-        sta ll_sec+1
+        stz ll_sec
+        stz ll_sec+1
         ldx sg_slot
         beq ?done
 ?add    clc                          ; six slots -- an add loop is smaller than
@@ -363,8 +410,7 @@ sg_vx   dta 0
         clc
         adc #3
         sta sg_vi
-        tya
-        tax
+        tyx
         rts
 .endp
 
@@ -378,8 +424,7 @@ sg_pg   dta 0                        ; ... pages left
 sg_kind dta 0
 
 .proc sg_run
-        lda #0
-        sta sg_ri
+        stz sg_ri
 ?r      ldx sg_ri
         cpx #SG_TAB_N
         bcs ?done
@@ -451,6 +496,9 @@ sg_kind dta 0
         lda sg_kind
         cmp #SGK_EXT
         beq ?ext
+ .if 1
+        bcs ?am                      ; SGK_AMB (> SGK_EXT): the automap bitmap
+ .endif
         jsr sg_zpsrc
         jsr sg_rom_out
         ldy #127
@@ -466,12 +514,19 @@ sg_kind dta 0
         dey
         bpl ?e
         rts
+ .if 1
+?am     jsl B1CODE_BASE+sg_amout     ; resident bank-$01 code (automap.asm): this
+        rts                          ;   overlay had 20 bytes left before SG_BUF
+ .endif
 .endp
 
 .proc sg_scatter
         lda sg_kind
         cmp #SGK_EXT
         beq ?ext
+ .if 1
+        bcs ?am                      ; SGK_AMB: the automap bitmap
+ .endif
         jsr sg_zpsrc
         jsr sg_rom_out
         ldy #127
@@ -487,6 +542,10 @@ sg_kind dta 0
         dey
         bpl ?e
         rts
+ .if 1
+?am     jsl B1CODE_BASE+sg_amin
+        rts
+ .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -520,7 +579,7 @@ sg_kind dta 0
  .if 1
         sei
         stz NMIEN
-        jmp rom_out                  ; tail
+        jmp rom_out_t ; tail
  .else
         sei
         lda #0
@@ -530,7 +589,7 @@ sg_kind dta 0
 .endp
 
 .proc sg_rom_in
-        jsr rom_in
+        jsr rom_in_t
         lda #$40
         sta NMIEN
         cli
@@ -543,7 +602,7 @@ sg_kind dta 0
 ;   masked. Same bracket exit_level puts round its loaders.
 ;--------------------------------------------------------------
 .proc sg_begin
-        jsr rom_in
+        jsr rom_in_t
         lda #$40
         sta NMIEN
         cli
@@ -553,8 +612,8 @@ sg_kind dta 0
 
 .proc sg_end
         sei
-        jsr rom_out                  ; back to the frame loop's world...
-        jsr snd_pokey                ; ...and POKEY back from SIO. THIS IS NOT
+        jsr rom_out_t ; back to the frame loop's world...
+        jsr snd_pokey_t ; ...and POKEY back from SIO. THIS IS NOT
                                      ;   OPTIONAL: SIO takes the chip over whole
                                      ;   -- serial bits in AUDCTL, channels 3/4,
                                      ;   the lot -- and every other SIO window in
@@ -612,7 +671,7 @@ sg_kind dta 0
         bcc ?s
         ldx mn_ing                   ; THE ONE ENTRY HERE THAT CAN RETURN TO A
         bne ?ing                     ;   ROM-IN WORLD (2026-08-13, the title
-        jsr snd_pokey                ;   LOAD freeze). sg_begin/sg_end bracket
+        jsr snd_pokey_t ;   LOAD freeze). sg_begin/sg_end bracket
         jmp ?back                    ;   the IN-GAME frame loop, which runs with
 ?ing    jsr sg_end                   ;   the ROM banked OUT -- so sg_end's
 ?back   lda #BANK_EN | MENU_OBANK    ;   rom_out is a RESTORE there and a
@@ -674,7 +733,7 @@ sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
         tax
         lda sg_qsnd,x
         tax
-        jsr snd_play
+        jsr snd_play_t
         jsr sg_qwait                 ; I_WaitVBL(105)
         jmp sg_bye                   ; ...and out. NOT `rom_in + jmp COLDSV`: that
                                      ;   hands the OS a machine nobody reset.
@@ -774,9 +833,9 @@ sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
         jsr sg_end
         lda #$FF                     ; the weapon in his hands changed under
         sta wp_wldd                  ;   wp_wload's cache...
-        jsr blitter_wait             ; ...and STREAM IT NOW. Invalidating alone
+        jsr blitter_wait_t ; ...and STREAM IT NOW. Invalidating alone
         lda wp_cur                   ;   was not enough: wp_init already called
-        jsr wp_wload                 ;   wp_wload during the level load above,
+        jsr wp_wload_t                 ;   wp_wload during the level load above,
                                      ;   with the weapon the player was holding
                                      ;   BEFORE the load, and nothing calls it
                                      ;   again until a weapon SWITCH. So the slot
@@ -787,7 +846,7 @@ sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
                                      ;   until you pressed a number (load.png,
                                      ;   2026-08-09: save on E1M5, finish the
                                      ;   level, load).
-        jsr vw_apply                 ; THE VIEW WINDOW, and it is not cosmetic.
+        jsr vw_apply_t                 ; THE VIEW WINDOW, and it is not cosmetic.
                                      ;   solid_arr is at $1000 and ytopc_arr at
                                      ;   $1100 -- i.e. UNDER THIS OVERLAY. Every
                                      ;   byte of them is this code while the
@@ -804,7 +863,7 @@ sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
                                      ;   restore -- so the eight bytes that came
                                      ;   off the disk stop disagreeing with the
                                      ;   size the engine actually thinks it has.
-        jsr blk_fill                 ; the things moved: rebuild the blockmap
+        jsr blk_fill_t                 ; the things moved: rebuild the blockmap
         lda #2
         sta hud_dirty                ; ... and repaint the bar in both buffers
         lda #0
@@ -837,7 +896,7 @@ sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
 .proc sg_go2                         ; (SG_RESUME is the equ; MADS labels are
                                      ;  case-insensitive, so the proc cannot
                                      ;  carry the same name)
-        jsr sg_fresh                 ; drop this level's SDRAM-resident bit, THEN
+        jsr sg_fresh_t ; drop this level's SDRAM-resident bit, THEN
                                      ;   the level, exactly as a normal level
                                      ;   change loads it (NMIEN + cli, the map,
                                      ;   textures, sprites, things, then sei +
@@ -906,7 +965,7 @@ BOOT_RUN equ $0700                   ; the ATR boot loader's home (boot.asm: the
 .proc sg_bye
         sei
         cld
-        jsr blitter_wait             ; the blitter still owns VRAM until it stops
+        jsr blitter_wait_t ; the blitter still owns VRAM until it stops
         lda #0
         sta NMIEN                    ; NMI off across the handover
         sta VBXE_VCTL                ; --- VBXE: XDL off, so nothing garbles the
