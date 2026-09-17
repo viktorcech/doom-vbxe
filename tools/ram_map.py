@@ -114,7 +114,7 @@ RESERVED = [
     # trap rs_utL/rs_utR at $03C1 sit in, one block further up.
     # ... +0x0357 = EXTRALIGHT, the muzzle flash's 0/2/4 (memory_map.inc,
     # lights.asm wp_flight/lt_seg_flash, 2026-08-31).
-    (0x0340, 0x0357, "PAINT_VARS + EXTRALIGHT: paint.asm per-column state / muzzle flash"),
+    (0x0357, 0x0357, "EXTRALIGHT (PAINT_VARS left for segment D0, DRAC_PLAN 4)"),
     # ...and the two the line above already named as the same trap "one block
     # further up" without ever reserving them: rs_utL/rs_utR = OSFREE_BASE+$81/
     # +$83 (memory_map.inc). They sat inside the 39 B block the budget offered
@@ -168,7 +168,7 @@ RESERVED = [
 ] + ([] if _tex_runs() else [
     (0x6100, 0x677F, "texture column index table (streamed via the .tex blob)"),
 ]) + [
-    (0x9000, 0x9FFF, "MEMAC-A window: writes go to VBXE, not RAM"),
+    (0x8000, 0xBFFF, "MEMAC-A 16 KB window (DRAC_PLAN 3b): writes go to VBXE, not RAM"),
     # 2026-07-28: the vissprite RECORDS went per-field ($0800 page + $BF50+),
     # so $BAC0-$BF4F freed up -- coll_seg/collide_leaf (COLLFAST) live there now.
     # 2026-08-30: hud_ent, the 7-byte row hud_entry copies down out of
@@ -235,6 +235,13 @@ RESERVED = [
 #          recip_to_ext copies them to Rapidus bank $01 (memory_map.inc
 #          RECIP_EXT) during init, well before the first load_level. After that
 #          the segment is dead RAM the level stream overwrites, as intended.
+# DECLARED areas: RAM that holds `.ds` cells (no XEX bytes, so free_blocks()
+# would advertise it) but MAY ALSO hold real XEX data -- which is why it is not
+# in RESERVED (check_xex.py fails any segment that overlaps RESERVED).
+DECLARED = [
+    (0x281C, 0x36F7, "segment D0: bank-0 data + .ds cells (memory_map.inc D0SEG_BASE, DRAC_PLAN 3a/4)"),
+]
+
 STAGED = [
     # 6 pages of table + recip_to_ext itself, which rides along in the same
     # segment so the copy costs no permanent RAM either.
@@ -276,6 +283,11 @@ STAGED = [
     # bsp_stack. What it bought is 280 B at $3DD8 in a Rapidus-FAST window for
     # the sight ray's z test (memory_map.inc SGZ_BASE / SNDX_STAGE).
     (0x1341, 0x14FF, "SNDX_STAGE -> bank $01 (snd_to_ext, before the first SIO)"),
+    # 2026-09-13: the bank-$01 CODE segment (drac.txt). tools/split_b1.py
+    # re-inserts it as chunks staged here, each followed by an INIT to
+    # b1_stage_copy, which copies it up while the XEX is still loading --
+    # MEMAC-A is off until setup_memac, so this is plain RAM at that time.
+    (0x9000, 0x9FFF, "B1STAGE -> bank $01 code chunks (split_b1.py, INIT b1_stage_copy)"),
 ]
 
 # Reserves: real RAM we could take back, and what it costs.
@@ -300,7 +312,7 @@ def segments(path=XEX):
 
 def free_blocks(segs):
     used = sorted([(s, e) for s, e in segs] +
-                  [(s, e) for s, e, _ in RESERVED + OS_LOW])
+                  [(s, e) for s, e, _ in RESERVED + OS_LOW + DECLARED])
     free, cur = [], 0x0000
     for s, e in used:
         if s > cur:

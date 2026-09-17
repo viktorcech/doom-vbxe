@@ -175,7 +175,9 @@ SECTOR = 128
 
 MAP_LOAD = 0x4000                    # LOW region: the engine's map slot
 MAP_LOAD_HI = 0xD800                 # HIGH region: RAM under the OS ROM
-MAP_EXT_BANK = 0x01                  # EXT region: Rapidus SRAM bank (VERTS+NODES)
+MAP_EXT_BANK = 0x07                  # EXT region: Rapidus SRAM bank (VERTS+NODES)
+                                     # 2026-09-13: was $01 -- bank $01 is the
+                                     # CODE bank now (drac.txt, DRAC_PLAN step 1)
 MAP_SEG_BANK = 0x03                  # SEG region: its OWN Rapidus SRAM bank
 LOW_LIMIT = 0x4C00                   # first byte the LOW region may NOT touch.
                                      # 2026-07-31: was $8600. The seg table left
@@ -697,7 +699,9 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
                          len(md.vertices), len(md.sectors), len(md.segs),
                          len(md.ssectors), len(md.nodes), len(md.nodes) - 1,
                          sx, sy, ang, ndoors, eye, len(yval),
-                         len(table), next_level, 3,
+                         len(table), next_level, 3,              # hdr+24: the FORMAT
+                                                                 #   VERSION bsp_main
+                                                                 #   checks at level start
                          scroll_ids[0] if scroll_ids else 0xFF,
                          len(lights) // LIGHT_SIZE,          # hdr+27 -> MAP_HNLIGHT
                          n_secret,                           # hdr+28 -> MAP_HNSECR

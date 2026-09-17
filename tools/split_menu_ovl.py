@@ -26,6 +26,10 @@ import re
 import struct
 import sys
 
+HERE_ = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE_)
+import code_map                                                 # noqa: E402
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(_HERE)
 CHUNK = 4096
@@ -110,8 +114,21 @@ def main():
         sys.exit('split_menu_ovl: menu.bin is %d B, no room reserved at %d -- '
                  'run tools/pack_menu.py first' % (len(menu), off))
     blob = bytearray(open(xex, 'rb').read())
+    # BANK-$01 BLOCKS ARE NOT CANDIDATES (2026-09-16). The B1 segment is laid
+    # out linearly from B1SEG_BASE and now reaches $A36A, so it walks straight
+    # through the $9000-$9FFF hole the finale and episode overlays park in --
+    # and MADS writes every block into the XEX at its 16-bit address, bank or
+    # no bank. The moment one of those blocks happened to START on a parking
+    # address (the single-level build: a B1 block at $9500, where f_finale's
+    # stage 2 parks) this found two segments and gave up, with the real reason
+    # -- "did f_finale.asm lose its two-address org?" -- pointing nowhere.
+    # The listing knows which blocks are bank $01 ("01,AAAA-EEEE>"); split_b1.py
+    # reads the same marks. Drop them and the parking address is unique again.
+    marks = code_map._listing_blocks(os.path.join(ROOT, 'build', 'doom_bsp.lst'))
+    b1 = {(lo, hi) for lo, hi, bk in marks if bk}
     for i, (stage, who, o) in enumerate(ovls):
-        hits = [s for s in segments(blob) if s[0] == stage]
+        hits = [s for s in segments(blob)
+                if s[0] == stage and (s[0], s[1]) not in b1]
         if len(hits) != 1:
             sys.exit('split_menu_ovl: expected exactly ONE segment at $%04X, '
                      'found %d -- did %s lose its two-address `org`?'

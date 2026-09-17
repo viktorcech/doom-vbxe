@@ -95,6 +95,11 @@ ANIM_LOC = ((224, 104), (184, 160), (112, 136), (72, 112), (88, 96),
 ANIM_FRAMES = 3
 ANIM_PERIOD = 35 // 3                            # TICRATE/3 = 11 tics
 
+# The episode 2/3 world maps' SDRAM blob (emit): one 160x200 map per 32 KB, and
+# which episodes (0-based) got one -- filled by emit() from the level list.
+WIM_STRIDE = 0x8000
+WIM_EPS = []
+
 # pars -- g_game.c:981 pars[episode][map], seconds, all three episodes.
 PARS = {'E1M1': 30, 'E1M2': 75, 'E1M3': 120, 'E1M4': 90, 'E1M5': 165,
         'E1M6': 180, 'E1M7': 180, 'E1M8': 30, 'E1M9': 165,
@@ -179,11 +184,18 @@ def _set_maps(maps):
     global I_SPLAT, I_YAH0, I_YAH1, I_ANIM0
     MAPS = list(maps)
     n = LEVELS = len(MAPS)
-    import pack_menu                              # strip count = levels + the
-    nstrips = n + len(pack_menu.MESSAGES) - 1     # messages (MESSAGES[0] gets
-    WI_VRAM_BASE = (0x040000 + nstrips * pack_menu.TITLE_STRIDE
-                    + 0xFFF) & ~0xFFF             # no strip) -- keep clear of
-                                                  # the HU strip run above
+    import pack_menu                              # 2026-09-16: PINNED, not
+    WI_VRAM_BASE = pack_menu.WI_VRAM_BASE         #   computed. It used to be
+                                                  #   "wherever the HU strips
+                                                  #   end", and the strips just
+                                                  #   shrank by 25 KB to pay for
+                                                  #   the SR status bar -- so the
+                                                  #   old formula would have
+                                                  #   walked the intermission
+                                                  #   straight back down onto the
+                                                  #   bar graphics. pack_menu
+                                                  #   owns the three bases and
+                                                  #   guards the gaps.
     PAR = tuple(par_of(nm) for nm in MAPS)
     LUMPS = (['WIMAP0']                                      # 0    background
              + [wilv(nm) for nm in MAPS]                     # 1    level names
@@ -282,13 +294,57 @@ def emit():
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, 'wi.bin'), 'wb').write(blob)
     open(os.path.join(out, 'wi.tab'), 'wb').write(tab)
-    emit_syms(dims, chunks, len(tab) // 7)
+
+    # ---- the OTHER episodes' world maps (2026-09-16) ------------------------
+    # WI_loadData draws WIMAP%d for wbs->epsd (wi_stuff.c:1548). The boot
+    # stream above has room for ONE 32 KB background and it is WIMAP0, so every
+    # E2/E3 splat and "you are here" pointer used to land on episode 1's map,
+    # at E2/E3 coordinates -- pointing at nothing. The other maps are not VRAM
+    # assets: they ride the ATR right behind the songs (make_atr_doom.py WIM),
+    # load_music streams them into Rapidus SDRAM at WIMAP_BANK (memory_map.inc),
+    # and wi_bgsel copies the one this level needs into the sprite arena when
+    # the intermission opens. One map every WIM_STRIDE bytes, so map k is at
+    # WIMAP_BANK:k*$8000 and wi_bgm only has to carry the MID byte.
+    have = {n for n, _o, _s in wad.lumps}
+    WIM_EPS[:] = sorted({epsd_map(nm)[0] for nm in MAPS if not is_mapxx(nm)}
+                        & {e for e in range(1, len(LNODES))
+                           if 'WIMAP%d' % e in have})
+    if len(WIM_EPS) * WIM_STRIDE > 0x10000:
+        sys.exit('  ERROR: %d world maps do not fit one SDRAM bank' % len(WIM_EPS))
+    wim = bytearray()
+    for e in WIM_EPS:
+        img, hw, h, _l, _t = halve(wt, 'WIMAP%d' % e)
+        if (hw, h) != (SCREEN_W, SCREEN_H):
+            sys.exit('  ERROR: WIMAP%d is %dx%d halved, the screen is %dx%d'
+                     % (e, hw, h, SCREEN_W, SCREEN_H))
+        wim += img + bytes(WIM_STRIDE - len(img))
+    open(os.path.join(out, 'wimaps.bin'), 'wb').write(wim)
+
+    emit_syms(dims, chunks, len(tab) // 7, wt)
     print('wi.bin %d B (%d chunks, VRAM $%06X..$%06X), wi.tab %d B (%d lumps,'
           ' ins-ed into the overlay) -> %s'
           % (len(blob), chunks, WI_VRAM_BASE, addr, len(tab), len(tab) // 7, out))
+    print('wimaps.bin %d B (%s) -> Rapidus SDRAM at boot'
+          % (len(wim), ', '.join('WIMAP%d' % e for e in WIM_EPS) or 'none'))
 
 
-def emit_syms(dims, chunks, nlumps):
+def yah_pick(wt, x, y):
+    """WI_drawOnLnode (wi_stuff.c:469): the first of WIURH0/WIURH1 whose box
+    fits the 320x200 screen at lnode (x, y), in DOOM's own pixels. WIURH0 hangs
+    to the right of the node, WIURH1 to the left -- E3M4/E3M6/E3M9 sit too
+    close to the right edge for WIURH0. Neither fitting is DOOM's "Could not
+    place patch" and draws nothing; no lnode of the three episodes does that,
+    so it keeps WIURH0 (a MAPxx build reuses episode 1's spots, which all fit)."""
+    for i, nm in enumerate(('WIURH0', 'WIURH1')):
+        w, h, _cols = wt.get_patch(nm)
+        left, top = wt.patch_offset(nm)
+        x0, y0 = x - left, y - top
+        if x0 >= 0 and x0 + w < 320 and y0 >= 0 and y0 + h < SCREEN_H:
+            return i
+    return 0
+
+
+def emit_syms(dims, chunks, nlumps, wt):
     numw, numh = dims['WINUM0'][:2]
     lh = (3 * numh) // 2                          # WI_drawStats' line height
     lvh = dims[LVNAME[MAPS[0]]][1]
@@ -347,11 +403,18 @@ def emit_syms(dims, chunks, nlumps):
         # top=15, so hud_blit puts it at (x+1, y-15). A box at (x, y) sized for
         # a percentage erases the wrong place and too little of it -- the blink
         # left the arrow on screen for good.
+        # WIURH1 shares the box's size and top; only its left differs, and that
+        # is per level (wi_yahdx below).
         yw, yh, yl, yt = dims['WIURH0']
-        w('WI_YAHW      equ %d      ; WIURH0, halved\n' % yw)
+        if dims['WIURH1'][:2] != (yw, yh) or dims['WIURH1'][3] != yt:
+            sys.exit('  ERROR: WIURH0 and WIURH1 differ in size or top offset --'
+                     ' wi_yah erases both with one box')
+        if -yl < 0 or -dims['WIURH1'][2] >= 0:
+            sys.exit('  ERROR: wi_yahput picks WIURH1 by the SIGN of wi_yahdx --'
+                     ' WIURH0 must hang right of the node and WIURH1 left')
+        w('WI_YAHW      equ %d      ; WIURH0/WIURH1, halved\n' % yw)
         w('WI_YAHH      equ %d\n' % yh)
-        w('WI_YAHDX     equ %d      ; hud_blit draws it at (x-left, y-top)\n' % -yl)
-        w('WI_YAHDY     equ %d\n' % yt)
+        w('WI_YAHDY     equ %d      ; hud_blit draws it at (x-left, y-top)\n' % yt)
         w('WI_ANIMS     equ %d\n' % len(ANIM_LOC))
         w('WI_ANIMF     equ %d\n' % ANIM_FRAMES)
         w('WI_ANIMPER   equ %d   ; TICRATE/3, in DOOM tics\n' % ANIM_PERIOD)
@@ -391,6 +454,21 @@ def emit_syms(dims, chunks, nlumps):
         w(';       Episode 1 is the only one with animations packed, and\n')
         w(';       that is exactly "wi_ebase == 0" -- no second table. ---\n')
         w('wi_ebase\n        dta %s\n' % ','.join(str(v) for v in ebase))
+        # 2026-09-16: WIMAP%d per episode, and WI_drawOnLnode's WIURH0/1 pick.
+        bgm, yahdx = [], []
+        for nm, (x, y) in zip(MAPS, nodes):
+            e = -1 if is_mapxx(nm) else epsd_map(nm)[0]
+            bgm.append(WIM_EPS.index(e) * (WIM_STRIDE >> 8) if e in WIM_EPS else 255)
+            yahdx.append(-dims[('WIURH0', 'WIURH1')[yah_pick(wt, x, y)]][2] & 0xFF)
+        w(';   --- per level: which world map its intermission draws on.\n')
+        w(';       255 = WIMAP0, the boot stream\'s (WI_TAB row 0 as packed);\n')
+        w(';       else the MID byte of its copy in SDRAM, WIMAP_BANK:mid00\n')
+        w(';       (wimaps.bin, streamed by load_music) -- wi_bgsel. ---\n')
+        w('wi_bgm\n        dta %s\n' % ','.join(str(v) for v in bgm))
+        w(';   --- per level: the "you are here" box\'s x offset from the\n')
+        w(';       node, SIGNED -- +1 is WIURH0 (hangs right), negative is\n')
+        w(';       WIURH1 (hangs left): WI_drawOnLnode\'s pick, made here. ---\n')
+        w('wi_yahdx\n        dta %s\n' % ','.join(str(v) for v in yahdx))
         w(';   --- epsd0animinfo locations (x halved) ---\n')
         w('wi_animx\n')
         w('        dta %s\n' % ','.join(str(x // 2) for x, _ in ANIM_LOC))

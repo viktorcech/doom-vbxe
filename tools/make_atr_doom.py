@@ -27,6 +27,7 @@ Usage:
   python tools/make_atr_doom.py [E1M1 ...]         # build the bootable ATR (needs boot.bin + doom_bsp.xex)
 """
 import os
+import re
 import struct
 import sys
 
@@ -149,6 +150,12 @@ FIN_BIN = os.path.join(_PROJ, 'build', 'assets', 'fin', 'finpic.bin')
 # (tools/pack_musstream.py). Behind the menu for the same reason the menu is
 # last: adding it shifts nothing that came before.
 MUS_BIN = os.path.join(_PROJ, 'build', 'assets', 'music', 'music.stream')
+# The episode 2/3 intermission world maps, WIMAP1/WIMAP2 halved (tools/pack_wi.py,
+# 2026-09-16). Only WIMAP0 fits the boot stream's VRAM run, so these go to
+# Rapidus SDRAM instead: laid down RIGHT BEHIND the songs, so load_music's chunk
+# walk reaches them with ll_sec already pointing there (music.asm), 0 B for an
+# episode-1-only build.
+WIM_BIN = os.path.join(_PROJ, 'build', 'assets', 'wi', 'wimaps.bin')
 PAL_BIN = os.path.join(TEX_DIR, 'playpal.bin')
 SND_BIN = os.path.join(_PROJ, 'build', 'assets', 'sounds', 'sounds.bin')
 WEAP_BIN = os.path.join(_PROJ, 'build', 'assets', 'weap', 'weap.bin')
@@ -158,6 +165,10 @@ WEAP_BIN = os.path.join(_PROJ, 'build', 'assets', 'weap', 'weap.bin')
 # would have cost ~30 B of base RAM, and there are 179 B left in the whole
 # machine -- see the RAM-BUDGET block in memory_map.inc.
 CMAP_BIN = os.path.join(_PROJ, 'build', 'assets', 'cmap.bin')
+# DOOM's sky columns (tools/pack_sky.py), the same deal once more: laid down
+# BEHIND the COLORMAP and inside WEAP_CHUNKS, so load_weapons streams it into
+# the free SRAM at $05:8000 (SKY_EXT) and seg_draw.asm sky_clip reads it there.
+SKY_BIN = os.path.join(_PROJ, 'build', 'assets', 'sky.bin')
 WEAP_EXT = 0x040000                   # weap_tables.inc: the master's SRAM base
 
 # ---- the per-level VRAM pool (2026-08-03, _navrh_vram.txt T3) ---------------
@@ -213,7 +224,29 @@ def emit_levels_inc(names, spr_sec1, spr_stride, pre1_base,
         f.write(f'LVL_SPRSD_C  equ ${sprsd:06X}    ; sprpool.bin home\n')
     print(f'  wrote {os.path.relpath(LEVELS_INC, _PROJ)}  ({len(names)} '
           f'level(s); shared pools, equ-only)')
+    # The sky per level (seg_draw.asm sky_clip: `lda.l sky_lvl,x` with X =
+    # current_level), in THIS list's order. A table and not a header byte: the
+    # map header has none free (+24 is the format version bsp_main checks).
+    with open(LVL_SKY_BIN, 'wb') as f:
+        f.write(bytes(sky_of(nm) for nm in names))
     return None
+
+
+LVL_SKY_BIN = os.path.join(_PROJ, 'build', 'assets', 'lvl_sky.bin')
+
+
+def sky_of(name):
+    """G_InitNew (g_game.c 1455-1478): SKY1/2/3 = 0/1/2 by episode; commercial
+    maps take SKY1 below MAP12, SKY2 below MAP21, SKY3 after. Anything else
+    (E4, a foreign name) gets SKY1."""
+    m = re.fullmatch(r'E(\d)M\d+', name.upper())
+    if m and 1 <= int(m.group(1)) <= 3:
+        return int(m.group(1)) - 1
+    m = re.fullmatch(r'MAP(\d+)', name.upper())
+    if m:
+        n = int(m.group(1))
+        return 0 if n < 12 else 1 if n < 21 else 2
+    return 0
 
 
 def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
@@ -224,7 +257,8 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
              hud_sec1=0, hud_chunks=0, snd_chunks=0, weap_sec1=0, weap_chunks=0,
              pal_count=1, cmap_chunks=0, cmap_ext=0,
              menu_sec1=0, menu_chunks=0, mus_sec1=0, mus_chunks=0,
-             save_sec1=0, fin_sec1=0, fin_chunks=0):
+             save_sec1=0, fin_sec1=0, fin_chunks=0,
+             sky_chunks=0, sky_ext=0, sky_len=0, wim_sec1=0, wim_chunks=0):
     tex_chunks = tex_stride // CHUNK_SECTORS      # tex_stride is a whole multiple of 32
     # (The old fixed-slot assert died with the pool split: per-level tex+spr
     # bounds are enforced in emit_levels_inc, against the SAME .tex bytes the
@@ -330,6 +364,11 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         f.write(';   boot (music.asm load_music, tail-called by load_weapons).'+chr(10))
         f.write('MUS_SEC1     equ %d' % mus_sec1 + chr(10))
         f.write('MUS_CHUNKS   equ %d' % mus_chunks + chr(10))
+        f.write('; The episode 2/3 intermission world maps (tools/pack_wi.py'+chr(10))
+        f.write(';   wimaps.bin): WIM_CHUNKS x 4KB right behind the songs, into'+chr(10))
+        f.write(';   Rapidus SDRAM at WIMAP_BANK by the same load_music walk.'+chr(10))
+        f.write('WIM_SEC1     equ %d' % wim_sec1 + chr(10))
+        f.write('WIM_CHUNKS   equ %d' % wim_chunks + chr(10))
         f.write('; SAVE GAME slots (savegame.asm) -- the only region the engine'+chr(10))
         f.write(';   WRITES. Slot n starts at SAVE_SEC1 + n*SAVE_SECTORS; sector 0'+chr(10))
         f.write(';   of a slot is the header (magic + level + the scattered vars),'+chr(10))
@@ -338,7 +377,13 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         f.write('SAVE_SLOTS   equ %d' % SAVE_SLOTS + chr(10))
         f.write('SAVE_SECTORS equ %d' % SAVE_SECTORS + chr(10))
         f.write('WEAP_SEC1    equ %d' % weap_sec1 + chr(10))
-        f.write('WEAP_CHUNKS  equ %d' % (weap_chunks + cmap_chunks) + chr(10))
+        f.write('WEAP_CHUNKS  equ %d' % (weap_chunks + cmap_chunks + sky_chunks) + chr(10))
+        f.write(';   ...and the last %d behind THOSE are the sky (tools/pack_sky.py):'
+                % sky_chunks + chr(10))
+        f.write(';   SKY1-3 as painter run columns + the view column offsets,'+chr(10))
+        f.write(';   read by seg_draw.asm sky_clip at SKY_EXT.'+chr(10))
+        f.write('SKY_EXT      equ $%06X' % sky_ext + chr(10))
+        f.write('SKY_BYTES    equ %d' % sky_len + chr(10))
         f.write(';   The last %d of those chunks are NOT psprites: DOOM COLORMAP'
                 % cmap_chunks + chr(10))
         f.write(';   (tools/pack_cmap.py), 32 light rows x 256, rides in behind'+chr(10))
@@ -356,10 +401,10 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         # engine reads at runtime. (It used to sit in the gap between the two
         # ranges, deliberately, because nothing read it.)
         pre0_cnt = pool_sec + pool_secs - LVL_SEC1
-        pre1_cnt = (weap_sec1 + (weap_chunks + cmap_chunks) * CHUNK_SECTORS) - spr_sec1
+        pre1_cnt = (weap_sec1 + (weap_chunks + cmap_chunks + sky_chunks) * CHUNK_SECTORS) - spr_sec1
         pre1_base = 0x080000 + pre0_cnt * 128
-        f.write('; SDRAM preload ranges (boot: preload_sdram; then every loader'+chr(10))
-        f.write(';   reads Rapidus SDRAM instead of SIO -- diskio.asm ld_src).'+chr(10))
+        f.write('; SDRAM cache ranges (read_sectors tees every drive read into'+chr(10))
+        f.write(';   its home; a revisit reads SDRAM instead of SIO -- ld_src).'+chr(10))
         f.write(';   Range 0 = level slots + textures, range 1 = sprites through'+chr(10))
         f.write(';   the weapon master; the unwired texture pool between them'+chr(10))
         f.write(';   stays on disk only.'+chr(10))
@@ -441,10 +486,15 @@ def main():
     cmap_chunks = (_sectors(cmap_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
     cmap_sec1 = weap_sec1 + weap_chunks * CHUNK_SECTORS
     cmap_ext = WEAP_EXT + weap_chunks * CHUNK_SECTORS * SECTOR_SIZE
+    # ... and the sky columns straight after THAT, still in the same chunk run
+    sky_len = os.path.getsize(SKY_BIN) if os.path.exists(SKY_BIN) else 0
+    sky_chunks = (_sectors(sky_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
+    sky_sec1 = cmap_sec1 + cmap_chunks * CHUNK_SECTORS
+    sky_ext = cmap_ext + cmap_chunks * CHUNK_SECTORS * SECTOR_SIZE
 
     menu_len = os.path.getsize(MENU_BIN) if os.path.exists(MENU_BIN) else 0
     menu_chunks = (_sectors(menu_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
-    menu_sec1 = cmap_sec1 + cmap_chunks * CHUNK_SECTORS
+    menu_sec1 = sky_sec1 + sky_chunks * CHUNK_SECTORS
 
     fin_len = os.path.getsize(FIN_BIN) if os.path.exists(FIN_BIN) else 0
     fin_chunks = (_sectors(fin_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
@@ -454,10 +504,14 @@ def main():
     mus_chunks = (_sectors(mus_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
     mus_sec1 = fin_sec1 + fin_chunks * CHUNK_SECTORS
 
+    wim_len = os.path.getsize(WIM_BIN) if os.path.exists(WIM_BIN) else 0
+    wim_chunks = (_sectors(wim_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
+    wim_sec1 = mus_sec1 + mus_chunks * CHUNK_SECTORS
+
     # SAVE GAME slots -- the one region the ENGINE WRITES (savegame.asm). Last on
     # the disk on purpose: everything above it is content the build lays down, so
     # a bigger save format only moves the end of the image.
-    save_sec1 = mus_sec1 + mus_chunks * CHUNK_SECTORS
+    save_sec1 = wim_sec1 + wim_chunks * CHUNK_SECTORS
 
     # MUST match emit_inc's `0x080000 + pre0_cnt * 128` -- range 1 starts where
     # range 0 ends, and range 0 swallowed the pool on 2026-08-14 (both pools
@@ -477,7 +531,9 @@ def main():
                  hud_sec1, hud_chunks, snd_chunks, weap_sec1, weap_chunks,
                  pal_count, cmap_chunks, cmap_ext, menu_sec1, menu_chunks,
                  mus_sec1, mus_chunks, save_sec1,
-                 fin_sec1=fin_sec1, fin_chunks=fin_chunks)
+                 fin_sec1=fin_sec1, fin_chunks=fin_chunks,
+                 sky_chunks=sky_chunks, sky_ext=sky_ext, sky_len=sky_len,
+                 wim_sec1=wim_sec1, wim_chunks=wim_chunks)
         return
 
     for p, what in ((BOOT_BIN, 'boot.bin (assemble boot.asm)'),
@@ -562,6 +618,11 @@ def main():
         d = open(MUS_BIN, 'rb').read()
         disk[o:o + len(d)] = d
 
+    if wim_len:                                      # the E2/E3 world maps
+        o = (wim_sec1 - 1) * SECTOR_SIZE
+        d = open(WIM_BIN, 'rb').read()
+        disk[o:o + len(d)] = d
+
     if snd_len:                                      # digitized SFX blob
         o = (snd_sec1 - 1) * SECTOR_SIZE
         d = open(SND_BIN, 'rb').read()
@@ -575,6 +636,11 @@ def main():
     if cmap_len:                                     # ... + the light table, in
         o = (cmap_sec1 - 1) * SECTOR_SIZE            #     the same chunk run
         d = open(CMAP_BIN, 'rb').read()
+        disk[o:o + len(d)] = d
+
+    if sky_len:                                      # ... + the sky columns, still
+        o = (sky_sec1 - 1) * SECTOR_SIZE             #     the same chunk run
+        d = open(SKY_BIN, 'rb').read()
         disk[o:o + len(d)] = d
 
     if pool:
@@ -608,8 +674,12 @@ def main():
              los_sec1, los_stride, sprc_sec1, sprc_stride,
              hud_sec1, hud_chunks, snd_chunks, weap_sec1, weap_chunks, pal_count,
              cmap_chunks, cmap_ext, menu_sec1, menu_chunks, mus_sec1, mus_chunks,
-             save_sec1, fin_sec1=fin_sec1, fin_chunks=fin_chunks)
+             save_sec1, fin_sec1=fin_sec1, fin_chunks=fin_chunks,
+             sky_chunks=sky_chunks, sky_ext=sky_ext, sky_len=sky_len,
+             wim_sec1=wim_sec1, wim_chunks=wim_chunks)
     print(f'  ATR : {OUT_ATR}  ({16 + image} B, {total} sectors, bootable)')
+    print(f'  sky : sector {sky_sec1}.., {sky_chunks} x 4 KB ({sky_len} B) '
+          f'-> ${sky_ext:06X}')
     print(f'  fin : sector {fin_sec1}.., {fin_chunks} x 4 KB ({fin_len} B) '
           f'-> the sprite arena, on demand')
     print(f'  save: sector {save_sec1}.., {SAVE_SLOTS} slots x {SAVE_SECTORS} '
@@ -618,6 +688,8 @@ def main():
           f'-> VRAM $018000 (title + main menu)')
     print(f'  mus : sector {mus_sec1}.., {mus_chunks} x 4 KB ({mus_len} B) '
           f'-> SDRAM $550000 (pre-played POKEY stream)')
+    print(f'  wim : sector {wim_sec1}.., {wim_chunks} x 4 KB ({wim_len} B) '
+          f'-> SDRAM WIMAP_BANK (E2/E3 intermission maps)')
     print(f'  weap: sector {weap_sec1}.., {weap_chunks} x 4 KB bank(s) ({weap_len} B)')
     print(f'  cmap: sector {cmap_sec1}.., {cmap_chunks} x 4 KB ({cmap_len} B) '
           f'-> ${cmap_ext:06X}')

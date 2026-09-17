@@ -36,6 +36,8 @@ def main():
     i = 2 if data[0:2] == b'\xff\xff' else 0
     bad = []
     segs = []
+    inits = []                       # file-order positions of INIT ($02E2) segments
+    order = 0
     while i + 4 <= len(data):
         start, end = struct.unpack_from('<HH', data, i)
         i += 4
@@ -44,8 +46,11 @@ def main():
         if end < start:
             bad.append(f'corrupt segment header @ {i-4}: ${start:04X}-${end:04X}')
             break
-        if (start, end) not in ((0x02E0, 0x02E1), (0x02E2, 0x02E3)):
-            segs.append((start, end))
+        if (start, end) == (0x02E2, 0x02E3):
+            inits.append(order)
+        elif (start, end) != (0x02E0, 0x02E1):
+            segs.append((start, end, order))
+        order += 1
         i += end - start + 1
         if any(start >= lo and end <= hi for lo, hi, _w in STAGED):
             continue                 # a deliberate staging segment: it is copied
@@ -56,8 +61,17 @@ def main():
                 bad.append(f'segment ${start:04X}-${end:04X} overlaps '
                            f'${lo:04X}-${hi:04X} ({what})')
     segs.sort()
-    for (s1, e1), (s2, e2) in zip(segs, segs[1:]):
+    for (s1, e1, o1), (s2, e2, o2) in zip(segs, segs[1:]):
         if s2 <= e1:
+            # 2026-09-13: tools/split_b1.py stages every bank-$01 code chunk at
+            # the SAME address, each followed by the INIT that copies it away.
+            # Two staged segments with an INIT between them in file order never
+            # coexist in RAM; anything else overlapping still fails.
+            staged = all(any(a >= lo and b <= hi for lo, hi, _w in STAGED)
+                         for a, b in ((s1, e1), (s2, e2)))
+            consumed = any(min(o1, o2) < k < max(o1, o2) for k in inits)
+            if staged and consumed:
+                continue
             bad.append(f'segments overlap each other: ${s1:04X}-${e1:04X} '
                        f'and ${s2:04X}-${e2:04X}')
     if bad:

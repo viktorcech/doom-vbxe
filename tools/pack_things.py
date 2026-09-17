@@ -1797,12 +1797,12 @@ def pack_walk(sp, blob, black, kinds_present, nrows, have, cap, rots, frames,
     rows = []
     if cache is None:                  # shared with pack_atk -- see there
         cache = dict(have)
-    for ki, num in kinds:
-        if not cap:
-            break
+
+    def grow(packed, ki, num, lo, hi):
+        """Images lo..hi-1 of the kind's cycle onto packed[ki], all views or
+        nothing per image; stops at the first image that does not fit."""
         base = d.run_chain(num)[0][0]
-        packed = []
-        for fr in frames_of(num, cap):
+        for fr in frames_of(num, cap)[lo:hi]:
             group = []
             for rot in rots:
                 key = lump_of(base, fr, rot)
@@ -1810,21 +1810,58 @@ def pack_walk(sp, blob, black, kinds_present, nrows, have, cap, rots, frames,
                                  coltabs, key[1])
                      if key else None)
                 if f is None:
-                    break
+                    return
                 group.append(f + (0,))
-            if len(group) < len(rots):
-                break
-            packed.append(group)
+            packed[ki].append(group)
+
+    # THE FREEZE (2026-09-17, E3M9 cyberdemon / E2M5 baron): kinds were packed
+    # in MK_ORDER, each taking its whole cycle, so when the one-byte frame ids
+    # ran out the LAST kinds got nothing -- wn = 0 -- and ai_setrow's modulo
+    # (`cmp [dp],y / sbc [dp],y` against WTAB_N) never exits for them: the game
+    # hangs the tic that monster wakes (tools/tests/_verify_walkrow.py).
+    # So: the ordinary pass first, and only if it starves a kind, undo it and
+    # give EVERY kind image 0 before anyone gets image 1. Undoing (instead of
+    # always packing minimum-first) keeps the frame ids -- and so the .dtab --
+    # of every level that never ran out byte-identical.
+    snap = (len(blob), len(frames), len(coltabs), dict(cache), set(_POOL_IX))
+    packed = {ki: [] for ki, _num in kinds}
+    for ki, num in kinds:
+        grow(packed, ki, num, 0, cap)
+    starved = [num for ki, num in kinds if not packed[ki]]
+    if starved and cap:
+        b0, f0, c0, cache0, ix0 = snap
+        for k in [k for k in _POOL_IX if k not in ix0]:
+            del _POOL_IX[k]
+        del blob[b0:]
+        del frames[f0:]
+        del coltabs[c0:]
+        cache.clear()
+        cache.update(cache0)
+        packed = {ki: [] for ki, _num in kinds}
+        for ki, num in kinds:
+            grow(packed, ki, num, 0, 1)
+        for ki, num in kinds:
+            if packed[ki]:
+                grow(packed, ki, num, 1, cap)
+        print(f'  walk: frame ids ran out before doomednum(s) '
+              f'{", ".join(map(str, starved))} -- repacked image 0 of every '
+              f'kind first: ' + ', '.join(f'{num}:{len(packed[ki])}'
+                                          for ki, num in kinds))
+    for ki, num in kinds:
         # WTAB_N used to index with a MASK, which forced a power of two and cost
         # the spider mastermind two of its six walk images. ai_setrow does a
         # modulo since 2026-08-21 (`cmp [dp],y / sbc [dp],y`), so a kind now
         # keeps every image it actually has.
-        n = len(packed)
+        n = len(packed[ki])
         if not n:
+            if cap:                    # a chasing kind with WTAB_N = 0 HANGS the
+                sys.exit(f'  ERROR: doomednum {num} is on this level and got '
+                         f'no walk image -- ai_setrow would divide by 0 '
+                         f'(frame ids / rows exhausted)')
             continue
         wfirst[ki + 1] = nrows + len(rows)
         wn[ki + 1] = n
-        for group in packed[:n]:
+        for group in packed[ki]:
             rows += group
     wn[0] = len(rots)                  # WROT_NSTOR: the engine's single stored-
                                        #   view count (attack rows share it)

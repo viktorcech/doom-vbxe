@@ -174,11 +174,17 @@ def encode(frames):
     return bytes(out), len(frames)
 
 
-# Bank-ALIGNED, not simply the first free byte ($547200, atr_layout.inc
-# PRE_END): load_music streams in 4 KB chunks and detects the 64 KB bank
-# rollover by ll_dst wrapping to 0 between chunks, which only works if the run
-# starts at offset 0 of a bank. The 56 KB skipped is nothing against 11 MB.
-MUS_BASE = 0x550000
+# Bank-ALIGNED, not simply the first free byte (atr_layout.inc PRE_END):
+# load_music streams in 4 KB chunks and detects the 64 KB bank rollover by
+# ll_dst wrapping to 0 between chunks, which only works if the run starts at
+# offset 0 of a bank.
+# 2026-09-13: was $550000, chosen when the SDRAM level cache ended at $547200.
+# With 27 levels the cache runs to $650700 and $55xxxx is E2M5's .sprcol slot
+# (sectors 39899-40186): read_sectors' tee wrote it over the songs on the first
+# E2M5 load. $66 is SPRCOL_BANK, so the first whole free bank is $67. music.asm
+# fails the build if this ever lands inside the cache again (tools/bank_map.py
+# --check says the same).
+MUS_BASE = 0x670000
 
 
 def main():
