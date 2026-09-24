@@ -1,6 +1,6 @@
 # DOOM VBXE
 
-[![Názov videa](https://img.youtube.com/vi/ID_VIDEA/0.jpg)](https://www.youtube.com/watch?v=VKz5vFticOs)
+[![DOOM ATARI XE/XL, VBXE, Rapidus](https://img.youtube.com/vi/VKz5vFticOs/maxresdefault.jpg)](https://www.youtube.com/watch?v=VKz5vFticOs)
 
 A port of **DOOM** to the **Atari XL/XE** with **VBXE** — a real BSP renderer with textured walls,
 sprites, monsters and the full three-episode campaign, written in 6502/65816 assembly with a Python
