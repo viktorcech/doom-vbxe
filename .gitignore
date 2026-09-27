@@ -56,3 +56,5 @@ __pycache__/
 # pipeline caches / outputs
 /tools/cache/
 /tools/out/
+/tools/wad/test*.py
+/tools/wad/test/
