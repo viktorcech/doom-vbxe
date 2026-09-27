@@ -33,8 +33,7 @@ with `pillow` and `numpy`, and PowerShell.
    `git clone https://github.com/id-Software/DOOM.git DOOM-master`
 3. Run `.\build_atr.ps1 -Full`. It writes `build/doom.atr`.
 
-After that, `.\build_atr.ps1` rebuilds incrementally. To make an ATR from your own map WAD, run
-`python tools/wad/wadconv.py`.
+After that, `.\build_atr.ps1` rebuilds incrementally.
 
 ## Credits
 
