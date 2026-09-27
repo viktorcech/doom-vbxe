@@ -5,7 +5,8 @@ tools/DOOM.WAD
 /wads/
 
 # id Software's DOOM C source (GPL, upstream -- check it out yourself)
-/_pomocne/
+/_doomsrc/
+/DOOM-master/
 
 # build tool (download MADS separately)
 mads.exe
