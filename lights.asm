@@ -1,52 +1,7 @@
-;==============================================================
-; lights.asm -- SECTOR LIGHT: DOOM's light thinkers (p_lights.c) and the shade
-;   every flat-painted surface goes through (r_main.c's scalelight).
-;
-; WHAT IS SHADED, AND WHY NOT EVERYTHING
-;   DOOM shades per PIXEL: R_DrawColumn reads dc_colormap[texel]. This port
-;   cannot -- a textured wall is a VBXE blit straight out of VRAM, and the
-;   blitter's whole per-pixel path is
-;       c = (src AND andMask) XOR xorMask;  dst = c | c+d | c|d | c&d | c^d
-;   (_pomocne/alt-src/Altirra/source/vbxe.cpp:3676 ff -- the authority, not the
-;   register doc). There is no lookup in it. The one that looks promising, ADD
-;   against a pre-filled destination, would need DOOM's colormap to be a
-;   constant offset per light row, and it is not: at row 8 the most common
-;   delta covers 30 of 256 entries, so ~88 % of the pixels would come out the
-;   wrong colour. Pre-shaded copies of the textures are out too: a level's pool
-;   is 148-284 KB against a 192 KB VRAM arena, so even two shades would thrash.
-;   What the port CAN shade costs nothing: every surface it paints in ONE
-;   palette index -- floors, ceilings, and any wall drawn flat (the 'T' mode, a
-;   texture whose pixels this build does not ship, the untextured fallback).
-;   That is the floor and the ceiling of every room, i.e. the surfaces a
-;   flickering lamp is actually seen on. Textured walls stay at full bright.
-;
-; THE SHADE ITSELF IS DOOM'S OWN
-;   row = (255 - sector->lightlevel) >> 3, into the real COLORMAP lump
-;   (tools/pack_cmap.py -> CMAP_EXT). That is r_main.c's
-;   lightnum = lightlevel >> LIGHTSEGSHIFT on the colormap's 32-row ladder,
-;   with the distance term (zlight) dropped -- there is no per-column light
-;   here, so a surface gets one row for its whole span.
-;
-; TIMING
-;   DOOM runs these thinkers on 35 Hz tics. The port has no tic: like the doors
-;   (DOOR_DWELL_VB) every counter is in PAL VBLANKs and each frame subtracts
-;   dt_vbl, so the rates hold at any frame rate. pack_map.py converted the two
-;   constants that come from the map (FASTDARK 15 -> 21, SLOWDARK 35 -> 50).
-;
-; THE RECORD (pack_map.py _lights, LIGHT_SIZE bytes, in the map's SEG bank):
-;   +0 sector   +1 kind (bit6 = glow going up, bit7 = strobe in sync)
-;   +2 minlight +3 maxlight  +4 dark phase, VBLANKs  +5 countdown, VBLANKs
-;   The last two bytes are WRITTEN at runtime: the bank is RAM, and the whole
-;   region is re-streamed by every level load, so the state resets itself and
-;   costs no base RAM (of which there are 179 B free in the machine).
-;   2026-08-15: this table used to sit at the END of the EXT region, in bank
-;   $01 -- and bank $01's next six pages from $6400 are the AI's per-thing
-;   arrays (TH_HPL..TH_TICS). E1M1 has 4 thinkers and stayed clear; E1M2 has
-;   26, ran 48 B into TH_HPL, and en_init's clear killed the last eight records
-;   -- among them sector 180, the strobing wall by the secret door on the
-;   staircase, which is why that one never blinked while every other light in
-;   the game did. The SEG bank uses 15 KB of its 64 and has no such neighbour.
-;==============================================================
+;--------------------------------------------------------------
+; lights.asm -- sector light: DOOM's light thinkers (p_lights.c) and the colormap
+;   shade of flat-painted surfaces. A blitted texture cannot be shaded.
+;--------------------------------------------------------------
 LT_SEC      equ 0                    ; record fields
 LT_KIND     equ 1
 LT_MIN      equ 2
@@ -59,23 +14,10 @@ LT_FLASH    equ 0                    ; kinds -- see tools/doomspecs.py
 LT_STROBE   equ 1
 LT_GLOW     equ 2
 LT_FIRE     equ 3                    ; T_FireFlicker -- NOT its own path here:
-                                     ;   no episode-1 map carries sector special
-                                     ;   17 (checked over E1M1-E1M9: 29 flash,
-                                     ;   26 strobe, 48 glow, 0 fire), and the
-                                     ;   handler costs 52 B in a 384 B block.
-                                     ;   pack_map packs it as a light flash off
-                                     ;   the same minlight+16, which is what a
-                                     ;   fire flicker looks like. If a PWAD ever
-                                     ;   needs the real thing, p_lights.c
-                                     ;   T_FireFlicker is 8 lines and this block
-                                     ;   has room for it again once something
-                                     ;   else leaves.
+                                     ;   no episode-1 map carries sector special ...
 LT_DIR      equ $40                  ; glow: set = rising (we scribble the byte)
 STROBE_VB   equ 7                    ; STROBEBRIGHT = 5 tics
 FLASH_LONG  equ 93                   ; T_LightFlash's long bright: 65 tics.
-                                     ;   DOOM's count is (P_Random()&maxtime)+1
-                                     ;   with maxtime = 64 -- a MASK, so it is
-                                     ;   1 or 65 tics and nothing in between.
 GLOW_STEP   equ 6                    ; GLOWSPEED 8/tic = 5.6 units per VBLANK
 LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch must
                                      ;   not slam every light, and GLOW_STEP*dt
@@ -93,23 +35,10 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         sta zp_cm
         lda #[CMAP_EXT>>16]
         sta zp_cm+2
-        jmp an_init                  ; ...and the idle rings on frame A
+        bra an_init                  ; ...and the idle rings on frame A
 .endp                                ;   (sprites.asm). Chained here, at the end
         .endseg
-                                     ;   of init_level's mv_reset -> lt_init run:
-                                     ;   the $1B00 block has one byte left, and
-                                     ;   an_init MUST run where zp_ptr+2 is
-                                     ;   already MAP_EXT_BANK and no loader is
-                                     ;   mid-stream on zp_ptr                                ;   (sprites.asm). Chained here, at the end
-                                     ;   of init_level's mv_reset -> lt_init run:
-                                     ;   the $1B00 block has one byte left, and
-                                     ;   an_init MUST run after it sets
-                                     ;   zp_ptr+2 = MAP_EXT_BANK. Calling it from
-                                     ;   load_dtab instead was the pink screen of
-                                     ;   2026-08-07: read_ext walks zp_ptr, so
-                                     ;   an_init landed in the middle of the
-                                     ;   stream and load_los read from a pointer
-                                     ;   it had moved.
+                                     ;   of init_level's mv_reset -> lt_init run: ...
 
 ;--------------------------------------------------------------
 ; lt_seg -- process_seg's front sector is in zp_ptr: pick this sector's
@@ -119,46 +48,17 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc lt_seg
- .if 1
-        ldy #4                       ; BUG FIX 2026-09-15: Y = 4 on BOTH paths. The
- .endif                               ;   bright path used to skip it, so its `iny`
-                                     ;   read floor_pal from byte Y+1 of whatever
-                                     ;   seg_draw left (2 -> ceil_h's high byte):
-                                     ;   a wrong floor colour under the visor
-        lda vis_lit                  ; the visor's answer for THIS tic, decided
-                                     ;   once in pw_tic (it blinks as it runs
-        bne ?bright                  ;   (p_user.c:371) and every surface goes
-                                     ;   full bright; here that is colormap ROW
-                                     ;   0, which is the same thing -- the row
-                                     ;   IS the high byte. X stays untouched:
-                                     ;   the caller is mid-way through resolving
-                                     ;   a wall texture handle.
- .if 0
-        ldy #4                       ; sector->lightlevel
- .endif
-        lda (zp_ptr),y
-        eor #$FF                     ; row = (255 - light) >> 3
-        lsr @
-        lsr @
-        lsr @
- .if 1
+                                      ; 2026-09-22: no visor test -- the visor is a
+        ldy #4                       ;   per-TIC fact, so lt_pick points process_seg's
+        lda (zp_ptr),y               ;   ltsj at lt_segv while it lights (-6 a seg)
+        lsr @                        ; row = (255-L)>>3 = (L>>3)^31; the row (bits
+        lsr @                        ;   0-4) and >CMAP_EXT (bits 5-7) never overlap,
+        lsr @                        ;   so ONE eor puts both in
+        eor #[>CMAP_EXT]|$1F
     .if [>CMAP_EXT] & $1F
-        ert 'lt_seg ORs the row into >CMAP_EXT: its low five bits must be clear'
+        ert 'lt_seg merges the row into >CMAP_EXT: its low five bits must be clear'
     .endif
-        ora #>CMAP_EXT               ; the dark path ORs in place and FALLS into the
-?add    sta zp_cm+1                  ;   store: no always-taken bpl (-3/seg); the
-                                     ;   bright path jumps back from below the rts
- .else
-        bpl ?add                     ; always: the row is 0..31
-?bright lda #0
-?add
-    .if [>CMAP_EXT] & $1F
-        ert 'lt_seg ORs the row into >CMAP_EXT: its low five bits must be clear'
-    .endif
-        ora #>CMAP_EXT               ; ... a page per row, so the row IS the
-        sta zp_cm+1                  ;     high byte (0..31 above the base) --
-                                     ;     an ora, not clc/adc (2026-09-15)
- .endif
+lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
         iny                          ; floor_pal @5
         lda (zp_ptr),y
         tay
@@ -170,10 +70,42 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         lda [zp_cm],y
         sta rs_ceilcol
         rts
- .if 1
-?bright lda #>CMAP_EXT               ; row 0 = the base page (the visor blink)
-        bra ?add
- .endif
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; lt_segv -- lt_seg while the light-amp visor lights (p_user.c:371): every
+;   surface full bright, colormap row 0 = the base page.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc lt_segv
+        ldy #4
+        lda #>CMAP_EXT
+        bra lt_seg.lts_add
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; lt_pick -- point process_seg's ltsj at the shade routine for THIS tic: the
+;   visor outranks the muzzle flash's extralight, which outranks plain light.
+;   pw_tic calls it when vis_lit changes, wp_flight when EXTRALIGHT does.
+;   Clobbers A/X.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc lt_pick
+        rep #$20
+        .LONGA ON
+        lda #lt_segv
+        ldx vis_lit
+        bne ?set
+        lda #lt_seg
+        ldx EXTRALIGHT
+        beq ?set
+        lda #lt_seg_flash
+?set    sta.l B1CODE_BASE+process_seg.ltsj+1
+        .LONGA OFF
+        sep #$20
+        rts
 .endp
         .endseg
 
@@ -185,73 +117,39 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc update_lights
-        ldx MAP_HNLIGHT
-        bne ?any
-        rts
-
+                                      ; 2026-09-22 (skills pass): zp_ptr points AT the
+        ldx MAP_HNLIGHT              ;   lightlevel (+4), so every access is (zp_ptr)
+        bne ?any                     ;   and Y is free to hold the record's kind byte
+        rts                          ;   -- no ldy #4, no re-read of LT_KIND
 ?any    stx lt_n
         lda dt_vbl                    ; VBLANKs this frame (frame_dt), clamped
         cmp #LT_DTMAX
         bcc ?dt
         lda #LT_DTMAX
 ?dt     sta lt_dt
- .if 1
-	asl			;precalc value for ?glow, outside the loop
-	sta lt_t
-	asl
-;	clc			;LT_DTMAX is 32, so carry always 0 here
-	adc lt_t
-	sta lt_t
- .else
-	;nothing
- .endif
+        asl                          ; the glow step 6*dt, once for the pass
+        sta lt_t
+        asl                          ; (C = 0: dt <= 32)
+        adc lt_t
+        sta lt_t
         ldx #0                       ; X = BYTE offset of the record (pack_map
                                      ;     keeps the section inside one page)
-?rec    lda.l LT_TAB+LT_SEC,x        ; zp_ptr = &MAP_SECTORS[sector]
- .if 1
-	rep #$20
-	.LONGA ON
-	and #$00ff
-	asl
-	asl
-	asl
-;	clc
-	adc #MAP_SECTORS
-	sta zp_ptr
-	sep #$20
-	.LONGA OFF
- .else
-        sta m_prod
-  .if 1
-	stz m_prod+1
-  .else
-        lda #0
-        sta m_prod+1
-  .endif
-        asl m_prod                   ; sector*8 via shifts (tips #3)
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        clc
-        lda m_prod
-        adc #<MAP_SECTORS
+?rec    lda.l LT_TAB+LT_SEC,x        ; zp_ptr = &MAP_SECTORS[sector].lightlevel
+        rep #$20
+        .LONGA ON
+        and #$00ff
+        asl
+        asl
+        asl                          ; (C = 0: sector*4 < $8000)
+        adc #MAP_SECTORS+4
         sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SECTORS
-        sta zp_ptr+1
- .endif
+        sep #$20
+        .LONGA OFF
         lda.l LT_TAB+LT_KIND,x
+        tay                          ; Y = the kind byte, for the whole record
         and #$0F
         cmp #LT_GLOW                 ; the glow ramps EVERY frame; the other
- .if 1
-	jeq ?glow
- .else
-        bne ?timed                   ;   three are countdown-driven
-        jmp ?glow
-?timed
- .endif
+        jeq ?glow                    ;   three are countdown-driven
         lda.l LT_TAB+LT_CNT,x
         sec
         sbc lt_dt
@@ -259,189 +157,79 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
         beq ?fire
         sta.l LT_TAB+LT_CNT,x
         jmp ?next
-
-?fire   lda.l LT_TAB+LT_KIND,x
+?fire   tya
         and #$0F
-        cmp #LT_STROBE               ; flash and fire flicker share this path --
-        bne ?flash                   ;   see LT_FIRE below
-
-        ; --- T_StrobeFlash: min <-> max, bright STROBEBRIGHT, dark FAST/SLOW --
-        lda.l LT_TAB+LT_MIN,x
- .if 1
-	;nothing
- .else
-	sta lt_t
- .endif
-        ldy #4
-        cmp (zp_ptr),y               ; at minlight -> go bright
+        cmp #LT_STROBE               ; flash and fire flicker share this path
+        bne ?flash
+        lda.l LT_TAB+LT_MIN,x        ; --- T_StrobeFlash: min <-> max
+        cmp (zp_ptr)                 ; at minlight -> go bright
         bne ?dark
         lda.l LT_TAB+LT_MAX,x
-        sta (zp_ptr),y
+        sta (zp_ptr)
         lda #STROBE_VB
- .if 1
-	bra ?setcnt
- .else
-        bne ?setcnt                  ; (always)
- .endif
-?dark
- .if 1
-	;nothing, accumulator still holds the value loaded from LT_TAB+LT__MIN,x
- .else
-	lda lt_t
- .endif
-        sta (zp_ptr),y
+        bra ?setcnt
+?dark   sta (zp_ptr)                 ; A = minlight still
         lda.l LT_TAB+LT_DARK,x
 ?setcnt sta.l LT_TAB+LT_CNT,x
         jmp ?next
-
-        ; --- T_LightFlash: max <-> min on random counts --------------------
-?flash  lda.l LT_TAB+LT_MAX,x
-        ldy #4
-        cmp (zp_ptr),y               ; at maxlight -> drop to min
+?flash  lda.l LT_TAB+LT_MAX,x        ; --- T_LightFlash: max <-> min, random counts
+        cmp (zp_ptr)                 ; at maxlight -> drop to min
         bne ?fbright
         lda.l LT_TAB+LT_MIN,x
-        sta (zp_ptr),y
+        sta (zp_ptr)
         lda RANDOM                   ; (P_Random()&mintime)+1, mintime = 7 tics
         and #7
- .if 1
-;	sec		;C=1 after cmp above
-	adc #2-1
-	bra ?setcnt
- .else
-        clc
-        adc #2
-        bne ?setcnt                  ; (always: >= 2)
- .endif
-?fbright sta (zp_ptr),y              ; A = maxlight, from the compare above
- .if 1
+        adc #2-1                     ; C = 1: the cmp above was equal
+        bra ?setcnt
+?fbright sta (zp_ptr)                ; A = maxlight, from the compare above
         lda #FLASH_LONG
-	bit RANDOM
-	bvs ?setcnt
-	lda #2
-	bra ?setcnt
- .else
-        lda RANDOM
-        and #$40                     ; see FLASH_LONG: the mask IS the count
-        beq ?fshort
-        lda #FLASH_LONG
-  .if 1
-	bra ?setcnt
-  .else
-        bne ?setcnt
-  .endif
-?fshort lda #2
-  .if 1
-	bra ?setcnt
-  .else
-        bne ?setcnt
-  .endif
- .endif
-        ; --- T_Glow: a triangle wave between min and max --------------------
-?glow
- .if 1
-	;nothing, moved outside the loop
- .else
-	lda lt_dt                    ; step = GLOW_STEP * dt
-        asl @
-        sta lt_t
-        asl @
-        clc
-        adc lt_t                     ; 2*dt + 4*dt = 6*dt (dt <= 32)
-        sta lt_t
- .endif
-        ldy #4
-        lda.l LT_TAB+LT_KIND,x
+        bit RANDOM
+        bvs ?setcnt
+        lda #2
+        bra ?setcnt
+?glow   tya                          ; --- T_Glow: a triangle wave, min..max
         and #LT_DIR
         bne ?gup
-        sec                          ; going DOWN
-        lda (zp_ptr),y
-        sbc lt_t
+        lda (zp_ptr)                 ; going DOWN. C = 1 already: cmp #LT_GLOW was
+        sbc lt_t                     ;   equal, and tya/and/bne keep it
         bcc ?gmin                    ; wrapped past 0
- .if 1
-	cmp.l LT_TAB+LT_MIN,x
-	bcc ?gmin
-	beq ?gmin
-	sta (zp_ptr),y
-	bra ?next
- .else
-        sta lt_u
-        lda.l LT_TAB+LT_MIN,x
-        cmp lt_u                     ; min < new -> keep falling
-        bcc ?gput
- .endif
+        cmp.l LT_TAB+LT_MIN,x
+        bcc ?gmin
+        beq ?gmin
+        sta (zp_ptr)
+        bra ?next
 ?gmin   lda.l LT_TAB+LT_MIN,x        ; hit the floor: park and turn around
- .if 1
-	sta (zp_ptr),y
- .else
-        sta lt_u
- .endif
-        lda.l LT_TAB+LT_KIND,x
+        sta (zp_ptr)
+        tya
         ora #LT_DIR
         sta.l LT_TAB+LT_KIND,x
- .if 1
-	;nothing
- .else
-?gput   lda lt_u
-        sta (zp_ptr),y
- .endif
- .if 1
-	bra ?next
- .else
-        jmp ?next
- .endif
-?gup    clc                          ; going UP
-        lda (zp_ptr),y
+        bra ?next
+?gup    clc                          ; going UP (C = 1 from the cmp: clear it)
+        lda (zp_ptr)
         adc lt_t
         bcs ?gmax                    ; past 255
- .if 1
         cmp.l LT_TAB+LT_MAX,x
-	bcs ?gmax
-	sta (zp_ptr),y
-	bra ?next
- .else
-        sta lt_u
-        lda.l LT_TAB+LT_MAX,x
-        cmp lt_u                     ; max >= new -> keep rising
-        bcs ?gput
- .endif
+        bcs ?gmax
+        sta (zp_ptr)
+        bra ?next
 ?gmax   lda.l LT_TAB+LT_MAX,x
- .if 1
-	sta (zp_ptr),y
- .else
-        sta lt_u
- .endif
-        lda.l LT_TAB+LT_KIND,x
+        sta (zp_ptr)
+        tya
         and #[$FF-LT_DIR]
         sta.l LT_TAB+LT_KIND,x
- .if 1
-	;nothing (fall through to ?next)
- .else
-        jmp ?gput
- .endif
 ?next   txa
         clc
         adc #LIGHT_SIZE
         tax
         dec lt_n
- .if 1
-	jne ?rec
-	rts
- .else
-        beq ?ret
-        jmp ?rec
-?ret    rts
- .endif
+        jne ?rec
+        rts
 .endp
         .endseg
                                      ;   segment never had to grow a byte.
-lt_n    dta 0                        ; records left in this pass
-lt_dt   dta 0                        ; VBLANKs this frame, clamped
-lt_t    dta 0                        ; per-record scratch (step / candidate)
- .if 1
+; (lt_n / lt_dt / lt_t moved to memory_map.inc's D0 block, 2026-09-26: out of the
+;  $6780 write-through window -- update_lights stores them every frame)
 	;nothing, unreferenced variable removed
- .else
-lt_u    dta 0
- .endif
     .if * > LIGHTS_END+1
         ert 'lights.asm outgrew LIGHTS_BASE..LIGHTS_END (memory_map.inc)'
     .endif
@@ -449,26 +237,13 @@ lt_u    dta 0
 ;--------------------------------------------------------------
 ; THE MUZZLE FLASH (A_Light1/A_Light2, 2026-08-31 -- see the FLASH banner in
 ; memory_map.inc). Two procs, both OUTSIDE every per-frame path:
-;
-; lt_seg_flash -- lt_seg with `row -= EXTRALIGHT` (clamped at 0, DOOM's own
-;   brightest-row clamp). It is jsr'd ONLY while a flash is up: wp_flight
-;   retargets process_seg.ltsj here and back, so the normal frame runs the
-;   untouched lt_seg and pays nothing. Same contract: A/Y clobbered, X
-;   PRESERVED.
 ;--------------------------------------------------------------
 ltsf_resume = *
         org LTSEGF_BASE
         .segment B1                  ; DRAC_PLAN 2b: its only jump comes from process_seg (bank $01)
 .proc lt_seg_flash
- .if 1
         ldy #4                       ; BUG FIX 2026-09-15: before the visor test, as
- .endif                               ;   lt_seg (?vis skipped it: wrong floor_pal)
-        lda vis_lit                  ; the visor's answer for THIS tic, decided
-                                     ;   once in pw_tic (it blinks as it runs
-        bne ?vis                     ;   lightnum+extralight sum (r_main.c)
- .if 0
-        ldy #4                       ; sector->lightlevel
- .endif
+                                      ; 2026-09-22: never reached with the visor lit
         lda (zp_ptr),y
         eor #$FF                     ; row = (255 - light) >> 3
         lsr @
@@ -478,10 +253,8 @@ ltsf_resume = *
         sbc EXTRALIGHT               ;   DOOM's lightnum+extralight on this
         bcs ?cl                      ;   port's 32-row ladder
         lda #0                       ; brighter than row 0 IS row 0 (r_main.c
-?cl     clc                          ;   clamps lightnum the same way)
-        adc #>CMAP_EXT               ; a page per row, so the row IS the high byte
-        bpl ?st                      ; always: row is 0..31
-?vis    lda #>CMAP_EXT               ; row 0
+                                      ;   clamps lightnum the same way)
+?cl     ora #>CMAP_EXT               ; 2026-09-22: ora as lt_seg (row 0..31, the base's
 ?st
         sta zp_cm+1
         iny                          ; floor_pal @5
@@ -502,41 +275,15 @@ ltsf_resume = *
 ; wp_flight -- wp_fenter's tail (P_SetPsprite for ps_flash ends here): read the
 ;   NEW flash state's extralight off WS_LIGHT and point process_seg's lt_seg
 ;   call at the right variant. Runs 2-4 times per SHOT, never per frame; the
-;   win2 table read is as cold as the transition itself. Entering WS_NULL is
-;   DOOM's S_LIGHTDONE/A_Light0: value 0, the plain lt_seg comes back.
-;   sq2_lt_init jsr's it per level too, so an exit mid-flash cannot carry a
-;   lit view into the next map (g_game.c "cancel gun flashes").
+;   win2 table read is as cold as the transition itself.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_flight
         ldy wp_fstate
- .if 1
-        ldx WS_LIGHT,y
+                                      ; 2026-09-22: the target is lt_pick's call now
+        ldx WS_LIGHT,y               ;   (the visor outranks the flash)
         stx EXTRALIGHT
-	rep #$20
-	.LONGA ON
-	lda #lt_seg
-	txy			;restore NZ
-	beq ?set
-	lda #lt_seg_flash
-?set	sta.l B1CODE_BASE+process_seg.ltsj+1
-	sep #$20
-	.LONGA OFF
- .else
-        lda WS_LIGHT,y
-        sta EXTRALIGHT
-        beq ?off
-        lda #<lt_seg_flash
-        sta process_seg.ltsj+1
-        lda #>lt_seg_flash
-        sta process_seg.ltsj+2
-        rts
-?off    lda #<lt_seg
-        sta process_seg.ltsj+1
-        lda #>lt_seg
-        sta process_seg.ltsj+2
- .endif
-        rts
+        jmp lt_pick
 .endp
         .endseg
     .if * > LTSEGF_END+1

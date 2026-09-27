@@ -1,46 +1,7 @@
 ;--------------------------------------------------------------
-;
-; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
-; NOT. It carries no XEX segment, so the assembler places code there happily --
-; and then something overwrites it at runtime, before the first frame:
-;     $1000-$13FF  TEX_STAGE   -- the SIO staging buffer, every loader streams here
-;     $4000-$4BFF  map slot    -- load_level streams the level here
-;                              ($4C00-$85FF was the seg table until
-;                               2026-07-31; it is ordinary RAM now)
-;     $9000-$9FFF  MEMAC window-- writes go to VBXE, not to RAM
-;     $1400-$14FF  bsp_stack   -- rebuilt every frame ($1500+ is CODE now)
-;     $0700-$08FF  ATR boot loader, alive WHILE the XEX loads
-; There is no error message. The symptom is a flat pink screen at boot. It has
-; already cost one debugging session ($A800 blit segment crept past $B000).
-;
-; When a segment runs out of room, move a whole .proc out with `org` + absolute
-; jsr -- that is why collision sits at $0900, check_bbox at $1B00 and tw_setup at
-; $8D00 -- instead of letting the segment creep into the next thing.
-;
-; Guards, all three wired into build.ps1 / build_atr.ps1:
-;   * the RESERVED list in tools/ram_map.py (check_xex.py enforces it)
-;   * tools/check_xex.py                    (fails the build on any overlap)
-;   * tools/ram_map.py --update             (regenerates these figures)
+; collision.asm -- part of renderer.asm (icl in place): wall collision. A BSP range
+;   query gathers the cells near the player; each blocking seg is distance-tested.
 ;--------------------------------------------------------------
-; AUTO-SPLIT from renderer.asm -- assembled in place via icl (org wrap stays in renderer.asm).
-
-;==============================================================
-; COLLISION (M5) -- "can't walk through walls". Faithful port of gui.py's
-;   verified spec (pos_ok / collide_cells / seg_hit): a BSP range query gathers
-;   the few cells within the player radius of the candidate point, then each
-;   blocking seg of those cells is distance-tested. Solid (one-sided) walls and
-;   two-sided lines with a <PLAYER_H opening block; step-up is NOT checked (the
-;   floor follow update_pz already lets you walk up stairs). X-then-Y slide in
-;   move_player (bsp_main.asm) makes the player slide along walls.
-;
-; RAM: no new zero page (page 0 is ~full). All scratch ALIASES the per-seg
-;   RENDER working set, which is dead during movement (move_player runs in the
-;   game loop BEFORE render_world). The math uses umul16/smul32 (-> m_a/m_b/
-;   m_prod/m_sign) which never touch the alias slots below; calc_nodeptr clobbers
-;   m_ma, but coll_dd(=m_ma) is only built AFTER the per-node calc_nodeptr.
-;--------------------------------------------------------------
-
-
 coll_cx   = zp_rx                    ; candidate point (tested position)   [in]
 coll_cy   = zp_ry
 coll_ax   = zp_X1                    ; seg endpoint A  (walk: node dxp/dyp)
@@ -60,9 +21,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_sq
- .if 1
         rep #$20                     ; ---- 16-bit A: |m_a| in the accumulator
         .LONGA ON                    ;   (m_neg was the same two's complement)
+csq_w16                              ; (2026-09-22: 16-bit callers enter here)
         lda m_a
         bpl ?p
         eor #$FFFF
@@ -71,17 +32,10 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ?p      sta m_b
         sep #$20
         .LONGA OFF
-        jmp umul16
- .else
-        lda m_a+1
-        bpl ?p
-        jsr m_neg                    ; abs(m_a)
-?p      lda m_a
-        sta m_b
-        lda m_a+1
-        sta m_b+1
-        jmp umul16
- .endif
+        phx                          ; the tail call kept X: umul16 no longer does
+        jsr umul16
+        plx
+        rts
 .endp
         .endseg
 
@@ -91,14 +45,14 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_d2lt
- .if 1
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
+cdl_w16                              ; (2026-09-22: 16-bit callers enter here)
         lda coll_px
         sta m_a
-        sep #$20
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr coll_sq.csq_w16      ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr coll_sq                  ; m_prod = px^2
         rep #$20
         .LONGA ON
         lda m_prod                   ; -> coll_t, two words
@@ -107,9 +61,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sta coll_t+2
         lda coll_py
         sta m_a
-        sep #$20
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr coll_sq.csq_w16      ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr coll_sq                  ; m_prod = py^2
         rep #$21                     ; ---- 16-bit A, C=0: the 32-bit sum as two
         .LONGA ON                    ;   word adds
         lda coll_t
@@ -120,8 +74,10 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sta coll_t+2
         sep #$20
         .LONGA OFF
+        lda coll_k                   ; 2026-09-26: the player's k is 0 -- skip the
+        beq ?k0                      ;   call (phx/ldx/beq/plx/rts, ~25 cycles) then
         jsr coll_shr2k               ; ...and "< 256" now means "< 256 << 2k"
-        lda coll_t+1
+?k0     lda coll_t+1
         ora coll_t+2
         ora coll_t+3
         bne ?no
@@ -129,45 +85,6 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         rts
 ?no     lda #0
         rts
- .else
-        lda coll_px
-        sta m_a
-        lda coll_px+1
-        sta m_a+1
-        jsr coll_sq                  ; m_prod = px^2
-        ldx #3
-?cp     lda m_prod,x
-        sta coll_t,x
-        dex
-        bpl ?cp
-        lda coll_py
-        sta m_a
-        lda coll_py+1
-        sta m_a+1
-        jsr coll_sq                  ; m_prod = py^2
-        clc
-        lda coll_t
-        adc m_prod
-        sta coll_t
-        lda coll_t+1
-        adc m_prod+1
-        sta coll_t+1
-        lda coll_t+2
-        adc m_prod+2
-        sta coll_t+2
-        lda coll_t+3
-        adc m_prod+3
-        sta coll_t+3
-        jsr coll_shr2k               ; ...and "< 256" now means "< 256 << 2k"
-        lda coll_t+1
-        ora coll_t+2
-        ora coll_t+3
-        bne ?no
-        lda #1
-        rts
-?no     lda #0
-        rts
- .endif
 .endp
         .endseg
 
@@ -179,9 +96,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_dist_hit
- .if 1
         rep #$20                     ; ---- 16-bit A: the four deltas
         .LONGA ON
+cdh_w16                              ; (coll_seg jumps in here already 16-bit)
         sec                          ; dx = bx-ax
         lda coll_bx
         sbc coll_ax
@@ -198,18 +115,15 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         lda coll_cy
         sbc coll_ay
         sta coll_py
-        ; t = px*dx + py*dy  (signed 32) -> coll_t. MOST DOOM WALLS ARE AXIS
-        ; ALIGNED (dx or dy exactly 0): the matching product is skipped, which
-        ; is not an approximation (see the .else side). One word test each.
+        ; t = px*dx + py*dy  (signed 32) -> coll_t.
         lda coll_dx
         bne ?tx
         stz coll_t                   ; dx = 0 -> px*dx = 0 (two word stz's)
         stz coll_t+2
         bra ?ty
-?tx     lda coll_px
+?tx     sta m_b                      ; (A = dx, just tested)
+        lda coll_px
         sta m_a
-        lda coll_dx
-        sta m_b
         sep #$20
         .LONGA OFF
         jsr smul32
@@ -221,10 +135,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sta coll_t+2
 ?ty     lda coll_dy
         beq ?tdone                   ; dy = 0 -> py*dy = 0, nothing to add
+        sta m_b                      ; (A = dy)
         lda coll_py
         sta m_a
-        lda coll_dy
-        sta m_b
         sep #$20
         .LONGA OFF
         jsr smul32
@@ -246,9 +159,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         stz coll_dd+2
         bra ?ddy
 ?ddx    sta m_a                      ; (dx is in A)
-        sep #$20
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr coll_sq.csq_w16      ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr coll_sq
         rep #$20
         .LONGA ON
         lda m_prod
@@ -258,9 +171,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ?ddy    lda coll_dy
         beq ?ddone
         sta m_a
-        sep #$20
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr coll_sq.csq_w16      ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr coll_sq
         rep #$21
         .LONGA ON
         lda coll_dd
@@ -281,18 +194,18 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         lda coll_cy
         sbc coll_by
         sta coll_py
-?endA   sep #$20
+?endA
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jmp coll_d2lt.cdl_w16    ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jmp coll_d2lt
 ?perp   lda coll_dy                  ; cross = px*dy - py*dx -> coll_cr (third
         bne ?crx                     ;   and last zero skip in this routine)
         stz coll_cr
         stz coll_cr+2
         bra ?cry
-?crx    lda coll_px
+?crx    sta m_b                      ; (A = dy, the bne's)
+        lda coll_px
         sta m_a
-        lda coll_dy
-        sta m_b
         sep #$20
         .LONGA OFF
         jsr smul32
@@ -304,10 +217,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sta coll_cr+2
 ?cry    lda coll_dx
         beq ?crdone
+        sta m_b                      ; (A = dx)
         lda coll_py
         sta m_a
-        lda coll_dx
-        sta m_b
         sep #$20
         .LONGA OFF
         jsr smul32
@@ -321,13 +233,7 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sbc m_prod+2
         sta coll_cr+2
 ?crdone lda coll_cr+2                ; |cross| >= 65536 -> too far. THE SIGN CASE
-                                     ;   IS THE SAME EXIT: the byte code negated
-                                     ;   only the low THREE bytes of a negative
-                                     ;   cross and then tested byte 3 (still
-                                     ;   $FF) with byte 2 -- so a negative cross
-                                     ;   always took ?no. One word test says the
-                                     ;   same thing: high word nonzero (which a
-                                     ;   negative one always is) -> no.
+                                     ;   IS THE SAME EXIT: the byte code negated ...
         bne ?no
         lda coll_dd+2                ; dd >= 2^24 -> r2*dd >= 2^32 > cross^2 -> within
         cmp #256
@@ -345,8 +251,10 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sta coll_t+2
         lda coll_dd+2
         sta coll_t+3
+        lda coll_k                   ; (2026-09-26: k = 0 -> no call, as coll_d2lt)
+        beq ?k0
         jsr coll_shl2k               ; r2 = 256 << 2k, not 256
-        rep #$20                     ; blocked iff cross^2 < r2*dd (32-bit)
+?k0     rep #$20                     ; blocked iff cross^2 < r2*dd (32-bit)
         .LONGA ON
         lda m_prod
         cmp coll_t
@@ -361,259 +269,6 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         .LONGA OFF
         lda #1
         rts
- .else
-        sec                          ; dx = bx-ax
-        lda coll_bx
-        sbc coll_ax
-        sta coll_dx
-        lda coll_bx+1
-        sbc coll_ax+1
-        sta coll_dx+1
-        sec                          ; dy = by-ay
-        lda coll_by
-        sbc coll_ay
-        sta coll_dy
-        lda coll_by+1
-        sbc coll_ay+1
-        sta coll_dy+1
-        sec                          ; px = cx-ax
-        lda coll_cx
-        sbc coll_ax
-        sta coll_px
-        lda coll_cx+1
-        sbc coll_ax+1
-        sta coll_px+1
-        sec                          ; py = cy-ay
-        lda coll_cy
-        sbc coll_ay
-        sta coll_py
-        lda coll_cy+1
-        sbc coll_ay+1
-        sta coll_py+1
-        ; t = px*dx + py*dy  (signed 32) -> coll_t
-        ; MOST DOOM WALLS ARE AXIS ALIGNED, i.e. dx or dy is exactly 0, and
-        ; then the matching product is 0 and adding it changes nothing. Every
-        ; multiply below is skipped on that test -- ~300 cycles each, three
-        ; times over in this routine, inside collide_leaf's per-seg loop (4505
-        ; cycles a leaf, tools/_dbg_aicost.py). Skipping a multiply by zero is
-        ; not an approximation, so no distance test moves by a bit.
-        lda coll_dx
-        ora coll_dx+1
-        bne ?tx
-        lda #0                       ; dx = 0 -> px*dx = 0
-        sta coll_t
-        sta coll_t+1
-        sta coll_t+2
-        sta coll_t+3
-        beq ?ty                      ; always
-?tx     lda coll_px
-        sta m_a
-        lda coll_px+1
-        sta m_a+1
-        lda coll_dx
-        sta m_b
-        lda coll_dx+1
-        sta m_b+1
-        jsr smul32
-        ldx #3
-?c1     lda m_prod,x
-        sta coll_t,x
-        dex
-        bpl ?c1
-?ty     lda coll_dy
-        ora coll_dy+1
-        beq ?tdone                   ; dy = 0 -> py*dy = 0, nothing to add
-        lda coll_py
-        sta m_a
-        lda coll_py+1
-        sta m_a+1
-        lda coll_dy
-        sta m_b
-        lda coll_dy+1
-        sta m_b+1
-        jsr smul32
-        clc
-        lda coll_t
-        adc m_prod
-        sta coll_t
-        lda coll_t+1
-        adc m_prod+1
-        sta coll_t+1
-        lda coll_t+2
-        adc m_prod+2
-        sta coll_t+2
-        lda coll_t+3
-        adc m_prod+3
-        sta coll_t+3
-?tdone
-        lda coll_t+3                 ; t <= 0 ? -> nearest is endpoint A
-        bpl ?tpos
-        jmp coll_d2lt                ; t<0  (px,py already = cand-A)
-?tpos   lda coll_t
-        ora coll_t+1
-        ora coll_t+2
-        ora coll_t+3
-        bne ?inseg
-        jmp coll_d2lt                ; t==0
-?inseg  lda coll_dx                  ; dd = dx^2 + dy^2 -> coll_dd (same zero
-        ora coll_dx+1                ;   skip as t above: an axis wall squares
-        bne ?ddx                     ;   only one of its two components)
-        lda #0
-        sta coll_dd
-        sta coll_dd+1
-        sta coll_dd+2
-        sta coll_dd+3
-        beq ?ddy                     ; always
-?ddx    lda coll_dx
-        sta m_a
-        lda coll_dx+1
-        sta m_a+1
-        jsr coll_sq
-        ldx #3
-?c2     lda m_prod,x
-        sta coll_dd,x
-        dex
-        bpl ?c2
-?ddy    lda coll_dy
-        ora coll_dy+1
-        beq ?ddone
-        lda coll_dy
-        sta m_a
-        lda coll_dy+1
-        sta m_a+1
-        jsr coll_sq
-        clc
-        lda coll_dd
-        adc m_prod
-        sta coll_dd
-        lda coll_dd+1
-        adc m_prod+1
-        sta coll_dd+1
-        lda coll_dd+2
-        adc m_prod+2
-        sta coll_dd+2
-        lda coll_dd+3
-        adc m_prod+3
-        sta coll_dd+3
-?ddone
-        lda coll_t                   ; t >= dd ? (both >0) -> nearest is endpoint B
-        cmp coll_dd
-        lda coll_t+1
-        sbc coll_dd+1
-        lda coll_t+2
-        sbc coll_dd+2
-        lda coll_t+3
-        sbc coll_dd+3
-        bcc ?perp                    ; t < dd -> interior (C = 1 past it: no sec)
-        lda coll_cx                  ; px = cx-bx ; py = cy-by
-        sbc coll_bx
-        sta coll_px
-        lda coll_cx+1
-        sbc coll_bx+1
-        sta coll_px+1
-        sec
-        lda coll_cy
-        sbc coll_by
-        sta coll_py
-        lda coll_cy+1
-        sbc coll_by+1
-        sta coll_py+1
-        jmp coll_d2lt
-?perp   lda coll_dy                  ; cross = px*dy - py*dx -> coll_cr (third
-        ora coll_dy+1                ;   and last zero skip in this routine)
-        bne ?crx
-        lda #0
-        sta coll_cr
-        sta coll_cr+1
-        sta coll_cr+2
-        sta coll_cr+3
-        beq ?cry                     ; always
-?crx    lda coll_px
-        sta m_a
-        lda coll_px+1
-        sta m_a+1
-        lda coll_dy
-        sta m_b
-        lda coll_dy+1
-        sta m_b+1
-        jsr smul32
-        ldx #3
-?c3     lda m_prod,x
-        sta coll_cr,x
-        dex
-        bpl ?c3
-?cry    lda coll_dx
-        ora coll_dx+1
-        beq ?crdone
-        lda coll_py
-        sta m_a
-        lda coll_py+1
-        sta m_a+1
-        lda coll_dx
-        sta m_b
-        lda coll_dx+1
-        sta m_b+1
-        jsr smul32
-        sec
-        lda coll_cr
-        sbc m_prod
-        sta coll_cr
-        lda coll_cr+1
-        sbc m_prod+1
-        sta coll_cr+1
-        lda coll_cr+2
-        sbc m_prod+2
-        sta coll_cr+2
-        lda coll_cr+3
-        sbc m_prod+3
-        sta coll_cr+3
-?crdone
-        lda coll_cr+3                ; abs(cross)
-        bpl ?cpos
-        sec
-        lda #0
-        sbc coll_cr
-        sta coll_cr
-        lda #0
-        sbc coll_cr+1
-        sta coll_cr+1
-        lda #0
-        sbc coll_cr+2
-        sta coll_cr+2
-?cpos   lda coll_cr+2               ; |cross| >= 65536 -> too far (cross^2 > any r2*dd)
-        ora coll_cr+3
-        bne ?no
-        lda coll_dd+3              ; dd >= 2^24 -> r2*dd >= 2^32 > cross^2 -> within
-        bne ?yes
-        lda coll_cr                 ; csq = |cross|_lo16 ^2  (umul16)
-        sta m_a
-        sta m_b
-        lda coll_cr+1
-        sta m_a+1
-        sta m_b+1
-        jsr umul16                  ; m_prod = cross^2
-        stz coll_t                   ; r2dd = dd << 8  (r2 = 256) -> coll_t
-        lda coll_dd
-        sta coll_t+1
-        lda coll_dd+1
-        sta coll_t+2
-        lda coll_dd+2
-        sta coll_t+3
-        jsr coll_shl2k               ; r2 = 256 << 2k, not 256
-        lda m_prod                  ; blocked iff cross^2 < r2*dd
-        cmp coll_t
-        lda m_prod+1
-        sbc coll_t+1
-        lda m_prod+2
-        sbc coll_t+2
-        lda m_prod+3
-        sbc coll_t+3
-        bcc ?yes
-?no     lda #0
-        rts
-?yes    lda #1
-        rts
- .endif
 .endp
         .endseg
 
@@ -622,7 +277,6 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_vptr                      ; MAP_VERTS + idx*4 (EXT bank offset)
- .if 1
         rep #$20                     ; ---- 16-bit A: MAP_VERTS + idx*4 in the
         .LONGA ON                    ;   accumulator (m_x4 + a byte add before).
         lda m_a                      ;   idx < 16384, so the asl's shift out 0s
@@ -633,17 +287,6 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         sep #$20
         .LONGA OFF
         rts
- .else
-        jsr m_x4
-        clc
-        lda m_prod
-        adc #<MAP_VERTS              ; readers use [zp_ptr],y; zp_ptr+2 is parked
-        sta zp_ptr                   ;   on MAP_EXT_BANK by init_level (read_ext
-        lda m_prod+1                 ;   re-sets the same value during loads)
-        adc #>MAP_VERTS
-        sta zp_ptr+1
-        rts
- .endif
 .endp
         .endseg
 
@@ -652,10 +295,11 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_secheights
- .if 1
         rep #$20                     ; ---- 16-bit A: MAP_SECTORS + idx*8, then
         .LONGA ON                    ;   floor_h and ceil_h as words
+csh_w16                              ; (2026-09-22: 16-bit callers enter here)
         lda m_a                      ;   (idx < 8192: the asl's carry out 0)
+csh_a16                              ; (16-bit, the index already in A)
         asl @
         asl @
         asl @
@@ -666,32 +310,9 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
         ldy #2
         lda (zp_ptr),y
         sta coll_ay
-        sep #$20
+                                     ; 2026-09-22: returns 16-bit -- every caller went
+        rts                          ;   on with a rep (65816-windows: no empty pair)
         .LONGA OFF
-        rts
- .else
-        jsr m_x8                     ; MAP_SECTORS + idx*8
-        clc
-        lda m_prod
-        adc #<MAP_SECTORS
-        sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SECTORS
-        sta zp_ptr+1
-        ldy #0
-        lda (zp_ptr),y
-        sta coll_ax
-        iny
-        lda (zp_ptr),y
-        sta coll_ax+1
-        ldy #2
-        lda (zp_ptr),y
-        sta coll_ay
-        iny
-        lda (zp_ptr),y
-        sta coll_ay+1
-        rts
- .endif
 .endp
         .endseg
 
@@ -708,71 +329,40 @@ coll_cr   = cx_a                     ; 32-bit cross product (spans cx_a..cx_b)
 ; PER-KIND WALL RADIUS (p_map.c P_CheckPosition builds tmbbox from the MOVING
 ;   thing's radius; this port had the constant PLAYER_R2 = 256 for every kind).
 ;   coll_k = log2(R/16) -- 0, 1 or 3 -- and coll_rp1 = R+1 for the axis test.
-;   r2 = 256 << 2k, so the three places that bake in 256 shift by 2k more and
-;   nothing else in the collision code changes. k = 0 is the player and the
-;   narrow monsters, and then every loop here spins zero times and the path is
-;   bit-identical to what it was.
-;     spider 128 -> 128 EXACT, caco 31 -> 32, demon 30 -> 32, baron 24 -> 32,
-;     cyberdemon 40 -> 32, imp/zombie 20 -> 16, lost soul 16 -> 16, PLAYER 16.
-;   Powers of two because 256 is not a parameter but an optimisation: it turns
-;   `cross^2 < r2*dd` into a byte shift. A general r2 needs a 16x32 multiply in
-;   the hottest routine in the engine; a power of two keeps it a shift.
 ;--------------------------------------------------------------
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 coll_k    dta 0                      ; 0 = R16, 1 = R32, 3 = R128
 coll_rp1  dta a(17)                  ; R+1, the axis fast path's compare. A
-                                     ;   WORD: collide_blocked compares 16-bit;
-                                     ;   the high byte is a permanent 0 (every
-                                     ;   writer stores a byte)
+                                     ;   WORD: collide_blocked compares 16-bit; ...
 coll_rtab dta 17,33,0,129            ; ...indexed by coll_k (2 is unused)
         .endseg
 
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_shl2k                     ; coll_t <<= 2*coll_k
- .if 1
         phx
         ldx coll_k
         beq ?done
-        rep #$20                     ; ---- 16-bit A: a 32-bit shift is one asl
-        .LONGA ON                    ;   and one rol in memory, not four
-?a      asl coll_t
+        rep #$20                     ; ---- 16-bit A: the LOW word shifts in A and
+        .LONGA ON                    ;   is stored once, only the high word stays
+        lda coll_t                   ;   an RMW (every caller reloads A after)
+?a      asl @
         rol coll_t+2
-        asl coll_t
+        asl @
         rol coll_t+2
         dex
         bne ?a
+        sta coll_t
         sep #$20
         .LONGA OFF
 ?done   plx
         rts
- .else
-        phx
-        ldx coll_k
-        beq ?done
-?a      asl coll_t
-        rol coll_t+1
-        rol coll_t+2
-        rol coll_t+3
-        asl coll_t
-        rol coll_t+1
-        rol coll_t+2
-        rol coll_t+3
-        dex
-        bne ?a
-?done   plx
-        rts
- .endif
 .endp
         .endseg
 
 collf_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org COLLFAST_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_seg
- .if 1
         ldy #SEG_BACK                ; back_sec
         lda [zp_sptr],y
         cmp #NO_SECTOR               ; one-sided?
@@ -780,29 +370,21 @@ collf_resume = *
         ldy #SEG_WALL                ;   short-branch window, 2026-09-15)
         lda [zp_sptr],y              ; ML_BLOCKING? col_a bit7 -> impassable 2-sided line
         jmi ?wall
-        ldy #SEG_FRONT               ; front sector heights -> acc in coll_bx/coll_by
+        rep #$20                     ; front sector heights -> acc in coll_bx/coll_by
+        .LONGA ON                    ;   (the index straight in A: csh_a16)
+        ldy #SEG_FRONT
         lda [zp_sptr],y
-        sta m_a
-        stz m_a+1
-        jsr coll_secheights
-        rep #$20                     ; ---- 16-bit A
-        .LONGA ON
+        and #$00FF
+        jsr coll_secheights.csh_a16  ; (returns 16-bit)
         lda coll_ax                  ; max-floor acc = ffloor
         sta coll_bx
- .if 1
         sta coll_cr                  ; ...and the FRONT floor kept for the step rule
- .endif                               ;   (scratch: coll_dist_hit rewrites it anyway)
         lda coll_ay                  ; min-ceil acc = fceil
         sta coll_by
         ldy #SEG_BACK                ; back sector heights -> coll_ax/coll_ay
         lda [zp_sptr],y
-        and #$FF
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr coll_secheights
-        rep #$20
-        .LONGA ON
+        and #$00FF
+        jsr coll_secheights.csh_a16  ; (returns 16-bit: no rep)
         sec                          ; max-floor = max(ffloor, bfloor) (signed16)
         lda coll_ax
         sbc coll_bx
@@ -820,31 +402,11 @@ collf_resume = *
         lda coll_ay
         sta coll_by
 ?keepc
- .if 1
-        ; BUG FIX 2026-09-15 (E2M1 1510,-497: "cez toto okno mozem niekedy prejst
-        ; a spadnem dole"). p_map.c P_CheckPosition takes tmfloorz = the HIGHEST
-        ; floor over every line the mover's box touches, and P_TryMove refuses
-        ; "tmfloorz - thing->z > 24" -- too big a step up. This port only asked
-        ; locate_floor at the destination CENTRE (coll_step_ok), so a 16-deep
-        ; window sill (floor 32) with a drop behind it was stepped OVER: a
-        ; 24-unit move put the centre past the sill, into the pit, and a drop is
-        ; no climb. The rule belongs to the seg: max floor - the mover's feet
-        ; (cur_floor) > MAXSTEP blocks, for the PLAYER's probe (coll_plrs sets
-        ; coll_stepchk; monsters and the ball keep their test).
+        ; BUG FIX 2026-09-15 (E2M1 1510,-497: "cez toto okno mozem niekedy prejst ...
         lda coll_stepchk             ; (a byte: mask the neighbour)
         and #$00FF
         beq ?nostep
-  .if 1
-        ; REGRESSION FIX, same day ("nemozem vyjst po schodoch na zaciatku E1M1,
-        ; hned vlavo"). DOOM's thing->z is mo->floorz: the highest floor under
-        ; the whole BOX, so on a 16-rise flight with shallow treads the box is
-        ; already standing on the next step when it reaches the one after it.
-        ; cur_floor is the floor under the CENTRE -- one step low -- and
-        ; "max - cur_floor" read 32 on those stairs. Measure from
-        ; max(the seg's LOWER side, cur_floor): a seg blocks only when its two
-        ; sides differ by more than MAXSTEP AND its high side is more than
-        ; MAXSTEP above the feet. The E2M1 sill still blocks (0|32 from 0, and
-        ; 32|-64 from max(-64,0) = 0: both 32); a 16-rise flight never does.
+        ; hned vlavo").
         sec                          ; lo = min(front floor, back floor):
         lda coll_ax                  ;   coll_cr = front (saved at the load),
         sbc coll_cr                  ;   coll_ax = back
@@ -865,205 +427,55 @@ collf_resume = *
 ?ref    sec
         lda coll_bx                  ; the higher floor of the two sides
         sbc coll_cr+2                ;   minus the reference
-  .else
-        sec
-        lda coll_bx                  ; the higher floor of the two sides
-        sbc cur_floor                ;   minus the feet
-  .endif
         bvc ?sv
         eor #$8000
 ?sv     bmi ?nostep                  ; level or a drop: no climb
         cmp #MAXSTEP+1
         bcs ?wall                    ; too big a step up
 ?nostep
- .endif
         sec                          ; opening = min-ceil - max-floor = coll_by - coll_bx
         lda coll_by
         sbc coll_bx
         bmi ?wall                    ; opening < 0 (overlap/closed) -> blocks
         cmp #256
         bcs ?notblock                ; opening >= 256 -> open
- .if 1                                ; DRAC_PLAN 5: no 8-bit window: A < 256 here (the bcs
+                                      ; DRAC_PLAN 5: no 8-bit window: A < 256 here (the bcs
 cs_hmin = *+1                        ;   above), so the 16-bit cmp is the byte
         cmp #PLAYER_H                ;   compare; cs_hmin still names the LOW
         bcs ?notblock                ;   byte bl_wall patches (?notblock seps)
         tay                          ; Z from the low byte, as before
         bne ?wall
         inc coll_solid               ; a 16-bit cell now (bsp_main_player.asm)
- .else
-        sep #$20                     ; (the low byte is the opening)
-        .LONGA OFF
-cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
-        cmp #PLAYER_H                ;   ball.asm's bl_wall drops it to 0 around
-        bcs ?notblock                ;   its own call (56 is the PLAYER's
-                                     ;   clearance, a fireball is 8 tall) and
-                                     ;   puts it back before it returns
-        tay                          ; OPENING EXACTLY 0 = a SHUT DOOR: the one
-        bne ?wall                    ;   barrier the PICKUP must not reach through
-        inc coll_solid               ;   (mp_clamp acts on this and clears it --
-                                     ;   the .else side has the whole story)
- .endif
 ?wall   rep #$20                     ; ---- 16-bit A (reached in either mode: rep
                                      ;   is idempotent): v1 -> endpoint A, v2 -> B,
         .LONGA ON                    ;   each a word index and two word reads
-        lda [zp_sptr]
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr coll_vptr
-        rep #$20
-        .LONGA ON
+                                      ; 2026-09-22: coll_vptr inlined (6502-idioms: its
+        lda [zp_sptr]                ;   body is smaller than the call) -- the index is
+        asl @                        ;   already in A: *4 + MAP_VERTS. idx < 16384, so
+        asl @                        ;   the asl's shift out 0s and the adc rides on C=0
+        adc #MAP_VERTS
+        sta zp_ptr
         lda [zp_ptr]
         sta coll_ax
         ldy #2
         lda [zp_ptr],y
         sta coll_ay
         lda [zp_sptr],y              ; (Y = 2: v2)
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr coll_vptr
-        rep #$20
-        .LONGA ON
+        asl @
+        asl @
+        adc #MAP_VERTS
+        sta zp_ptr
         lda [zp_ptr]
         sta coll_bx
-        ldy #2
+                                      ; 2026-09-22 (drac030 RELOAD): Y is still 2 (v2's read above)
         lda [zp_ptr],y
         sta coll_by
-        sep #$20
-        .LONGA OFF
-        jmp coll_dist_hit            ; A=1 if within radius (tail)
+        jmp coll_dist_hit.cdh_w16    ; still 16-bit: past its rep (A=1 if within radius)
 ?notblock
         sep #$20                     ; (reached in either mode)
         .LONGA OFF
         lda #0
         rts
- .else
-        ldy #SEG_BACK                ; back_sec
-        lda [zp_sptr],y
-        cmp #NO_SECTOR               ; one-sided?
-        beq ?wall
-        ldy #SEG_WALL                ; ML_BLOCKING? col_a bit7 -> impassable 2-sided line
-        lda [zp_sptr],y
-        bmi ?wall
-        ldy #SEG_FRONT               ; front sector heights -> acc in coll_bx/coll_by
-        lda [zp_sptr],y
-        sta m_a
-        lda #0
-        sta m_a+1
-        jsr coll_secheights
-        lda coll_ax                  ; max-floor acc = ffloor
-        sta coll_bx
-        lda coll_ax+1
-        sta coll_bx+1
-        lda coll_ay                  ; min-ceil acc = fceil
-        sta coll_by
-        lda coll_ay+1
-        sta coll_by+1
-        ldy #SEG_BACK                ; back sector heights -> coll_ax/coll_ay
-        lda [zp_sptr],y
-        sta m_a
-        lda #0
-        sta m_a+1
-        jsr coll_secheights
-        lda coll_ax                  ; max-floor = max(ffloor, bfloor) (signed16)
-        cmp coll_bx
-        lda coll_ax+1
-        sbc coll_bx+1
-        bvc ?mf
-        eor #$80
-?mf     bmi ?keepf                   ; bfloor < acc -> keep
-        lda coll_ax
-        sta coll_bx
-        lda coll_ax+1
-        sta coll_bx+1
-?keepf  lda coll_ay                  ; min-ceil = min(fceil, bceil) (signed16)
-        cmp coll_by
-        lda coll_ay+1
-        sbc coll_by+1
-        bvc ?mc
-        eor #$80
-?mc     bpl ?keepc                   ; bceil >= acc -> keep
-        lda coll_ay
-        sta coll_by
-        lda coll_ay+1
-        sta coll_by+1
-?keepc  sec                          ; opening = min-ceil - max-floor = coll_by - coll_bx
-        lda coll_by
-        sbc coll_bx
-        sta m_a
-        lda coll_by+1
-        sbc coll_bx+1
-        sta m_a+1
-        bmi ?wall                    ; opening < 0 (overlap/closed) -> blocks
-        bne ?notblock                ; opening >= 256 -> open
-        lda m_a
-cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
-        cmp #PLAYER_H                ;   ball.asm's bl_wall drops it to 0 around
-        bcs ?notblock                ;   its own call, because 56 is the PLAYER's
-                                     ;   clearance and a fireball is 8 tall. It
-                                     ;   is always PLAYER_H outside that call --
-                                     ;   bl_wall puts it back before it returns.
-        tay                          ; OPENING EXACTLY 0 = a SHUT DOOR, and that is
-        bne ?wall                    ;   the one barrier the PICKUP must not reach
-        inc coll_solid               ;   through. (`tay` and not `cmp #1`: it sets Z
-                                     ;   from A in ONE byte and ?wall reloads Y
-                                     ;   immediately.) 1..55 is a gap he cannot FIT in
-                                     ;   but CAN see through, and p_map.c hands an
-                                     ;   item over at the destination of a refused
-                                     ;   move (things are checked before lines) --
-                                     ;   E1M2's green armour behind its 40-unit
-                                     ;   window is exactly that, and must keep
-                                     ;   working. DOOM never notices the door case
-                                     ;   because its destination is at most
-                                     ;   MAXMOVE/2 past the player (p_mobj.c halves
-                                     ;   the step); this port steps 24 and reached
-                                     ;   through. E2M9's three key skulls sit 32
-                                     ;   behind their keyed doors. mp_clamp acts on
-                                     ;   this and clears it.
-?wall   ldy #0                       ; v1 -> endpoint A
-        lda [zp_sptr],y
-        sta m_a
-        iny
-        lda [zp_sptr],y
-        sta m_a+1
-        jsr coll_vptr
-        ldy #0
-        lda [zp_ptr],y
-        sta coll_ax
-        iny
-        lda [zp_ptr],y
-        sta coll_ax+1
-        ldy #2
-        lda [zp_ptr],y
-        sta coll_ay
-        iny
-        lda [zp_ptr],y
-        sta coll_ay+1
-        ldy #2                       ; v2 -> endpoint B
-        lda [zp_sptr],y
-        sta m_a
-        iny
-        lda [zp_sptr],y
-        sta m_a+1
-        jsr coll_vptr
-        ldy #0
-        lda [zp_ptr],y
-        sta coll_bx
-        iny
-        lda [zp_ptr],y
-        sta coll_bx+1
-        ldy #2
-        lda [zp_ptr],y
-        sta coll_by
-        iny
-        lda [zp_ptr],y
-        sta coll_by+1
-        jmp coll_dist_hit            ; A=1 if within radius (tail)
-?notblock
-        lda #0
-        rts
- .endif
 .endp
         .endseg
 
@@ -1074,9 +486,9 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc collide_leaf
- .if 1
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
+clf_w16                              ; (2026-09-22: 16-bit callers enter here)
         lda zp_nid                   ; ssptr = MAP_SSECT + (nid&$7FFF)*4
         and #$7FFF
         asl @                        ; (a subsector index is far below 16384: the
@@ -1111,141 +523,60 @@ cs_hmin = *+1                        ; ...and the THRESHOLD is a patchable byte:
 ?blocked
         lda #1
         rts
- .else
-        lda zp_nid                   ; ssptr = MAP_SSECT + (nid&$7FFF)*4
-        sta m_a
-        lda zp_nid+1
-        and #$7F
-        sta m_a+1
-        jsr m_x4
-        clc
-        lda m_prod
-        adc #<MAP_SSECT
-        sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SSECT
-        sta zp_ptr+1
-        ldy #0                       ; first seg
-        lda [zp_ptr],y
-        sta m_a
-        iny
-        lda [zp_ptr],y
-        sta m_a+1
-        ldy #2                       ; count
-        lda [zp_ptr],y
-        sta zp_segcnt
-        iny
-        lda [zp_ptr],y
-        sta zp_segcnt+1
-        jsr m_x8                     ; zp_sptr = MAP_SEGS + first*SEG_SIZE
-        clc
-        lda m_prod
-        adc #<MAP_SEGS
-        sta zp_sptr
-        lda m_prod+1
-        adc #>MAP_SEGS
-        sta zp_sptr+1
-?loop   lda zp_segcnt
-        ora zp_segcnt+1
-        beq ?clear
-        jsr coll_seg
-        bne ?blocked
-        clc
-        lda zp_sptr
-        adc #SEG_SIZE
-        sta zp_sptr
-        lda zp_sptr+1
-        adc #0
-        sta zp_sptr+1
-        lda zp_segcnt
-        bne ?dec
-        dec zp_segcnt+1
-?dec    dec zp_segcnt
-        jmp ?loop
-?clear  lda #0
-        rts
-?blocked
-        lda #1
-        rts
- .endif
 .endp
         .endseg
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_shr2k                     ; coll_t >>= 2*coll_k, so coll_d2lt's
- .if 1
         phx                          ;   "< 256" means "< 256 << 2k"
         ldx coll_k
         beq ?done
-        rep #$20
-        .LONGA ON
+        rep #$20                     ; the low word shifts in A, stored once
+        .LONGA ON                    ;   (as coll_shl2k)
+        lda coll_t
 ?a      lsr coll_t+2
-        ror coll_t
+        ror @
         lsr coll_t+2
-        ror coll_t
+        ror @
         dex
         bne ?a
+        sta coll_t
         sep #$20
         .LONGA OFF
 ?done   plx
         rts
- .else
-        phx                          ;   "< 256" means "< 256 << 2k"
-        ldx coll_k
-        beq ?done
-?a      lsr coll_t+3
-        ror coll_t+2
-        ror coll_t+1
-        ror coll_t
-        lsr coll_t+3
-        ror coll_t+2
-        ror coll_t+1
-        ror coll_t
-        dex
-        bne ?a
-?done   plx
-        rts
- .endif
 .endp
         .endseg
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > COLLFAST_END+1
-        ert 'coll_seg/collide_leaf outgrew COLLFAST_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org collf_resume
 
 ;--------------------------------------------------------------
 ; collide_blocked -- IN: coll_cx,coll_cy (candidate). OUT: A=1 if the player
-;   (radius PLAYER_R) would overlap a blocking wall there. BSP range query: walk
-;   from the root, always descend the near side, and ALSO visit the far side
-;   only when the candidate is within R of the split plane
-;   (cross^2 <= R2*(ndx^2+ndy^2), no divide). Reuses the render bsp_stack.
-;   This visits exactly the cells a wall-within-R can live in == gui collide_cells.
+;   (radius PLAYER_R) would overlap a blocking wall there.
 ;--------------------------------------------------------------
 cbsp_resume = *
         org COLLBSP_BASE             ; the axis fast path pushed the $AB00 block
-                                     ; past HUDCODE_BASE. This is the biggest
-                                     ; free run left AND it is below $8000, i.e.
-                                     ; inside the accelerator's fast window --
-                                     ; the right home for the routine every
-                                     ; monster step and every player step runs.
+                                     ; past HUDCODE_BASE.
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc collide_blocked
- .if 1
         stz bsp_sp
         rep #$20                     ; ---- 16-bit A for the whole walk; the mode
         .LONGA ON                    ;   drops to 8 around each jsr and comes back
         lda MAP_HROOT                 ; root node index (map header, per level)
         sta zp_nid
 ?walk   lda zp_nid
-        jmi ?leaf                    ; bit 15 = leaf (MADS Jcc: long when far)
-        sep #$20
-        .LONGA OFF
-        jsr calc_nodeptr
-        rep #$20
-        .LONGA ON
+?walka  jmi ?leaf                    ; bit 15 = leaf (MADS Jcc: long when far)
+                                      ; 2026-09-26: calc_nodeptr INLINED (no jsr/rts a
+        asl @                        ;   node); ?walka: the descents arrive with A =
+        asl @                        ;   the node just stored and N from its lda
+        sta m_ma
+        asl @
+        asl @
+        asl @                        ; nid*32 (the leaf bit and bit 14 fall out)
+        sec
+        sbc m_ma                     ; nid*28 = NODE_SIZE
+        adc #MAP_NODES-1             ; C=1 here
+        sta zp_nodeptr
         sec                          ; dxp = cx - node.x -> coll_ax
         lda coll_cx
         sbc [zp_nodeptr]
@@ -1272,8 +603,8 @@ cbsp_resume = *
         lda coll_dx
         beq ?axisv
         lda coll_dy
-        beq ?axish
-        jmp ?general
+        jne ?general                 ; (jne: coll_* left zero page 2026-09-23, the
+        ;bra ?general                ;   span grew past a short branch)
 ?axish  ; ---- ndy = 0: horizontal split, cross = -ndx*dyp -------------------
         lda coll_dx                  ; sign(cross) = NOT(sign(ndx) XOR sign(dyp)),
         eor coll_ay                  ;   in bit 15 of a word (coll_t's low word)
@@ -1288,8 +619,9 @@ cbsp_resume = *
         bpl ?hb
         eor #$FFFF
         inc @
-?hb     sta m_b
-        bra ?axtest
+?hb     sta m_b                      ; Z = (|dyp| == 0) on both ways in; |ndx| != 0
+        bne ?axsgn                   ;   here (dx != 0 got us here)
+        bra ?axswap
 ?axisv  ; ---- ndx = 0: vertical split, cross = ndy*dxp ----------------------
         lda coll_dy                  ; sign(cross) = sign(ndy) XOR sign(dxp)
         eor coll_ax
@@ -1303,12 +635,11 @@ cbsp_resume = *
         bpl ?vb
         eor #$FFFF
         inc @
-?vb     sta m_b
-?axtest lda m_a                      ; a zero factor -> cross = 0 -> side1, and
-        beq ?axswap                  ;   the far cell is certainly within R
-        lda m_b
+?vb     sta m_b                      ; a zero factor -> cross = 0 -> side1, and
+        beq ?axswap                  ;   the far cell is certainly within R (Z of
+        lda m_a                      ;   |dxp| from the lda or the inc)
         beq ?axswap
-        lda coll_t                   ; cross > 0 -> side0 -> keep near = child_r
+?axsgn  lda coll_t                   ; cross > 0 -> side0 -> keep near = child_r
         bpl ?axside
 ?axswap lda zp_near                  ; cross <= 0 -> point on side1 -> swap
         pha
@@ -1318,7 +649,9 @@ cbsp_resume = *
         sta zp_far
 ?axside sep #$20
         .LONGA OFF
+        phx                          ; umul16 no longer keeps X (2026-09-23)
         jsr umul16                   ; |cross| = |n| * |d|
+        plx
         rep #$20
         .LONGA ON
         lda m_prod+2                 ; |cross| >= 65536 -> far cell out of range
@@ -1382,9 +715,9 @@ cbsp_resume = *
         jne ?descend
         lda coll_dx                  ; nn = ndx^2 + ndy^2 -> coll_dd
         sta m_a
-        sep #$20
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr coll_sq.csq_w16      ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr coll_sq
         rep #$20
         .LONGA ON
         lda m_prod
@@ -1393,9 +726,9 @@ cbsp_resume = *
         sta coll_dd+2
         lda coll_dy
         sta m_a
-        sep #$20
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr coll_sq.csq_w16      ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr coll_sq
         rep #$21                     ; C=0
         .LONGA ON
         lda coll_dd
@@ -1415,14 +748,18 @@ cbsp_resume = *
         sta coll_t+2
         lda coll_dd+2
         sta coll_t+3
+        lda coll_k                   ; (2026-09-26: k = 0 -> no call, as coll_d2lt)
+        beq ?k0
         jsr coll_shl2k               ; the DESCENT has to widen too, or the walk
-        lda coll_cr                  ; csq = |cross|_lo16 ^2
+?k0     lda coll_cr                  ; csq = |cross|_lo16 ^2
         sta m_a
         sta m_b
         lda coll_cr+1
         sta m_a+1
         sta m_b+1
+        phx                          ; umul16 no longer keeps X (2026-09-23)
         jsr umul16
+        plx
         rep #$20
         .LONGA ON
         lda coll_t                   ; within iff cross^2 <= r2*nn (32-bit)
@@ -1440,10 +777,11 @@ cbsp_resume = *
 ?descend
         lda zp_near
         sta zp_nid
-        jmp ?walk
-?leaf   sep #$20
+        jmp ?walka                   ; (A, N = the new node: no reload, 2026-09-26)
+?leaf
+                                      ; 2026-09-22 (65816-windows): past the callee's rep,
+        jsr collide_leaf.clf_w16 ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
-        jsr collide_leaf
         bne ?yes
         ldx bsp_sp
         beq ?no
@@ -1454,307 +792,12 @@ cbsp_resume = *
         .LONGA ON
         lda bsp_stack,x
         sta zp_nid
-        jmp ?walk
+        jmp ?walka                   ; (as ?descend, 2026-09-26)
         .LONGA OFF
 ?no     lda #0
         rts
 ?yes    lda #1
         rts
- .else
-        stz bsp_sp
-        lda MAP_HROOT                 ; root node index (map header, per level)
-        sta zp_nid
-        lda MAP_HROOT+1
-        sta zp_nid+1
-?walk   lda zp_nid+1
-        and #$80
-        beq ?node
-        jmp ?leaf
-?node   jsr calc_nodeptr
-        ldy #0                       ; dxp = cx - node.x -> coll_ax
-        sec
-        lda coll_cx
-        sbc [zp_nodeptr],y
-        sta coll_ax
-        iny
-        lda coll_cx+1
-        sbc [zp_nodeptr],y
-        sta coll_ax+1
-        ldy #2                       ; dyp = cy - node.y -> coll_ay
-        sec
-        lda coll_cy
-        sbc [zp_nodeptr],y
-        sta coll_ay
-        iny
-        lda coll_cy+1
-        sbc [zp_nodeptr],y
-        sta coll_ay+1
-        ldy #4                       ; ndx -> coll_dx
-        lda [zp_nodeptr],y
-        sta coll_dx
-        iny
-        lda [zp_nodeptr],y
-        sta coll_dx+1
-        ldy #6                       ; ndy -> coll_dy
-        lda [zp_nodeptr],y
-        sta coll_dy
-        iny
-        lda [zp_nodeptr],y
-        sta coll_dy+1
-        ldy #8                       ; near = child_r, far = child_l. Read HERE
-        lda [zp_nodeptr],y           ;   now: both the axis paths below and the
-        sta zp_near                  ;   general one need them, and the axis
-        iny                          ;   paths decide the swap without ever
-        lda [zp_nodeptr],y           ;   building a 32-bit cross product.
-        sta zp_near+1
-        ldy #10
-        lda [zp_nodeptr],y
-        sta zp_far
-        iny
-        lda [zp_nodeptr],y
-        sta zp_far+1
-        ; ===== AXIS-ALIGNED NODE (74 % of DOOM's; the renderer's point_on_side
-        ;       and process_seg's backface test already take this road) =======
-        ; With ndx = 0 the cross is ndy*dxp and nn = ndy^2, so the range test
-        ;   cross^2 <= R2*nn   becomes   (ndy*dxp)^2 <= 256*ndy^2   i.e.
-        ;   dxp^2 <= 256, i.e. |dxp| <= 16.
-        ; Both sides are exact integers, so that is the SAME DECISION, not a
-        ; cheaper approximation of it -- the two smul32 and the two squarings
-        ; drop out. One umul16 has to stay: the original gives up at
-        ; |cross| >= 65536 BEFORE it looks at nn, and that early-out has to be
-        ; reproduced or a monster would start walking through different walls.
-        ; ~1800 cycles a node -> ~400, on the routine every monster step and
-        ; every player step runs (21552 cycles a call, tools/_dbg_aicost.py).
-        lda coll_dx
-        ora coll_dx+1
-        beq ?axisv
-        lda coll_dy
-        ora coll_dy+1
-        beq ?axish
-        jmp ?general                 ; (the axis bodies below are past the
-                                     ;  branch window)
-?axish  ; ---- ndy = 0: horizontal split, cross = -ndx*dyp -------------------
-        lda coll_dx+1                ; sign(cross) = NOT(sign(ndx) XOR sign(dyp))
-        eor coll_ay+1
-        eor #$80
-        sta coll_t
-        lda coll_dx                  ; m_a = |ndx|
-        sta m_a
-        lda coll_dx+1
-        sta m_a+1
-        jsr ?absa
-        lda coll_ay                  ; m_b = |dyp|
-        sta m_b
-        lda coll_ay+1
-        sta m_b+1
-        jsr ?absb
-        jmp ?axtest
-?axisv  ; ---- ndx = 0: vertical split, cross = ndy*dxp ----------------------
-        lda coll_dy+1                ; sign(cross) = sign(ndy) XOR sign(dxp)
-        eor coll_ax+1
-        sta coll_t
-        lda coll_dy                  ; m_a = |ndy|
-        sta m_a
-        lda coll_dy+1
-        sta m_a+1
-        jsr ?absa
-        lda coll_ax                  ; m_b = |dxp|
-        sta m_b
-        lda coll_ax+1
-        sta m_b+1
-        jsr ?absb
-?axtest lda m_a                      ; a zero factor -> cross = 0 -> side1, and
-        ora m_a+1                    ;   the far cell is certainly within R
-        beq ?axswap
-        lda m_b
-        ora m_b+1
-        beq ?axswap
-        lda coll_t                   ; cross > 0 -> side0 -> keep near = child_r
-        bpl ?axside
-?axswap lda zp_near                  ; cross <= 0 -> point on side1 -> swap
-        ldx zp_far
-        sta zp_far
-        stx zp_near
-        lda zp_near+1
-        ldx zp_far+1
-        sta zp_far+1
-        stx zp_near+1
-?axside jsr umul16                   ; |cross| = |n| * |d|
-        lda m_prod+2                 ; |cross| >= 65536 -> far cell out of range
-        ora m_prod+3
-        bne ?axdesc
-        lda m_a+1                    ; nn = n^2 >= 2^24  <=>  |n| >= 4096, and
-        cmp #16                      ;   then the original pushes unconditionally
-        bcs ?axpush
-        lda m_b+1                    ; |d| <= 16 = sqrt(PLAYER_R2) ?
-        bne ?axdesc
-        lda m_b
-        cmp coll_rp1                 ; |d| <= R, not the constant 16
-        bcs ?axdesc
-?axpush jmp ?pushfar
-?axdesc jmp ?descend
-?absa   lda m_a+1                    ; m_a = |m_a| (signed 16)
-        bpl ?absa9
-        jsr m_neg
-?absa9  rts
-?absb   lda m_b+1                    ; m_b = |m_b|
-        bpl ?absb9
-        jsr m_negb
-?absb9  rts
-?general
-        lda coll_dy                  ; cross = ndy*dxp - ndx*dyp -> coll_cr
-        sta m_a
-        lda coll_dy+1
-        sta m_a+1
-        lda coll_ax
-        sta m_b
-        lda coll_ax+1
-        sta m_b+1
-        jsr smul32
-        ldx #3
-?k1     lda m_prod,x
-        sta coll_cr,x
-        dex
-        bpl ?k1
-        lda coll_dx
-        sta m_a
-        lda coll_dx+1
-        sta m_a+1
-        lda coll_ay
-        sta m_b
-        lda coll_ay+1
-        sta m_b+1
-        jsr smul32
-        sec
-        lda coll_cr
-        sbc m_prod
-        sta coll_cr
-        lda coll_cr+1
-        sbc m_prod+1
-        sta coll_cr+1
-        lda coll_cr+2
-        sbc m_prod+2
-        sta coll_cr+2
-        lda coll_cr+3
-        sbc m_prod+3
-        sta coll_cr+3                ; cross <= 0 -> point on side1 -> swap near/far
-        bmi ?swap                    ;   (sta leaves sbc's N alone -- no reload)
-        lda coll_cr
-        ora coll_cr+1
-        ora coll_cr+2
-        ora coll_cr+3
-        bne ?noswap
-?swap   lda zp_near
-        ldx zp_far
-        sta zp_far
-        stx zp_near
-        lda zp_near+1
-        ldx zp_far+1
-        sta zp_far+1
-        stx zp_near+1
-?noswap lda coll_cr+3               ; abs(cross)
-        bpl ?crp
-        sec
-        lda #0
-        sbc coll_cr
-        sta coll_cr
-        lda #0
-        sbc coll_cr+1
-        sta coll_cr+1
-        lda #0
-        sbc coll_cr+2
-        sta coll_cr+2
-        lda #0
-        sbc coll_cr+3
-        sta coll_cr+3
-?crp    lda coll_cr+2              ; |cross| >= 65536 -> far cell is out of range
-        ora coll_cr+3
-        bne ?descend
-        lda coll_dx                 ; nn = ndx^2 + ndy^2 -> coll_dd
-        sta m_a
-        lda coll_dx+1
-        sta m_a+1
-        jsr coll_sq
-        ldx #3
-?k2     lda m_prod,x
-        sta coll_dd,x
-        dex
-        bpl ?k2
-        lda coll_dy
-        sta m_a
-        lda coll_dy+1
-        sta m_a+1
-        jsr coll_sq
-        clc
-        lda coll_dd
-        adc m_prod
-        sta coll_dd
-        lda coll_dd+1
-        adc m_prod+1
-        sta coll_dd+1
-        lda coll_dd+2
-        adc m_prod+2
-        sta coll_dd+2
-        lda coll_dd+3
-        adc m_prod+3
-        sta coll_dd+3               ; nn >= 2^24 -> r2*nn huge -> always within
-        bne ?pushfar                ;   (sta leaves adc's Z alone -- no reload)
-        stz coll_t                   ; r2nn = nn << 8 -> coll_t
-        lda coll_dd
-        sta coll_t+1
-        lda coll_dd+1
-        sta coll_t+2
-        lda coll_dd+2
-        sta coll_t+3
-        jsr coll_shl2k               ; the DESCENT has to widen too, or the walk
-        lda coll_cr                 ; csq = |cross|_lo16 ^2
-        sta m_a
-        sta m_b
-        lda coll_cr+1
-        sta m_a+1
-        sta m_b+1
-        jsr umul16
-        lda coll_t                  ; within iff cross^2 <= r2*nn
-        cmp m_prod
-        lda coll_t+1
-        sbc m_prod+1
-        lda coll_t+2
-        sbc m_prod+2
-        lda coll_t+3
-        sbc m_prod+3
-        bcc ?descend                ; r2nn < cross^2 -> far cell out of range
-?pushfar
-        ldx bsp_sp
-        lda zp_far
-        sta bsp_stack,x
-        lda zp_far+1
-        sta bsp_stack+1,x
-        inx
-        inx
-        stx bsp_sp
-?descend
-        lda zp_near
-        sta zp_nid
-        lda zp_near+1
-        sta zp_nid+1
-        jmp ?walk
-?leaf   jsr collide_leaf
-        bne ?yes
-        ldx bsp_sp
-        beq ?no
-        dex
-        dex
-        stx bsp_sp
-        lda bsp_stack,x
-        sta zp_nid
-        lda bsp_stack+1,x
-        sta zp_nid+1
-        jmp ?walk
-?no     lda #0
-        rts
-?yes    lda #1
-        rts
- .endif
 .endp
         .endseg
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
@@ -1765,7 +808,6 @@ cbsp_resume = *
         jmp collide_blocked          ;   ran last to have put it back.
 .endp
         .endseg
- .if 1
 ;   coll_plrs -- move_player's probe: coll_plr WITH the step-up rule (coll_seg,
 ;   BUG FIX 2026-09-15). stz sets no flag, so the caller's `bne` still reads
 ;   collide_blocked's answer.
@@ -1781,7 +823,6 @@ cbsp_resume = *
         .segment D0                  ; DRAC_PLAN 3a
 coll_stepchk dta 0                   ; 1 = coll_seg applies P_TryMove's step-up rule
         .endseg
- .endif
 
     .if * > COLLBSP_END+1
         ert 'collide_blocked outgrew COLLBSP_BASE..END (memory_map.inc)'
@@ -1800,7 +841,6 @@ coll_svy  = zp_Z1                    ;   (dead render scratch; coll_step_ok runs
                                      ;    before collide_blocked, no overlap)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc coll_step_ok
- .if 1
         pei (zp_px)                  ; the real player pos, parked on the stack
         pei (zp_py)                  ;   (pei is M-blind; pla below is 16-bit)
         rep #$20                     ; ---- 16-bit A
@@ -1812,7 +852,7 @@ coll_svy  = zp_Z1                    ;   (dead render scratch; coll_step_ok runs
         sep #$20
         .LONGA OFF
         jsr locate_floor             ; loc_floor = destination sector floor
-        rep #$20
+                                    ; 2026-09-22 (65816-windows): locate_floor returns 16-bit
         .LONGA ON
         pla                          ; restore real player pos (py was pushed last)
         sta zp_py
@@ -1831,49 +871,6 @@ coll_svy  = zp_Z1                    ;   (dead render scratch; coll_step_ok runs
 ?block  sep #$20
         lda #1
         rts
- .else
-        lda zp_px
-        sta coll_svx
-        lda zp_px+1
-        sta coll_svx+1
-        lda zp_py
-        sta coll_svy
-        lda zp_py+1
-        sta coll_svy+1
-        lda coll_cx                  ; pos := candidate
-        sta zp_px
-        lda coll_cx+1
-        sta zp_px+1
-        lda coll_cy
-        sta zp_py
-        lda coll_cy+1
-        sta zp_py+1
-        jsr locate_floor             ; loc_floor = destination sector floor
-        lda coll_svx                 ; restore real player pos
-        sta zp_px
-        lda coll_svx+1
-        sta zp_px+1
-        lda coll_svy
-        sta zp_py
-        lda coll_svy+1
-        sta zp_py+1
-        sec                          ; step = dest - current
-        lda loc_floor
-        sbc cur_floor
-        sta m_a
-        lda loc_floor+1
-        sbc cur_floor+1
-        sta m_a+1                    ; step > MAXSTEP ?  (signed; sta leaves sbc's
-        bmi ?ok                      ;   N/Z alone, so no reload) step < 0 -> ok
-        bne ?block                   ; step >= 256 -> too high
-        lda m_a
-        cmp #MAXSTEP+1
-        bcs ?block                   ; step >= 25 -> too high
-?ok     lda #0
-        rts
-?block  lda #1
-        rts
- .endif
 .endp
         .endseg
 

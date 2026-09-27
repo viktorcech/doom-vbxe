@@ -4,37 +4,25 @@
 wi_stuff.c, single player, episode 1. Like the main menu (pack_menu.py) the
 intermission is NOT text: every label is a patch (WIF, WIENTER, WIOSTK, ...)
 and every digit is one too (WINUM0..9), so the port needs no font for it --
-only the patch blitter hud.asm already has. The 7-byte rows this emits are
-byte-for-byte hud.tab's layout, so hud_entry + hud_blit draw a WI patch with
-no new blitter at all.
+only a patch blitter. The 7-byte rows this emits are hud.tab's layout.
 
-Same encoding as pack_hud.py / pack_menu.py -- row-major, halved horizontally
-(one byte = two DOOM pixels, every second column kept), palette index 0 =
-transparent under BLT_BSTENCIL. The background is the one opaque lump.
+AT DOOM'S OWN 320 (2026-09-24). The intermission is a VBXE SR screen (wi.asm):
+the world map, the labels, the digits and the animations are all full width,
+palette index 0 transparent under BLT_BSTENCIL.
 
-WHERE IT LIVES. $04A000 -- the free 152 KB above the HU strips (memory_map.inc
-VRAM map), streamed ONCE at boot as another stream inside menu.bin, exactly
-the way the HU strips already ride there. It is map-independent, so this is
-the same deal the status bar and the menu patches get.
-
-The obvious cheaper-looking alternative -- borrow the sprite arena at $018000
-like TITLEPIC and the READ THIS! pages, since the outgoing level's pool is
-finished with -- does NOT work, and the reason is worth writing down:
-load_vram stages every chunk through TEX_STAGE ($1000-$13FF, diskio.asm),
-which is the same RAM the overlay RUNS in (MENU_RUN). So the stream would
-have to be driven from resident code before the overlay opens, and that stub
-is ~33 B against a largest free hole of 21 B (tools/ram_map.py). Loading at
-boot instead makes the entry stub 7 bytes, costs 48 KB of VRAM we have three
-times over, and means the intermission comes up with no drive access at all.
+WHERE IT LIVES. Rapidus SDRAM, not VRAM: wimaps.bin rides the ATR behind the
+songs and load_music streams it in at boot -- the world maps (one bank each,
+with their SR list), then the KIT (every other patch), then every level name
+in a 4 KB slot. When the intermission opens, wi_bgfetch copies the map onto
+the SR surface and wi_kitfetch copies the kit and the two names it shows into
+the pool behind it (KIT_VRAM): the level is over, so the pool is free, and no
+drive access is needed at all.
 
 The overlay's TWO 4 KB chunks (stage 1 and stage 2 -- see wi.asm for why it
-is two) are appended right BEHIND the pixels so the whole thing is ONE
-consecutive bank run and therefore ONE row in menu.asm's mn_ld_tab, which is
-what it has room for (7 spare bytes = one 4-byte row). The 7-byte patch rows
-are not a chunk at all: wi.asm ins-es wi.tab straight into stage 2.
+is two) still ride the boot stream as ONE row in menu.asm's mn_ld_tab; the
+7-byte patch rows are not a chunk at all: wi.asm ins-es wi.tab into stage 2.
 
-GEOMETRY is wi_stuff.c's own, with x HALVED (the port draws 160 where DOOM
-draws 320) and y kept -- exactly the split pack_menu.py documents:
+GEOMETRY is wi_stuff.c's own, x and y as DOOM has them:
     WI_TITLEY   2                       SP_STATSX  50    SP_STATSY 50
     SP_TIMEX   16                       SP_TIMEY   SCREENHEIGHT-32 = 168
     lh = (3 * WINUM0.height) / 2                    (the stats line pitch)
@@ -53,6 +41,7 @@ sys.path.insert(0, _HERE)
 
 from wadlib import Wad, DEFAULT_WAD                              # noqa: E402
 from wadtex import WadTextures                                   # noqa: E402
+import pack_menu                                                 # noqa: E402
 
 ROOT = os.path.dirname(_HERE)
 CHUNK = 4096                                     # load_vram's unit (32 sectors)
@@ -65,18 +54,27 @@ CHUNK = 4096                                     # load_vram's unit (32 sectors)
 # reads it from wi_syms.inc (WI_VRAM/WI_BANK/WIOVL_BANK/WI2_BANK).
 WI_VRAM_BASE = 0x04A000
 
-SCREEN_W = 160                                   # port bytes (= 320 DOOM px)
+SCREEN_W = 320                                   # the SR screen: DOOM's own
 SCREEN_H = 200
 
-# ---- wi_stuff.c geometry, x halved -----------------------------------------
+# ---- wi_stuff.c geometry, DOOM's own pixels ---------------------------------
 WI_TITLEY = 2
-SP_STATSX = 50 // 2
+SP_STATSX = 50
 SP_STATSY = 50
-SP_TIMEX = 16 // 2
+SP_TIMEX = 16
 SP_TIMEY = SCREEN_H - 32
 
+# The patches at full width live in SDRAM (wimaps.bin) and wi_kitfetch copies
+# what one intermission needs into the pool behind the SR surface: the kit,
+# then two level-name slots. The pool ends where the episode picker begins.
+KIT_VRAM = 0x030000
+ARENA_TOP = 0x03D000               # memory_map.inc ARENA_SPR_TOP
+NAME_SLOT = 0x1000                 # a level name's slot in SDRAM (one 4 KB step)
+MSG_STRIDE = 64                    # the message directory's per-array stride
+MSG_DIR = 0x100                    # ...and where the lines start in their bank
+
 # lnodes[NUMEPISODES][NUMMAPS] -- where each level sits on its episode's WIMAP
-# (wi_stuff.c:177), x halved on the way out. All THREE episodes since
+# (wi_stuff.c:177), DOOM's own x. All THREE episodes since
 # 2026-08-18: E2/E3 used to borrow episode 1's spots (index mod 9), which put
 # every splat and the YAH pointer somewhere meaningless on an E2/E3 map.
 LNODES = (
@@ -95,10 +93,24 @@ ANIM_LOC = ((224, 104), (184, 160), (112, 136), (72, 112), (88, 96),
 ANIM_FRAMES = 3
 ANIM_PERIOD = 35 // 3                            # TICRATE/3 = 11 tics
 
-# The episode 2/3 world maps' SDRAM blob (emit): one 160x200 map per 32 KB, and
-# which episodes (0-based) got one -- filled by emit() from the level list.
-WIM_STRIDE = 0x8000
+# THE WORLD MAPS, at DOOM's own 320x200 (2026-09-24): the intermission is a
+# VBXE SR screen like the title (wi.asm). Every map the build needs -- WIMAP0
+# included, it left the boot VRAM stream -- is one whole SDRAM bank: the
+# 64000-byte picture with its SR list in the padding at SR_XDL_OFF, so ONE
+# spr_fcopy of WIM_COPY bytes puts both on the intermission's surface. Which
+# episodes (0-based) got one -- filled by emit() from the level list.
+WIM_BANK = 0x10000
+WIM_MTXDL = pack_menu.LD_XDL_OFF   # the list of MELT_SR behind the map's list:
+MELT_SR = 0x060000                 #   melt.asm's screen (the melts, the stats
+                                   #   through a load, the in-game menu), which
+                                   #   mt_show reads straight out of SDRAM
+WIM_COPY = WIM_MTXDL               # what wi_bgfetch copies: the picture + its list
 WIM_EPS = []
+WI_SR_VRAM = 0x020000              # the surface wi.asm draws into (= the title's,
+                                   #   pool RAM: the level is over)
+WI_SR_BG = 0x010000                # ...and its pristine copy, what wi_erase
+                                   #   restores from (FRAME_B + the pool's first
+                                   #   32 KB, dead from the first melt on)
 
 # pars -- g_game.c:981 pars[episode][map], seconds, all three episodes.
 PARS = {'E1M1': 30, 'E1M2': 75, 'E1M3': 120, 'E1M4': 90, 'E1M5': 165,
@@ -184,7 +196,7 @@ def _set_maps(maps):
     global I_SPLAT, I_YAH0, I_YAH1, I_ANIM0
     MAPS = list(maps)
     n = LEVELS = len(MAPS)
-    import pack_menu                              # 2026-09-16: PINNED, not
+    # 2026-09-16: PINNED, not
     WI_VRAM_BASE = pack_menu.WI_VRAM_BASE         #   computed. It used to be
                                                   #   "wherever the HU strips
                                                   #   end", and the strips just
@@ -222,22 +234,24 @@ def _set_maps(maps):
 _set_maps(E1_MAPS)
 
 
-def halve(wt, nm):
-    """One WAD patch -> (bytes, w in bytes, h, left in bytes, top), halved
-       horizontally exactly the way pack_hud.py halves the status bar."""
+def patch_full(wt, nm):
+    """One WAD patch -> (bytes, w, h, left, top) at full width, row-major,
+       0 = transparent (the blitter's stencil)."""
     pat = wt.get_patch(nm)
     if pat is None:
         sys.exit('  ERROR: %s is not in the WAD' % nm)
     w, h, cols = pat
     left, top = wt.patch_offset(nm)
-    hw = (w + 1) // 2
-    img = bytearray(hw * h)                       # 0 = transparent
-    for cx in range(0, w, 2):                     # keep every second column
+    if w > 255 or h > 255:
+        sys.exit('  ERROR: %s is %dx%d -- a 7-byte row holds a byte of each'
+                 % (nm, w, h))
+    img = bytearray(w * h)
+    for cx in range(w):
         for (td, pix) in cols[cx]:
             for k, c in enumerate(pix):
                 if 0 <= td + k < h:
-                    img[(td + k) * hw + cx // 2] = c
-    return bytes(img), hw, h, left // 2, top
+                    img[(td + k) * w + cx] = c
+    return bytes(img), w, h, left, top
 
 
 def _resolve_lvnames(wad):
@@ -245,9 +259,9 @@ def _resolve_lvnames(wad):
 
     A map-only PWAD full of MAPxx levels layered over the DOOM IWAD asks for
     CWILV00.., and the IWAD underneath has none -- registered DOOM never
-    shipped them. halve() would sys.exit on the first one and take the build
-    down over a caption. Fall back to the WILVxx slot in the same position:
-    the wrong words, but the intermission comes up."""
+    shipped them. patch_full() would sys.exit on the first one and take the
+    build down over a caption. Fall back to the WILVxx slot in the same
+    position: the wrong words, but the intermission comes up."""
     have = {n for n, _o, _s in wad.lumps}
     for i, nm in enumerate(MAPS):
         want = wilv(nm)
@@ -263,69 +277,114 @@ def _resolve_lvnames(wad):
         LVNAME[nm] = alt
 
 
+def _a256(n):
+    return (n + 255) & ~255
+
+
 def emit():
     wad = Wad(DEFAULT_WAD)
     _resolve_lvnames(wad)
     wt = WadTextures(wad)
-    blob = bytearray()
+    pats = {nm: patch_full(wt, nm) for i, nm in enumerate(LUMPS) if i != I_BG}
+    dims = {nm: p[1:] for nm, p in pats.items()}
+
+    # ---- THE KIT: every patch but the map and the level names, back to back,
+    # and where each name goes: two fixed SLOTS behind it, the finished level's
+    # and the next one's (wi_kitfetch fills them and points their rows there).
+    kit, koff = bytearray(), {}
+    for nm in LUMPS[I_FINISH:]:
+        koff[nm] = len(kit)
+        kit += pats[nm][0]
+    names = [LUMPS[I_LV0 + i] for i in range(LEVELS)]
+    namesz = _a256(max(len(pats[nm][0]) for nm in names))
+    if namesz > NAME_SLOT:
+        sys.exit('  ERROR: a level name is %d B, its SDRAM slot is %d' % (namesz, NAME_SLOT))
+    lva = KIT_VRAM + _a256(len(kit))
+    lvb = lva + namesz
+    if lvb + namesz > ARENA_TOP:
+        sys.exit('  ERROR: the kit + two name slots end at $%06X, past $%06X'
+                 % (lvb + namesz, ARENA_TOP))
+    if len(kit) > WIM_BANK:
+        sys.exit('  ERROR: the kit is %d B, more than its SDRAM bank' % len(kit))
+
+    # ---- wi.tab, 7-byte rows as hud.tab has them: u24 vram, w, h, left, top.
+    # It has to be in 6502 RAM for sr_put to read a row with (zp_ptr),y, so
+    # wi.asm ins-es it into stage 2.
     tab = bytearray()
-    addr = WI_VRAM_BASE
-    dims = {}
-    for nm in LUMPS:
-        img, hw, h, left, top = halve(wt, nm)
-        dims[nm] = (hw, h, left, top)
-        blob += img
-        tab += struct.pack('<HBBBbb', addr & 0xFFFF, (addr >> 16) & 0xFF,
-                           hw, h, left, top)
-        addr += len(img)
-
-    bgw, bgh = dims['WIMAP0'][:2]
-    if (bgw, bgh) != (SCREEN_W, SCREEN_H):
-        sys.exit('  ERROR: WIMAP0 is %dx%d halved, the screen is %dx%d'
-                 % (bgw, bgh, SCREEN_W, SCREEN_H))
-
-    chunks = (len(blob) + CHUNK - 1) // CHUNK
-    blob += bytes(chunks * CHUNK - len(blob))
-    # wi.tab is written as a FILE, not a chunk: wi.asm ins-es it into stage 2.
-    # It has to be in 6502 RAM for hud_blit to read a row with (zp_ptr),y, and
-    # stage 2 had 700 spare bytes -- which is better spent than the 512 B of
-    # clip pool it used to borrow, because the melt needs those for its y[].
+    for i, nm in enumerate(LUMPS):
+        if i == I_BG:                             # the map is not a patch (it is
+            tab += bytes(7)                       #   wimaps.bin's): the row stays
+            continue                              #   so the indices hold
+        _img, w, h, left, top = pats[nm]
+        a = lva if I_LV0 <= i < I_FINISH else KIT_VRAM + koff[nm]
+        tab += struct.pack('<HBBBbb', a & 0xFFFF, a >> 16, w, h, left, top)
     out = os.path.join(ROOT, 'build', 'assets', 'wi')
     os.makedirs(out, exist_ok=True)
-    open(os.path.join(out, 'wi.bin'), 'wb').write(blob)
+    open(os.path.join(out, 'wi.bin'), 'wb').write(b'')   # no pixels boot-streamed
     open(os.path.join(out, 'wi.tab'), 'wb').write(tab)
 
-    # ---- the OTHER episodes' world maps (2026-09-16) ------------------------
-    # WI_loadData draws WIMAP%d for wbs->epsd (wi_stuff.c:1548). The boot
-    # stream above has room for ONE 32 KB background and it is WIMAP0, so every
-    # E2/E3 splat and "you are here" pointer used to land on episode 1's map,
-    # at E2/E3 coordinates -- pointing at nothing. The other maps are not VRAM
-    # assets: they ride the ATR right behind the songs (make_atr_doom.py WIM),
-    # load_music streams them into Rapidus SDRAM at WIMAP_BANK (memory_map.inc),
-    # and wi_bgsel copies the one this level needs into the sprite arena when
-    # the intermission opens. One map every WIM_STRIDE bytes, so map k is at
-    # WIMAP_BANK:k*$8000 and wi_bgm only has to carry the MID byte.
+    # ---- the SDRAM blob: the world maps (320x200, one bank each), then the
+    # kit (a bank of its own), then the level names in NAME_SLOT-byte slots.
+    # WI_loadData draws WIMAP%d for wbs->epsd (wi_stuff.c:1548); a MAPxx level
+    # has no map of its own and goes on WIMAP0 (epsd_map). It rides the ATR
+    # right behind the songs (make_atr_doom.py WIM) and load_music streams it
+    # into Rapidus SDRAM from WIMAP_BANK (memory_map.inc).
     have = {n for n, _o, _s in wad.lumps}
-    WIM_EPS[:] = sorted({epsd_map(nm)[0] for nm in MAPS if not is_mapxx(nm)}
-                        & {e for e in range(1, len(LNODES))
-                           if 'WIMAP%d' % e in have})
-    if len(WIM_EPS) * WIM_STRIDE > 0x10000:
-        sys.exit('  ERROR: %d world maps do not fit one SDRAM bank' % len(WIM_EPS))
+    WIM_EPS[:] = sorted({epsd_map(nm)[0] for nm in MAPS}
+                        & {e for e in range(len(LNODES)) if 'WIMAP%d' % e in have})
+    if 0 not in WIM_EPS:
+        sys.exit('  ERROR: WIMAP0 is not in the WAD -- every level falls back to it')
     wim = bytearray()
     for e in WIM_EPS:
-        img, hw, h, _l, _t = halve(wt, 'WIMAP%d' % e)
-        if (hw, h) != (SCREEN_W, SCREEN_H):
-            sys.exit('  ERROR: WIMAP%d is %dx%d halved, the screen is %dx%d'
-                     % (e, hw, h, SCREEN_W, SCREEN_H))
-        wim += img + bytes(WIM_STRIDE - len(img))
+        img, w, h = pack_menu._raster_full(wt.get_patch('WIMAP%d' % e))
+        if (w, h) != (SCREEN_W, SCREEN_H):
+            sys.exit('  ERROR: WIMAP%d is %dx%d, the SR screen is %dx%d'
+                     % (e, w, h, SCREEN_W, SCREEN_H))
+        bank = bytearray(img)
+        bank += bytes(pack_menu.SR_XDL_OFF - len(bank))
+        bank += pack_menu._sr_xdl(WI_SR_VRAM)
+        bank += bytes(WIM_MTXDL - len(bank))
+        mtx = pack_menu._sr_xdl(MELT_SR)
+        bank += mtx
+        if WIM_MTXDL + len(mtx) > WIM_BANK or pack_menu.SR_XDL_OFF + len(mtx) > WIM_COPY:
+            sys.exit('  ERROR: the two lists do not fit a map bank behind the map')
+        wim += bank + bytes(WIM_BANK - len(bank))
+    wim += kit + bytes(WIM_BANK - len(kit))
+    for nm in names:
+        wim += pats[nm][0] + bytes(NAME_SLOT - len(pats[nm][0]))
+    # ---- THE HU LINES at DOOM's own width: one bank, the directory first --
+    # lo[64], hi[64], width[64], bank[64] by STRIP index (the level names, then the
+    # messages at id + MSG_IDX0: pack_menu's MSG_IDX0 numbering), read
+    # with lda.l -- then the lines, TITLE_H rows each. The engine copies the
+    # one it shows into VRAM: the message line (strip.asm st_mfetch), a save
+    # slot's level name (menu.asm mn_sname).
+    wim += bytes(-len(wim) % WIM_BANK)
+    msgbk = len(wim) // WIM_BANK
+    texts = [pack_menu.NAMES.get(nm, nm) for nm in MAPS] + list(pack_menu.MESSAGES[1:])
+    lines, lo, hi, wd, bk = bytearray(), [], [], [], []
+    for text in texts:
+        img, lw = pack_menu._hu_line(wt, text)
+        if lw > 255 or lw > SCREEN_W:
+            sys.exit('  ERROR: the line %r is %d px wide' % (text, lw))
+        off = MSG_DIR + len(lines)                # 24 bits: the lines run on
+        lo.append(off & 0xFF)                     #   into the next bank
+        hi.append((off >> 8) & 0xFF)
+        bk.append(off >> 16)
+        wd.append(lw)
+        lines += img
+    if len(texts) > MSG_STRIDE or 4 * MSG_STRIDE > MSG_DIR:
+        sys.exit('  ERROR: the HU line directory does not fit')
+    pad = bytes(MSG_STRIDE - len(lo))
+    blk = bytes(lo) + pad + bytes(hi) + pad + bytes(wd) + pad + bytes(bk) + pad
+    wim += blk + bytes(MSG_DIR - len(blk)) + lines
     open(os.path.join(out, 'wimaps.bin'), 'wb').write(wim)
 
-    emit_syms(dims, chunks, len(tab) // 7, wt)
-    print('wi.bin %d B (%d chunks, VRAM $%06X..$%06X), wi.tab %d B (%d lumps,'
-          ' ins-ed into the overlay) -> %s'
-          % (len(blob), chunks, WI_VRAM_BASE, addr, len(tab), len(tab) // 7, out))
-    print('wimaps.bin %d B (%s) -> Rapidus SDRAM at boot'
-          % (len(wim), ', '.join('WIMAP%d' % e for e in WIM_EPS) or 'none'))
+    emit_syms(dims, len(tab) // 7, wt, len(kit), namesz, lva, lvb, msgbk,
+              max(wd))
+    print('wi.tab %d B (%d lumps, ins-ed into the overlay); the patches ride '
+          'wimaps.bin -> %s' % (len(tab), len(tab) // 7, out))
+    print('wimaps.bin %d B (%s, a %d B kit, %d names) -> Rapidus SDRAM at boot'
+          % (len(wim), ', '.join('WIMAP%d' % e for e in WIM_EPS), len(kit), LEVELS))
 
 
 def yah_pick(wt, x, y):
@@ -344,7 +403,7 @@ def yah_pick(wt, x, y):
     return 0
 
 
-def emit_syms(dims, chunks, nlumps, wt):
+def emit_syms(dims, nlumps, wt, kitlen, namesz, lva, lvb, msgbk, msgw):
     numw, numh = dims['WINUM0'][:2]
     lh = (3 * numh) // 2                          # WI_drawStats' line height
     lvh = dims[LVNAME[MAPS[0]]][1]
@@ -352,20 +411,46 @@ def emit_syms(dims, chunks, nlumps, wt):
     with open(p, 'w') as f:
         w = f.write
         w('; AUTO-GENERATED by tools/pack_wi.py -- DO NOT EDIT.\n')
-        w('; wi_stuff.c geometry. x values are HALVED (the port draws 160\n')
-        w('; wide where DOOM draws 320); y values are DOOM\'s own.\n')
+        w('; wi_stuff.c geometry at DOOM\'s own 320x200: x values are 0..319\n')
+        w('; (a word where they pass 255); the *H ones are HALVED, for the\n')
+        w('; erase boxes (menu.asm mn_sbox works in 160 units).\n')
         w('WI_VRAM      equ $%06X\n' % WI_VRAM_BASE)
         w('WI_BANK      equ $%02X   ; = WI_VRAM >> 12\n' % (WI_VRAM_BASE >> 12))
-        w('WI_CHUNKS    equ %d   ; the PIXELS\n' % chunks)
-        w('WIOVL_BANK   equ $%02X   ; the code overlay\'s STAGE 1, right behind\n'
-          % ((WI_VRAM_BASE >> 12) + chunks))
-        w('WI2_BANK     equ $%02X   ; ...and stage 2 behind that\n'
-          % ((WI_VRAM_BASE >> 12) + chunks + 1))
-        w('                        ; (split_menu_ovl.py puts both there), so ONE\n')
-        w('                        ; mn_ld_tab row streams all three. The 7-byte\n')
-        w('                        ; ROWS are not a chunk at all: wi.asm ins-es\n')
-        w('                        ; wi.tab straight into stage 2, which leaves\n')
-        w('                        ; the clip pool free for the melt\'s y[].\n')
+        w('WI_CHUNKS    equ 0    ; no pixels in the boot stream any more\n')
+        w('WIOVL_BANK   equ $%02X   ; the code overlay\'s STAGE 1\n'
+          % (WI_VRAM_BASE >> 12))
+        w('WI2_BANK     equ $%02X   ; ...and stage 2 behind it\n'
+          % ((WI_VRAM_BASE >> 12) + 1))
+        w(';   --- the 320x200 SR screen (wi.asm): the surface, its pristine\n')
+        w(';       copy, and the world maps in SDRAM (one bank each) ---\n')
+        w('WI_SRVRAM    equ $%06X\n' % WI_SR_VRAM)
+        w('WI_SRBG      equ $%06X\n' % WI_SR_BG)
+        w('WI_SRXDL     equ $%06X   ; the map\'s list, copied along with it\n'
+          % (WI_SR_VRAM + pack_menu.SR_XDL_OFF))
+        w('WI_WIMCOPY   equ $%04X   ; bytes wi_bgfetch copies per map\n' % WIM_COPY)
+        w('WI_MTSR      equ $%06X   ; the melt screen (melt.asm)...\n' % MELT_SR)
+        w('WI_MTXOFF    equ $%04X   ; ...its list, in every map bank (SDRAM)\n'
+          % WIM_MTXDL)
+        w('WI_MTXLEN    equ %d\n' % len(pack_menu._sr_xdl(MELT_SR)))
+        w(';   --- the patches, 1:1: the kit and two level-name slots in the\n')
+        w(';       pool (wi_kitfetch), out of SDRAM banks from WIMAP_BANK ---\n')
+        w('WI_KITVRAM   equ $%06X\n' % KIT_VRAM)
+        w('WI_KITLEN    equ %d\n' % kitlen)
+        w('WI_KITBK     equ %d      ; bank from WIMAP_BANK: the kit, offset 0\n'
+          % len(WIM_EPS))
+        w('WI_NAMEBK    equ %d      ; ...the names, NAME_SLOT B each from here\n'
+          % (len(WIM_EPS) + 1))
+        w('WI_NAMESLOT  equ %d\n' % NAME_SLOT)
+        w('WI_NAMESZ    equ %d    ; bytes a name slot takes in VRAM (and is copied)\n'
+          % namesz)
+        w('WI_LVA       equ $%06X  ; the finished level\'s name\n' % lva)
+        w('WI_LVB       equ $%06X  ; the next one\'s\n' % lvb)
+        w(';   --- the message line at 320 (strip.asm): its SDRAM bank from\n')
+        w(';       WIMAP_BANK, the directory lo/hi/width at +0/+%d/+%d ---\n'
+          % (MSG_STRIDE, 2 * MSG_STRIDE))
+        w('MSG_BK       equ %d\n' % msgbk)
+        w('MSG_STRIDE   equ %d\n' % MSG_STRIDE)
+        w('MSG_WMAX     equ %d    ; the widest line, px\n' % msgw)
         w('WI_NLUMPS    equ %d\n' % nlumps)
         w('WI_LEVELS    equ %d\n' % LEVELS)
         w(';   --- wi.tab indices ---\n')
@@ -386,226 +471,80 @@ def emit_syms(dims, chunks, nlumps, wt):
         w('WI_STATSX    equ %d\n' % SP_STATSX)
         w('WI_STATSY    equ %d\n' % SP_STATSY)
         w('WI_LH        equ %d   ; 3*WINUM0.h/2, the stats line pitch\n' % lh)
-        w('WI_PCTX      equ %d   ; SCREENWIDTH - SP_STATSX, halved\n'
-          % (SCREEN_W - SP_STATSX))
+        w('WI_PCTX      equ %d  ; SCREENWIDTH - SP_STATSX\n' % (SCREEN_W - SP_STATSX))
+        w('WI_PCTXH     equ %d\n' % ((SCREEN_W - SP_STATSX) // 2))
         w('WI_TIMEX     equ %d\n' % SP_TIMEX)
         w('WI_TIMEY     equ %d\n' % SP_TIMEY)
-        w('WI_TIMEVX    equ %d   ; SCREENWIDTH/2 - SP_TIMEX, halved\n'
-          % (SCREEN_W // 2 - SP_TIMEX))
-        w('WI_PARX      equ %d   ; SCREENWIDTH/2 + SP_TIMEX, halved\n'
-          % (SCREEN_W // 2 + SP_TIMEX))
-        w('WI_PARVX     equ %d   ; SCREENWIDTH - SP_TIMEX, halved\n'
-          % (SCREEN_W - SP_TIMEX))
-        w('WI_NUMW      equ %d   ; WINUM0 width in bytes (WI_drawNum step)\n' % numw)
+        w('WI_TIMEVX    equ %d  ; SCREENWIDTH/2 - SP_TIMEX\n' % (SCREEN_W // 2 - SP_TIMEX))
+        w('WI_TIMEVXH   equ %d\n' % ((SCREEN_W // 2 - SP_TIMEX) // 2))
+        w('WI_PARX      equ %d  ; SCREENWIDTH/2 + SP_TIMEX\n' % (SCREEN_W // 2 + SP_TIMEX))
+        w('WI_PARVX     equ %d  ; SCREENWIDTH - SP_TIMEX\n' % (SCREEN_W - SP_TIMEX))
+        w('WI_PARVXH    equ %d\n' % ((SCREEN_W - SP_TIMEX) // 2))
+        w('WI_NUMW      equ %d   ; WINUM0 width (WI_drawNum step)\n' % numw)
         w('WI_COLONW    equ %d\n' % dims['WICOLON'][0])
         # The "YOU ARE HERE" pointer's OWN erase box, and it is not the
-        # percentage field's: WIURH0 is 30x15 halved and carries left=-2,
-        # top=15, so hud_blit puts it at (x+1, y-15). A box at (x, y) sized for
-        # a percentage erases the wrong place and too little of it -- the blink
-        # left the arrow on screen for good.
-        # WIURH1 shares the box's size and top; only its left differs, and that
-        # is per level (wi_yahdx below).
+        # percentage field's. WIURH1 shares the box's size and top; only its
+        # left differs, and that is per level (wi_yahex below). The box is in
+        # 160 units and covers the patch wherever its first pixel falls.
         yw, yh, yl, yt = dims['WIURH0']
         if dims['WIURH1'][:2] != (yw, yh) or dims['WIURH1'][3] != yt:
             sys.exit('  ERROR: WIURH0 and WIURH1 differ in size or top offset --'
                      ' wi_yah erases both with one box')
-        if -yl < 0 or -dims['WIURH1'][2] >= 0:
-            sys.exit('  ERROR: wi_yahput picks WIURH1 by the SIGN of wi_yahdx --'
-                     ' WIURH0 must hang right of the node and WIURH1 left')
-        w('WI_YAHW      equ %d      ; WIURH0/WIURH1, halved\n' % yw)
+        w('WI_YAHW      equ %d      ; the erase box, 160 units\n' % ((yw + 1) // 2 + 1))
         w('WI_YAHH      equ %d\n' % yh)
-        w('WI_YAHDY     equ %d      ; hud_blit draws it at (x-left, y-top)\n' % yt)
+        w('WI_YAHDY     equ %d      ; sr_put draws it at (x-left, y-top)\n' % yt)
         w('WI_ANIMS     equ %d\n' % len(ANIM_LOC))
         w('WI_ANIMF     equ %d\n' % ANIM_FRAMES)
         w('WI_ANIMPER   equ %d   ; TICRATE/3, in DOOM tics\n' % ANIM_PERIOD)
         w(';   --- centred x for the two title lines, per level (pre-computed:\n')
-        w(';       V_DrawPatch((SCREENWIDTH - width)/2, ...) with no runtime\n')
-        w(';       divide, and the widths are pack-time constants anyway) ---\n')
+        w(';       V_DrawPatch((SCREENWIDTH - width)/2, ...); all < 256) ---\n')
         w('wi_lvx\n')
         for nm in MAPS:
             lw = dims[LVNAME[nm]][0]
-            w('        dta %d    ; %s (%s), %d B wide\n'
+            w('        dta %d    ; %s (%s), %d px wide\n'
               % ((SCREEN_W - lw) // 2, LVNAME[nm], nm, lw))
         w('wi_finx dta %d    ; WIF\n' % ((SCREEN_W - dims['WIF'][0]) // 2))
         w('wi_entx dta %d    ; WIENTER\n' % ((SCREEN_W - dims['WIENTER'][0]) // 2))
-        w(';   --- lnodes[episode][map]: where each level sits on its OWN\n')
-        w(';       episode WIMAP, x halved (wi_stuff.c:177). Indexed by the\n')
-        w(';       BUILD level index, so wi_yahput needs no arithmetic. ---\n')
-        nodes, ebase, nanim = [], [], []
+        nodes, ebase = [], []
         for nm in MAPS:
             e, mp = epsd_map(nm)
             nodes.append(LNODES[e][mp] if e < len(LNODES) else LNODES[0][mp])
             b = 'E%dM1' % (e + 1)
             ebase.append(MAPS.index(b) if b in MAPS else 0)
-            # (nanim is NOT a table: "this episode has animations" is exactly
-            #  "ebase == 0", because only episode 1's set is packed.)
-            # epsd0animinfo is the only set packed: episode 1's ten ANIM_ALWAYS
-            # blobs. Episodes 2 and 3 have their own lumps (WIA1*/WIA2*, 31 KB
-            # more) and episode 2's are ANIM_LEVEL, which appear as the player
-            # advances -- not modelled. Drawing episode 1's ten on an E2/E3 map
-            # would put them somewhere meaningless, so those episodes get NONE.
-            nanim.append(len(ANIM_LOC) if e == 0 else 0)
-        w('wi_nodex\n')
-        w('        dta %s\n' % ','.join(str(x // 2) for x, _ in nodes))
-        w('wi_nodey\n')
-        w('        dta %s\n' % ','.join(str(y) for _, y in nodes))
+        # WI_drawOnLnode's WIURH0/WIURH1 pick rides bit 7 of the x HIGH byte
+        # (x < 320, so bit 0 is all it ever needs); the pointer's erase box
+        # left edge, in 160 units, is its own table.
+        xh, yahex = [], []
+        for x, y in nodes:
+            pick = yah_pick(wt, x, y)
+            xh.append((x >> 8) | (pick << 7))
+            yahex.append((x - dims[('WIURH0', 'WIURH1')[pick]][2]) // 2)
+        w(';   --- lnodes[episode][map] at full x, as lo/hi: where each level\n')
+        w(';       sits on its OWN episode WIMAP (wi_stuff.c:177), indexed by\n')
+        w(';       the BUILD level index. wi_nodexh bit 7 = WIURH1 (hangs left) ---\n')
+        w('wi_nodexl\n        dta %s\n' % ','.join(str(x & 0xFF) for x, _ in nodes))
+        w('wi_nodexh\n        dta %s\n' % ','.join(str(v) for v in xh))
+        w('wi_nodey\n        dta %s\n' % ','.join(str(y) for _, y in nodes))
+        w(';   --- per level: the pointer\'s erase box left edge, 160 units ---\n')
+        w('wi_yahex\n        dta %s\n' % ','.join(str(v) for v in yahex))
         w(';   --- per level: the index of its episode M1 (wi_splats walks\n')
         w(';       lnodes from there, WI_drawShowNextLoc is episode-relative)\n')
         w(';       Episode 1 is the only one with animations packed, and\n')
         w(';       that is exactly "wi_ebase == 0" -- no second table. ---\n')
         w('wi_ebase\n        dta %s\n' % ','.join(str(v) for v in ebase))
-        # 2026-09-16: WIMAP%d per episode, and WI_drawOnLnode's WIURH0/1 pick.
-        bgm, yahdx = [], []
-        for nm, (x, y) in zip(MAPS, nodes):
-            e = -1 if is_mapxx(nm) else epsd_map(nm)[0]
-            bgm.append(WIM_EPS.index(e) * (WIM_STRIDE >> 8) if e in WIM_EPS else 255)
-            yahdx.append(-dims[('WIURH0', 'WIURH1')[yah_pick(wt, x, y)]][2] & 0xFF)
-        w(';   --- per level: which world map its intermission draws on.\n')
-        w(';       255 = WIMAP0, the boot stream\'s (WI_TAB row 0 as packed);\n')
-        w(';       else the MID byte of its copy in SDRAM, WIMAP_BANK:mid00\n')
-        w(';       (wimaps.bin, streamed by load_music) -- wi_bgsel. ---\n')
+        bgm = [WIM_EPS.index(epsd_map(nm)[0] if epsd_map(nm)[0] in WIM_EPS else 0)
+               for nm in MAPS]
+        w(';   --- per level: which world map its intermission draws on, as\n')
+        w(';       a bank from WIMAP_BANK -- wi_bgfetch. ---\n')
         w('wi_bgm\n        dta %s\n' % ','.join(str(v) for v in bgm))
-        w(';   --- per level: the "you are here" box\'s x offset from the\n')
-        w(';       node, SIGNED -- +1 is WIURH0 (hangs right), negative is\n')
-        w(';       WIURH1 (hangs left): WI_drawOnLnode\'s pick, made here. ---\n')
-        w('wi_yahdx\n        dta %s\n' % ','.join(str(v) for v in yahdx))
-        w(';   --- epsd0animinfo locations (x halved) ---\n')
-        w('wi_animx\n')
-        w('        dta %s\n' % ','.join(str(x // 2) for x, _ in ANIM_LOC))
-        w('wi_animy\n')
-        w('        dta %s\n' % ','.join(str(y) for _, y in ANIM_LOC))
+        w(';   --- epsd0animinfo locations (all x < 256) ---\n')
+        w('wi_animx\n        dta %s\n' % ','.join(str(x) for x, _ in ANIM_LOC))
+        w('wi_animy\n        dta %s\n' % ','.join(str(y) for _, y in ANIM_LOC))
         w(';   --- pars[episode][map] (g_game.c:981), seconds. A BYTE each:\n')
         w(';       E2M6 alone says 360 and clamps to 255 (the stat line shows\n')
         w(';       4:15 for it; a u16 table is not worth the reader rework).\n')
-        w('wi_par\n')
-        w('        dta %s\n' % ','.join(str(min(v, 255)) for v in PAR))
+        w('wi_par\n        dta %s\n' % ','.join(str(min(v, 255)) for v in PAR))
     print('wi_syms.inc -> %s' % p)
-
-
-#==============================================================
-# PREVIEW -- renders the two intermission screens FROM THE EMITTED BLOB, not
-# from the WAD. That is the point: it exercises wi.bin's pixels, wi.tab's
-# widths and patch offsets and wi_syms.inc's geometry, i.e. exactly the three
-# things the 6502 will read, so a wrong halving phase or a bad centred x shows
-# up here instead of on an Atari. The blit it models is hud_blit's: place at
-# (x - left, y - top), index 0 transparent.
-#==============================================================
-OUT = os.path.join(ROOT, '_pomocne', 'preview')
-
-
-def _syms():
-    """wi_syms.inc back in as {name: int} + {label: [ints]} -- read, not
-       repeated, so the preview cannot drift from what the engine assembles."""
-    import re
-    txt = open(os.path.join(ROOT, 'wi_syms.inc')).read()
-    eq = {m.group(1): int(m.group(2)) for m in
-          re.finditer(r'^(\w+)\s+equ\s+(\d+)', txt, re.M)}
-    tb, cur = {}, None
-    for line in txt.splitlines():
-        line = line.split(';')[0].rstrip()
-        m = re.match(r'^(\w+)(?:\s+dta\s+(.*))?$', line)
-        if m and not line.startswith(' '):
-            cur = m.group(1)
-            tb[cur] = []
-            if m.group(2):
-                tb[cur] += [int(v) for v in m.group(2).split(',')]
-            continue
-        m = re.match(r'^\s+dta\s+(.*)$', line)
-        if m and cur:
-            tb[cur] += [int(v) for v in m.group(1).split(',')]
-    return eq, tb
-
-
-def _blit(px, blob, tab, pal, ix, x, y, opaque=False):
-    lo, bank, w, h, left, top = struct.unpack('<HBBBbb', tab[ix * 7:ix * 7 + 7])
-    off = ((bank << 16) | lo) - WI_VRAM_BASE
-    x -= left
-    y -= top
-    for ry in range(h):
-        for rx in range(w):
-            c = blob[off + ry * w + rx]
-            if c or opaque:
-                if 0 <= x + rx < SCREEN_W and 0 <= y + ry < SCREEN_H:
-                    px[x + rx, y + ry] = pal[c]
-
-
-def _num(px, blob, tab, pal, eq, x, y, n, digits):
-    """WI_drawNum: digits emitted right to left from x. Returns the new x."""
-    if digits < 0:
-        digits = 1 if not n else len(str(n))
-    while digits:
-        x -= eq['WI_NUMW']
-        _blit(px, blob, tab, pal, eq['WI_I_NUM0'] + n % 10, x, y)
-        n //= 10
-        digits -= 1
-    return x
-
-
-def _pct(px, blob, tab, pal, eq, x, y, p):
-    _blit(px, blob, tab, pal, eq['WI_I_PCNT'], x, y)
-    _num(px, blob, tab, pal, eq, x, y, p, -1)
-
-
-def _time(px, blob, tab, pal, eq, x, y, t):
-    """WI_drawTime, the t <= 61*59 branch."""
-    div = 1
-    while True:
-        n = (t // div) % 60
-        x = _num(px, blob, tab, pal, eq, x, y, n, 2) - eq['WI_COLONW']
-        div *= 60
-        if div == 60 or t // div:
-            _blit(px, blob, tab, pal, eq['WI_I_COLON'], x, y)
-        if not t // div:
-            return
-
-
-def preview():
-    from PIL import Image
-    eq, tb = _syms()
-    blob = open(os.path.join(ROOT, 'build', 'assets', 'wi', 'wi.bin'), 'rb').read()
-    tab = open(os.path.join(ROOT, 'build', 'assets', 'wi', 'wi.tab'), 'rb').read()
-    pal = WadTextures(Wad(DEFAULT_WAD)).playpal
-    last, nxt = 0, 1                              # E1M1 finished -> entering E1M2
-
-    def fresh():
-        im = Image.new('RGB', (SCREEN_W, SCREEN_H), (0, 0, 0))
-        p = im.load()
-        _blit(p, blob, tab, pal, eq['WI_I_BG'], 0, 0, opaque=True)
-        for j in range(eq['WI_ANIMS']):           # WI_drawAnimatedBack, frame 0
-            _blit(p, blob, tab, pal, eq['WI_I_ANIM0'] + j * eq['WI_ANIMF'],
-                  tb['wi_animx'][j], tb['wi_animy'][j])
-        return im, p
-
-    # ---- StatCount: WI_drawStats with the counters at their finals ----------
-    im, p = fresh()
-    _blit(p, blob, tab, pal, eq['WI_I_LV0'] + last, tb['wi_lvx'][last],
-          eq['WI_TITLEY'])                                        # WI_drawLF
-    _blit(p, blob, tab, pal, eq['WI_I_FINISH'], tb['wi_finx'][0], eq['WI_LFY2'])
-    lh, sy = eq['WI_LH'], eq['WI_STATSY']
-    for i, (lump, val) in enumerate((('WI_I_KILLS', 100), ('WI_I_ITEMS', 87),
-                                     ('WI_I_SECRET', 50))):
-        _blit(p, blob, tab, pal, eq[lump], eq['WI_STATSX'], sy + i * lh)
-        _pct(p, blob, tab, pal, eq, eq['WI_PCTX'], sy + i * lh, val)
-    _blit(p, blob, tab, pal, eq['WI_I_TIME'], eq['WI_TIMEX'], eq['WI_TIMEY'])
-    _time(p, blob, tab, pal, eq, eq['WI_TIMEVX'], eq['WI_TIMEY'], 92)
-    _blit(p, blob, tab, pal, eq['WI_I_PAR'], eq['WI_PARX'], eq['WI_TIMEY'])
-    _time(p, blob, tab, pal, eq, eq['WI_PARVX'], eq['WI_TIMEY'], tb['wi_par'][last])
-    os.makedirs(OUT, exist_ok=True)
-    im.resize((SCREEN_W * 4, SCREEN_H * 2), Image.NEAREST).save(
-        os.path.join(OUT, 'wi_stats.png'))
-
-    # ---- ShowNextLoc: splats on taken levels + the YAH pointer --------------
-    im, p = fresh()
-    for i in range(last + 1):                     # "draw a splat on taken cities"
-        _blit(p, blob, tab, pal, eq['WI_I_SPLAT'], tb['wi_nodex'][i],
-              tb['wi_nodey'][i])
-    _blit(p, blob, tab, pal, eq['WI_I_YAH0'], tb['wi_nodex'][nxt],
-          tb['wi_nodey'][nxt])
-    _blit(p, blob, tab, pal, eq['WI_I_ENTER'], tb['wi_entx'][0], eq['WI_TITLEY'])
-    _blit(p, blob, tab, pal, eq['WI_I_LV0'] + nxt, tb['wi_lvx'][nxt], eq['WI_LFY2'])
-    im.resize((SCREEN_W * 4, SCREEN_H * 2), Image.NEAREST).save(
-        os.path.join(OUT, 'wi_next.png'))
-    print('wrote %s/wi_stats.png and wi_next.png' % OUT)
 
 
 if __name__ == '__main__':
@@ -613,5 +552,3 @@ if __name__ == '__main__':
         arg = sys.argv[sys.argv.index('--levels') + 1]      # build_atr.ps1
         _set_maps([nm.strip().upper() for nm in arg.split(',') if nm.strip()])
     emit()
-    if '--preview' in sys.argv:
-        preview()

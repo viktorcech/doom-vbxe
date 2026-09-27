@@ -1,5 +1,8 @@
 ; udiv24 for Antonia II hardware
 ;
+; !!! THIS FILE MUST NEVER BE CHANGED. It is drac030's code, icl'd verbatim by
+; !!! math.asm (udiv24, .ifdef ANTONIA2). Any adaptation goes in math.asm.
+;
 ; m_quot:m_rem = m_prod / m_den
 ;
 antdiv_dd = $fff008

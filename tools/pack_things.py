@@ -50,7 +50,6 @@ Three outputs per map, into build/assets/things/:
                       sprtab      n_sprites * 8: u8 frame id, 2 spare, u8 w,
                                   u8 h, i8 leftoffset, u8 topoffset, pad
 
-Usage: python pack_things.py [E1M1 ...] [--skill N]   (default skill 2)
 """
 import math
 import os
@@ -74,6 +73,11 @@ F_ONCE, F_DSTAY, F_TELE, F_DCLOSE = 0x1000, 0x0800, 0x0400, 0x0200
 # a p_switch.c BUTTON (42/43/45/60..70) does and an S1 switch does not. Every
 # S1 entry below therefore carries F_ONCE even where F_STAY already spends the
 # fired-bitmap bit for it (mv_sndst) -- the bit is what the switch FACE reads.
+F_PERP = F_DSTAY                             # b11 WITHOUT b13 (no door to keep
+                                             # open): p_plats.c perpetualRaise.
+                                             # movers.asm mv_start reads it, and
+                                             # the record's dst word is then TWO
+                                             # signed bytes, low | high<<8 (kind 9)
 F_GUN = 0x0100                               # b8: a BULLET fires it, not USE and
                                              # not a walkover (doors.asm gun_match)
 # Floor kinds (dst formula, from linuxdoom p_floor.c/p_plats.c):
@@ -170,7 +174,7 @@ SPEED_BOSS = 2               # A_BossDeath's tag 666 is lowerFloorToLowest
 RAISE_BY = {14: 32, 58: 24, 59: 24}
 
 SPEC = {                     # special: (flags, floor kind)
-    88: (0, 1),                                  # WR plat DWU (E1M1 lift)
+    88: (0, 1),
     89: (F_DCLOSE, 1),                           # WR STOP the plat (E2M2 x5,
                                                  #   E2M3 x5). F_DCLOSE's bit
                                                  #   means door-close only
@@ -214,18 +218,30 @@ SPEC = {                     # special: (flags, floor kind)
                                                  #   slab has no higher
                                                  #   neighbour to aim at)
     # ---- the full E2+E3 sweep (2026-08-18) ----------------------------------
-    30: (F_STAY, 3),                             # W1 raise by SHORTEST LOWER
-                                                 #   texture -> kind 3 approx
-                                                 #   (E2M2/E3M2 nukage steps)
+    30: (F_STAY, 10),                            # W1 raiseToTexture: up by the
+                                                 #   SHORTEST LOWER TEXTURE round
+                                                 #   the sector (_shortest_lower).
+                                                 #   Was kind 3, "next higher
+                                                 #   neighbour" -- and neither
+                                                 #   sector that uses it HAS one,
+                                                 #   so both records moved nothing:
+                                                 #   E2M2's switch pillars (ld1495,
+                                                 #   24 -> 96) and E3M2's (ld473,
+                                                 #   96 -> 168) never came up.
     56: (F_STAY, 4),                             # W1 crush-raise -> plain
                                                  #   raise to lowest ceiling
                                                  #   (no crush machinery)
     58: (F_STAY, 8),                             # W1 raise 24 (RAISE_BY)
     59: (F_STAY, 8),                             # W1 raise 24 AND CHANGE
-    87: (0, 1),                                  # WR perpetual platform ->
-                                                 #   behaves as the WR lift 88
-                                                 #   (89 STOP: nothing moves
-                                                 #   perpetually, so unneeded)
+    87: (F_PERP, 9),                             # WR perpetualRaise: between
+                                                 #   plat->low and plat->high
+                                                 #   until an 89 line stops it.
+                                                 #   (Was kind 1 = ONE lift cycle:
+                                                 #   E2M2's eight plats at
+                                                 #   (2080,300) ran 4.4 s and
+                                                 #   stood for good, and the two
+                                                 #   whose own floor IS the low
+                                                 #   went up and never came down.)
     24: (F_GUN | F_STAY, 4),                     # G1 raise floor on IMPACT
                                                  #   (E2M4), like 46's gun path
     39: (F_TELE | F_ONCE, 0),                    # W1 teleport (E3M6/E3M9) --
@@ -361,7 +377,6 @@ THINGS2_MAX = 0x0780          #   destinations, spawnhealth. $DA00..$E17F, the
                               # on a map that was ALREADY dropping decorations.
                               # Ordinary RAM, absolute addressing, same speed.
 # Skill the engine ships with: 2 = "Hey, not too rough" (skills 1 and 2 share the
-# MTF_EASY flag). E1M1 then has 4 monsters instead of 29 on UV -- item and
 # decoration counts barely change.
 # One bit each in movers.asm's FIRED bitmap (mv_used), so this MUST match
 # MV_TRIGS in memory_map.inc -- the engine silently treats anything past the
@@ -1112,6 +1127,26 @@ def _map_segs_base():
     return int(m.group(1), 16)
 
 
+def _shortest_lower(md, si, wt):
+    """p_floor.c EV_DoFloor, case raiseToTexture: the smallest textureheight[]
+    among the bottom textures of BOTH sides of every two-sided line of the
+    sector. DOOM's test is `if (side->bottomtexture >= 0)`, and "-" resolves to
+    texture number 0, so a side with NO lower texture counts as texture 0 --
+    AASTINKY, 72 tall in DOOM.WAD. That is vanilla behaviour, kept on purpose."""
+    tex0 = wt.texdefs[next(iter(wt.texdefs))][1]
+    hs = []
+    for ld in md.linedefs:
+        if not (ld.flags & ML_TWOSIDED) or NO_SIDEDEF in (ld.right, ld.left):
+            continue
+        if si not in (md.sidedefs[ld.right].sector, md.sidedefs[ld.left].sector):
+            continue
+        for sd in (ld.right, ld.left):
+            nm = md.sidedefs[sd].lower.upper()
+            d = None if nm.startswith('-') else wt.texdefs.get(nm)
+            hs.append(d[1] if d else tex0)
+    return min(hs) if hs else 0
+
+
 def _neigh_heights(md, si):
     """(floors, ceilings) of every sector sharing a two-sided line with si --
     p_floor.c's P_FindLowestFloorSurrounding & co. walk exactly this set. Falls
@@ -1181,7 +1216,11 @@ def _sector_lines(md):
 
 
 def _donut(md, tag):
-    """EV_DoDonut (p_floor.c) -> [(ring, height), (pillar, height)].
+    """EV_DoDonut (p_floor.c) -> [(ring, height, speed, flat), (pillar, ..., None)].
+    `flat` is the OTHER half of donutRaise: `floor->texture = s3->floorpic;
+    floor->newspecial = 0` -- the ring takes the floor of the sector it rises to
+    and stops being slime. Without it the pool came up level with the room and
+    stayed green and burning (E2M2 ld220, E1M2 ld604; 2026-09-21).
     The tagged sector is the PILLAR; getNextSector on its FIRST linedef gives
     the donut RING, and the ring's first line that does not lead back to the
     pillar names the sector both end up level with. The ring comes FIRST in the
@@ -1208,7 +1247,7 @@ def _donut(md, tag):
             # p_spec.c EV_DoDonut runs BOTH halves at FLOORSPEED/2 (17.5
             # units/s). The port's two bases differ, so the shift does too: the
             # ring RISES off mv_raise's 35, the pillar DROPS off mv_step's 140.
-            out += [(s2, h, 1), (s1, h, 3)]
+            out += [(s2, h, 1, md.sectors[s3].floor_flat), (s1, h, 3, None)]
             break
     return out
 
@@ -1669,7 +1708,6 @@ def plan_views(sp, kinds_present, have, budget, base_rows, base_cols):
     NOTHING ELSE: spr_wrot's rot table and ai_setrow's img*NSTOR are both
     written for exactly those two, so a three-view trial would index rows
     that are not there. The 24 KB coltab run is what makes the choice
-    binding -- E1M1/E1M2/E1M5 keep the four-image walk cycle, the crowded
     maps drop to two so the views fit."""
     d = doomstates.doom()
     kinds = [(ki, num) for ki, num in enumerate(MK_ORDER)
@@ -2295,6 +2333,12 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
         # you its back if you come from behind. en_init seeds TH_DIR from this,
         # so the same rotation pick (spr_wrot) serves idle and chasing alike.
         fl |= ((t.angle // 45) & 7) << 4
+        # bit7 = MF_AMBUSH (the map thing's "deaf" flag, p_mobj.c:774). A_Look
+        # wakes a monster whose sector heard the shot at once -- unless it is
+        # deaf, and then only when it also SEES the player (enemy_ai.asm
+        # ai_heard). F_DROP is bit2 and set at runtime; bit7 was unused.
+        if cls == C_MONSTER and t.flags & 8:
+            fl |= 0x80
         # p_map.c PIT_CheckThing blocks on MF_SOLID: monsters and the obstacle
         # decorations (barrel, pillar, lamp). A pickup is MF_SPECIAL, never
         # MF_SOLID, so it stays walk-through. No radius is stored -- see the
@@ -2605,8 +2649,11 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
                 trig.append((a1, a2, mid, si | flags, dst, spd))   # only
             continue
         if kind == 6:                    # EV_DoDonut: two sectors, one line
-            for si, dst, dspd in _donut(md, ld.tag):
+            for si, dst, dspd, flat in _donut(md, ld.tag):
                 trig.append((a1, a2, mid, si | flags, dst, dspd))
+                pal = sp.wt.flat_dominant(flat) if flat else None
+                if pal is not None:      # the ring: mv_change repaints it and
+                    chg.append((len(trig) - 1, pal))   # clears its damage class
             continue
         if ld.special == 89:             # EV_StopPlat: ONE record per line, not
                                          #   one per tagged sector. E2M2 has 5
@@ -2662,6 +2709,18 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
             elif kind == 8:                  # RAISE_BY: a fixed climb, and the
                                              #   neighbours have no say in it
                 dst = sec.floor_h + RAISE_BY[ld.special]
+            elif kind == 10:                 # p_floor.c raiseToTexture (30)
+                dst = sec.floor_h + _shortest_lower(md, si, sp.wt)
+            elif kind == 9:                  # p_plats.c:230 perpetualRaise:
+                nb, nbc = _neigh_heights(md, si)     # low/high, each clamped to
+                lo = min(min(nb), sec.floor_h)       # the sector's own floor
+                hi = max(max(nb), sec.floor_h)
+                assert -128 <= lo and hi <= 127, (
+                    f'{md.name} sector {si}: perpetualRaise {lo}..{hi} does not '
+                    f'fit the two signed bytes of the dst word (mv_start ?perp)')
+                dst = (lo & 0xFF) | ((hi & 0xFF) << 8)
+                if dst >= 0x8000:                # the record packs it '<h'
+                    dst -= 0x10000
             else:
                 nb, nbc = _neigh_heights(md, si)
                 if kind == 1:

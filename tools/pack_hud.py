@@ -79,8 +79,8 @@ HUD_VRAM_BASE = pack_menu.HUD_VRAM_BASE
                                # $04A000, six chunks (2026-09-16). It was
                                # $07D000, three chunks to the top of VRAM, and
                                # full -- doubling the width needed six. The
-                               # space is what packing the HU strips to their
-                               # own width gave back (pack_menu _hu_strips);
+                               # space is what packing the (now gone) HU
+                               # strips to their own width gave back;
                                # $07D000 is the SR bar's FRAMEBUFFER now
                                # (VRAM_BAR320, memory_map.inc).
 # What the engine needs to draw: the bar plus every glyph the status widgets use.

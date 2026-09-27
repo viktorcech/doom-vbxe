@@ -20,7 +20,7 @@ and lists, without failing:
   xind    jmp (abs) / jmp (abs,x) / jsr (abs,x) in bank-$01 code (the pointer
           bank and the target bank need a human look)
 
-    python tools/b1_check.py            -> build/b1_check.txt, exit 1 on errors
+    python tools/b1_check.py            -> tools/tests/out/b1_check.txt, exit 1 on errors
 """
 import bisect
 import os
@@ -69,6 +69,17 @@ def ranges(m):
     return out
 
 
+def ranges_all(m):
+    """bank -> every assembled line WITH bytes, code and data (dta/.word)."""
+    out = defaultdict(list)
+    for ln in m.lines:
+        if ln.size and (group(ln) is None or ln.bank == 0):
+            out[ln.bank].append((ln.run, ln.run + ln.size, ln))
+    for b in out:
+        out[b].sort(key=lambda t: t[0])
+    return out
+
+
 def resolve(labs, ln, idt):
     """A label as the assembler sees it from this line: a ?local belongs to
     the enclosing proc (MADS lists it as PROC.?NAME)."""
@@ -85,9 +96,31 @@ def hit(rs, bank, addr):
     return r[i][2] if i >= 0 and r[i][0] <= addr < r[i][1] else None
 
 
+def falls_to_rtl(rs, bank, ln):
+    """a label with no .proc (ptc_fire / ptc_open, 2026-09-23): walk the code
+    lines straight on from it and say whether the first return is an rtl."""
+    run = ln.run
+    for _ in range(200):
+        cur = hit(rs, bank, run)
+        if cur is None or not cur.bytes:
+            return False
+        op = cur.bytes[0]
+        if op == 0x6B:
+            return True
+        if op in (0x60, 0x40):
+            return False
+        if op == 0x80 and len(cur.bytes) >= 2:          # bra: follow it
+            d = cur.bytes[1]
+            run = cur.run + 2 + (d - 256 if d > 127 else d)
+            continue
+        run = cur.run + cur.size
+    return False
+
+
 def main():
     m = code_map.load()
     rs = ranges(m)
+    rs_all = ranges_all(m)
     labs = lab_banks()
     procnames = {n.lower() for (_b, n) in m.proc}
     errs, notes = [], []
@@ -171,11 +204,16 @@ def main():
                 wrap = (here.bytes and here.bytes[0] == 0x20 and
                         (nxt := hit(rs, tb, here.run + 3)) is not None and
                         nxt.bytes and nxt.bytes[0] == 0x6B)
-                if 'rtl' not in r and not wrap:
+                if 'rtl' not in r and not wrap and \
+                        not (here.proc is None and falls_to_rtl(rs, tb, here)):
                     errs.append(('xret', f'jsl into {here.proc}, which has no rtl '
                                          f'-- {where(ln)}'))
         elif mode in DATA_MODES and mn not in ('jmp', 'jsr') and 'DBR1' in ln.src:
             pass                                # phk/plb around it: DBR = bank $01
+        elif mode in DATA_MODES and mn not in ('jmp', 'jsr') and \
+                (ln.proc or '').lower() == 'udiv24' and ln.bank == 1:
+            pass                                # ANTONIA2: math.asm runs udiv24a_v2.asm
+                                                #   (not editable) under phb/phk/plb
         elif mode in DATA_MODES and mn not in ('jmp', 'jsr'):
             # a ?local is not in the .lab: catch the self-modifying store by
             # ADDRESS -- bank-$01 code whose absolute operand lands inside its
@@ -183,6 +221,8 @@ def main():
             if ln.bank == 1 and len(b) >= 3 and '?' in ln.op.split(';')[0] \
                     and 'B1CODE_BASE' not in ln.op.upper():
                 t = hit(rs, 1, b[1] | b[2] << 8)
+                if t is None:                    # ...or its own DATA (udiv24a_v2's
+                    t = hit(rs_all, 1, b[1] | b[2] << 8)   # ?q_hi, 2026-09-23)
                 if t is not None and t.proc == ln.proc:
                     errs.append(('xdata', f'{mn} into its own bank-$01 code at '
                                           f'${b[1] | b[2] << 8:04X} with a 16-bit '
@@ -239,7 +279,8 @@ def main():
     for k, t in notes:
         L.append(f'  note  {k:5} {t}')
     txt = '\n'.join(L)
-    out = os.path.join(code_map.ROOT, 'build', 'b1_check.txt')
+    out = os.path.join(code_map.ROOT, 'tools', 'tests', 'out', 'b1_check.txt')   # build/ holds the build only
+    os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, 'w', encoding='utf-8') as f:
         f.write(txt + '\n')
     print('\n'.join(L[:25]))

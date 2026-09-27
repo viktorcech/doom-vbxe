@@ -17,15 +17,15 @@ per map, into build/assets/textures/:
   playpal.bin    the real 256-colour DOOM palette (768 B, r,g,b) for VBXE install.
 
 VRAM: textures are laid out contiguously from TEX_VRAM_BASE ($020000), which the
-flat-shaded port left unused. Heights are NATIVE (no padding) -> 4 E1M1 textures
 have non-pow2 height (56/72/24) needing a general tex_x*h; the rest are shifts.
 
-Usage: python pack_textures.py [E1M1 ...]   (default E1M1)
 """
 import os
 import re
 import struct
 import sys
+
+import numpy as np
 
 import doomspecs
 from wadlib import Wad, DEFAULT_WAD, NO_SIDEDEF, ML_TWOSIDED
@@ -61,7 +61,7 @@ TEX_VRAM_BASE = 0x018000          # VBXE VRAM: right above FRAME_B ($010000+$7D0
                                   # $070000 (TEX8/sprites/HUD) -- this buys 32 KB.
                                   # make_atr_doom.py asserts the slot still fits.
 NONE_ID = 0xFF
-NONE_SEG_ID = 0x3F                # seg texid is 6 bits; $3F means "no texture",
+NONE_SEG_ID = 0x7F                # seg texid is 7 bits (pack_map.py NO_TEX, 2026-09-21); $7F means "no texture",
                                   # so a level may hold at most 63 texids
 # ---- WALLS AS RUNS (2026-08-06) --------------------------------------------
 # A blitted texture cannot be shaded -- the VBXE blitter has no lookup in its
@@ -204,7 +204,35 @@ def _payload(cols, w, h, masked=False):
     import texruns
     grid = [list(cols[c * h:(c + 1) * h]) for c in range(w)]
     blob, _painted = texruns.texture_runs(grid, _playpal_rgb(), RUN_K, masked)
-    return blob, w, 2 * RUN_K
+    return _doubled(blob), w, 2 * RUN_K
+
+
+def _doubled(blob):
+    """The painter's run record (2026-09-25): the length byte holds 2*texels.
+    paint_col reads (2w, colour) as ONE word and 2w IS the index of its word
+    multiply tables (qs_words.inc), so the run loop has no shift and no
+    w >= 128 test. A 128-texel run (a solid column of a 128-high texture) is
+    split 64 + 64 so w <= 127 everywhere: same texels, same colours, same row
+    boundaries (the painter's Q8 sums are exact) -- one span more for that
+    column, nothing else. The sky keeps texruns' plain record (pack_sky.py)."""
+    a = np.frombuffer(blob, np.uint8).reshape(-1, 2).copy()
+    if not (a[:, 0] == 128).any():   # no 64+64 split anywhere: the doubling
+        a[:, 0] *= 2                 #   is one vector op (rows <= 127 here)
+        return a.tobytes()
+    out = bytearray()
+    for c in range(0, len(blob), 2 * RUN_K):
+        col = blob[c:c + 2 * RUN_K]
+        runs = []
+        for i in range(0, len(col), 2):
+            rows, idx = col[i], col[i + 1]
+            assert rows <= 128, rows
+            runs += [(64, idx), (64, idx)] if rows == 128 else [(rows, idx)]
+        if len(runs) > RUN_K:        # the split ate a pad (such a column has
+            assert runs[-1][0] == 0  #   one real run: the sum is texH)
+            runs = runs[:RUN_K]
+        for rows, idx in runs:
+            out += bytes((2 * rows, idx))
+    return bytes(out)
 
 
 def dedup_columns(cols, w, h):
@@ -479,7 +507,6 @@ class TexPool:
     Before this, pack_map_textures emitted one .tex per level, so a wall used by
     six maps was stored six times: 974 KB across E1 for 109 distinct textures.
     Now every level interns its payloads here and the whole episode ships ONE
-    blob, so a texture streamed for E1M1 is already resident when E1M4 asks for
     it (tools/pool_plan.py measures the streaming this saves: 71 %).
 
     Two phases, which fall out of pack_map.py's existing two passes for free:
@@ -597,8 +624,11 @@ def pack_map_textures(md, wt, xpool=None):
             wall textures that merely happen to face a door, and perfectly good
             things for another wall to alias onto."""
             b = tex_base(n)
+            # ...and PLAT1, the LIFT face (2026-09-21): E2M2 sent STONE there,
+            # so the stone wall over the chaingun pool (1184,4032) was drawn as
+            # a ring of lift panels -- "there should be a wall and I see doors".
             return (is_switch(b) or SCROLL_TAG in n or KEY_DOOR_TEX.match(b)
-                    or 'DOOR' in b or b == 'EXITSIGN')
+                    or 'DOOR' in b or b == 'EXITSIGN' or b.startswith('PLAT'))
 
         def _protected(n):
             # Functional surfaces never alias: switches (p_switch.c's list),
@@ -625,23 +655,63 @@ def pack_map_textures(md, wt, xpool=None):
             # is worth more than any wall the alias would merge instead.
             return (_reads_as(n) or n.endswith(ROLE_TAG) or n in functional)
 
+        pal = wt.playpal
+
         def _dom_h(n):
+            """-> (colour histogram, height). THE WHOLE TEXTURE'S COLOURS, not
+            its single commonest one (2026-09-21): on the dominant index alone
+            E2M2 sent STONE to PLAT1 -- a stone wall drawn as lift panels -- and,
+            with PLAT1 barred, to CRATE2, and STONE2 to COMPTALL. One grey texel
+            value says nothing about what the other 90 % of the wall looks like.
+            The histogram is PLAYPAL folded to 4 bits a channel... no: 3 bits a
+            channel (512 bins), coarse enough that two greys one step apart
+            share a bin, fine enough that a crate's browns do not pass for
+            stone."""
             t = wt.get_texture(tex_base(n), n in masked)
             if t is None:
                 return None
             w0, h0, tx = t
             cols, _w = half_cols(tx, w0, h0)
-            hist = Counter(c for c in cols if c)
-            return (hist.most_common(1)[0][0] if hist else 0, h0)
+            hist = Counter()
+            for c, k in Counter(c for c in cols if c).items():
+                r, g, b = pal[c]
+                hist[(r >> 5, g >> 5, b >> 5)] += k
+            tot = sum(hist.values()) or 1
+            return ({k: v / tot for k, v in hist.items()}, h0)
 
         info = {n: _dom_h(n) for n in used}
-        pal = wt.playpal
 
         def _dist(a, b):
-            (da, ha), (db, hb) = info[a], info[b]
-            ra, rb = pal[da], pal[db]          # wt.playpal: (r, g, b) tuples
-            return (sum((x - y) ** 2 for x, y in zip(ra, rb))
-                    + (0 if ha == hb else 3000))
+            """1 - histogram intersection (0 = the same colours in the same
+            proportions), + a fixed step for a height mismatch, as before."""
+            (ha_, ha), (hb_, hb) = info[a], info[b]
+            same = sum(min(v, hb_.get(k, 0.0)) for k, v in ha_.items())
+            return (1.0 - same) + (0.0 if ha == hb else 0.15)
+
+        # WHO MAY STAND IN FOR WHOM (2026-09-21). Colour alone still sent
+        # STONE2 and COMPOHSO across families (a stone wall drawn as COMPTALL's
+        # computer bank, a computer drawn as NUKEDGE1's slime lip), so the NAME
+        # gets a say first:
+        #   1. a keeper of the SAME FAMILY (first four letters: COMP*, STON*,
+        #      ICKW*, NUKE*, BROW*...) wins if there is one -- same artist, same
+        #      material, usually the same wall with a detail added;
+        #   2. otherwise never a keeper that is an OBJECT rather than a wall --
+        #      computers, crates, lights, pipes, supports, slime lips, lifts --
+        #      nor one that carries a message (_reads_as);
+        #   3. and only if the map offers nothing else, anything at all.
+        OBJECTS = ('COMP', 'CRAT', 'PLAN', 'PLAT', 'LITE', 'SKIN', 'SP_', 'PIPE',
+                   'SUPP', 'NUKE', 'FIRE', 'BLOD', 'SLAD', 'SKUL', 'EXIT')
+
+        def _fam(n):
+            return tex_base(n)[:4]
+
+        def _targets(n, cands):
+            same = [k for k in cands if _fam(k) == _fam(n) and not _reads_as(k)]
+            if same:
+                return same
+            plain = [k for k in cands if not _reads_as(k)]
+            walls = [k for k in plain if not tex_base(k).startswith(OBJECTS)]
+            return walls or plain or cands
 
         for n in sorted(used, key=lambda x: (freq[x], x)):    # rarest first
             if len(used) - len(alias) <= NONE_SEG_ID:
@@ -665,8 +735,7 @@ def pack_map_textures(md, wt, xpool=None):
             # paint STONE/STONE2 as DOORSTOP and AASTINKY as a DOOR3 slab, and
             # E2M7 paint GRAYPOIS/SHAWN3 as DOOR3. A wall that reads EXIT or
             # DOOR is worse than any wall that merely reads wrong.
-            plain = [k for k in cands if not _reads_as(k)]
-            cands = plain or cands
+            cands = _targets(n, cands)
             if not cands:
                 continue
             alias[n] = min(cands, key=lambda k: _dist(n, k))
@@ -680,8 +749,8 @@ def pack_map_textures(md, wt, xpool=None):
         if alias:
             keep = [k for k in used if k not in alias and info[k] is not None]
             for n in list(alias):
-                c = [k for k in keep if (k in masked) == (n in masked)]
-                c = [k for k in c if not _reads_as(k)] or c
+                c = _targets(n, [k for k in keep
+                                 if (k in masked) == (n in masked)])
                 if c:
                     alias[n] = min(c, key=lambda k: _dist(n, k))
         if alias:
@@ -713,8 +782,19 @@ def pack_map_textures(md, wt, xpool=None):
         # EXITDOOR, TEKWALL4/5) and would paint those walls invisible. The most
         # common NON-black index still reads as "dark metal", and 0 survives
         # only for a texture that is nothing else.
-        hist = Counter(c for c in cols if c)
-        dom = hist.most_common(1)[0][0] if hist else 0
+        # np.bincount for the histogram (the Counter genexpr was 14.7 M python
+        # iterations a pack); the tie-break stays Counter's -- among equal
+        # counts the FIRST-SEEN index wins -- by scanning for the first texel
+        # holding a winning value.
+        counts = np.bincount(np.frombuffer(bytes(cols), np.uint8),
+                             minlength=256)
+        counts[0] = 0
+        if counts.any():
+            arr = np.frombuffer(bytes(cols), np.uint8)
+            best = np.flatnonzero(counts == counts.max())
+            dom = int(arr[np.isin(arr, best).argmax()])
+        else:
+            dom = 0
 
         textured = SHIP_ALL_TEXTURES or is_switch(base) or name.endswith(ROLE_TAG)
         if not textured:
@@ -780,7 +860,7 @@ def pack_map_textures(md, wt, xpool=None):
     # are usable -- 63 rows, not 62. (This assert read `< NONE_SEG_ID` and so
     # gave away the last row; E1M3 is exactly 63 once its struts are in.)
     assert len(table) <= NONE_SEG_ID, \
-        f'{len(table)} texids > {NONE_SEG_ID}: the seg texid field is 6 bits ' \
+        f'{len(table)} texids > {NONE_SEG_ID}: the seg texid field is 7 bits ' \
         f'(0..{NONE_SEG_ID - 1}, ${NONE_SEG_ID:02X} = none)'
 
     # switch mate ids: table entry grows to (name, addr, w, h, dom, mate)

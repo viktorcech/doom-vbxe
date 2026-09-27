@@ -3,7 +3,7 @@
 ; load_music brings them in once at boot; mus_play feeds one
 ; frame of them to $D200-$D207 per VBLANK. Song index = the
 ; level, except MUS_INTRO -- the title/menu song.
-MUS_BANK0    equ $67
+MUS_BANK0    equ $6B
 MUS_COUNT    equ 1
 MUS_BYTES    equ 35381
 MUS_INTER    equ 0

@@ -1,45 +1,13 @@
-;==============================================================
-; sprites.asm -- DOOM THINGS (items, decorations, monsters) as billboards.
 ;--------------------------------------------------------------
-; Spec + verification: docs/THINGS.md, tools/render_tex.py (the Python renderer
-; this ports) and tools/_verify_things.py. Data comes from tools/pack_things.py:
-;   {map}.spr     rectangular column-major sprite pixels -> VBXE VRAM $071000+.
-;                 A transparent texel is palette index 0 and BLT_BSTENCIL skips
-;                 it, so no post/mask tables are needed (same trick as w3d).
-;   {map}.things  RAM blob at THINGS_BASE ($B000): per-subsector prefix table,
-;                 the things, the sprite table, and PLAYPAL.
-;
-; CLIPPING -- why this needs no drawsegs: the BSP walk is strictly front-to-back
-; and the occlusion arrays are add-only, so when a subsector is reached,
-; solid_arr/ytopc_arr/ybotc_arr describe exactly what the NEARER geometry left
-; open. spr_add snapshots that window over the sprite's columns; spr_draw runs
-; after the whole walk, back-to-front, and clips to the snapshot. Nearer walls
-; (already painted) cut the sprite; farther walls (painted after its subsector
-; was visited) are covered by it.
-;
-; VERTICAL SCALE -- SRC_STEPY is an integer, so a raw column can only be sampled
-; at 1, 2, 3.. texels per row: a sprite would snap between 1x/2x/4x instead of
-; growing smoothly. Same problem the wall texturing has, same fix: blow the
-; column up S times vertically into VRAM_TEX8 (tw_expand, one blit) and sample
-; that with SRC_STEPY = round(S*256/scale), which makes the ladder S times finer.
-; S is picked per sprite as the largest power of two with S*h <= 1 KB (scratch),
-; and skipped entirely for sprites minified 4x or more (nothing to gain).
-;==============================================================
-
+; sprites.asm -- DOOM things (items, decorations, monsters) as billboards:
+;   collection and projection. Data comes from tools/pack_things.py.
 ;--------------------------------------------------------------
-; spr_reset -- per frame (render_world): no vissprites, clip pool empty.
-;--------------------------------------------------------------
-; give_bonus + its tables sit in the $0600 hole next to calc_u: fast RAM on a
-; Rapidus and out of this block, which is up against the wall-blit code.
 gb_resume = *
 ;   give_bonus MOVED to the DROP block (enemy_ai.asm) 2026-07-31: the MF_DROPPED
 ;   halving grew it 12 B and the $0600 hole it shared with calc_u had none. Its
 ;   TABLES stay here -- they are absolute-indexed, so where the code sits does
 ;   not matter to them.
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org BNTAB_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ; bonus id -> (counter index | 8 = bit set, amount | bit, cap). Index 0 is unused.
 ;        --  1 stim  2 medi  3 hbon  4 soul  5 abon  6 grn   7 blue
@@ -70,12 +38,7 @@ BN_MAX  dta 0, 100, 100, 200, 200, 200, 100, 200
         dta 0,0,0,0,0,0,0            ; ...and no cap either
         dta 0,0,0                    ; 32..34 skulls: bits, no cap
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > BNTAB_END+1
-        ert 'the BN_* tables outgrew BNTAB_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org gb_resume
 
 ;--------------------------------------------------------------
@@ -90,31 +53,36 @@ ta_resume = *
 ;   1 bit per thing (256 things / 32 B, mv_bit masks): the old byte-per-thing
 ;   table only covered 128, and idx >= 128 read PSTATE / the $1000 render
 ;   scratch instead -- E1M3 sprites vanished as the view changed and pickups
-;   never stuck. Clobbers X,Y; callers reload the index from sp_i.
+;   never stuck. Keeps X; clobbers Y (= X >> 3). Two 256-byte tables instead
+;   of txa/and/tay/txa/lsr x3/tax: 16 cycles for 24 (long,x has no page cost).
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc thing_alive_bit
-        txa
-        and #7
+        lda.l B1CODE_BASE+ta_shr3,x  ; X >> 3: the bitmap byte
         tay
-        txa
-        lsr
-        lsr
-        lsr
-        tax
-        lda THING_ALIVE,x
-        and mv_bit,y
+        lda THING_ALIVE,y
+        and.l B1CODE_BASE+ta_bit8,x  ; 1 << (X & 7), = mv_bit[X & 7]
         rts
 .endp
+ta_shr3 :256 dta #/8
+ta_bit8 :256 dta 1<<[#&7]
         .endseg
+;--------------------------------------------------------------
+; TALIVE -- thing_alive_bit's body INLINE (2026-09-26, drac_flow
+;   SMALL: 4 instructions, and the jsr/rts was 12 cycles of its ~28). Same
+;   contract: X = thing index -> A = the bit, Z from the `and`; Y clobbered.
+;--------------------------------------------------------------
+.macro TALIVE
+        lda.l B1CODE_BASE+ta_shr3,x
+        tay
+        lda THING_ALIVE,y
+        and.l B1CODE_BASE+ta_bit8,x
+.endm
     .if * > THALIVE_END+1
         ert 'thing_alive_bit outgrew the $0E78 hole -- see memory_map.inc'
     .endif
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org THKILL_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc thing_kill                     ; X = thing index -> clear its ALIVE bit
         txa
@@ -132,28 +100,15 @@ ta_resume = *
         rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > THKILL_END+1
-        ert 'thing_kill outgrew the $0D30 hole -- see memory_map.inc'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org ta_resume
 
 ;--------------------------------------------------------------
 sr_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org SPRRESET_BASE            ; moved out of the $B000 segment 2026-07-31:
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_reset                      ;   spr_add's two chase hooks pushed that
- .if 1
 	stz sp_n
- .else
-        lda #0                       ;   segment into en_boom at $B715, and this
-        sta sp_n                     ;   is the cheapest whole proc to lift out
- .endif
         stz sp_clip                  ;   (once per frame, one absolute jsr;
     .if [CLIP_BASE & $FF] != 0       ;    <CLIP_BASE = 0)
         ert 'CLIP_BASE is not page-aligned -- put the lda #< back (sprites.asm)'
@@ -163,12 +118,7 @@ sr_resume = *
         rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > SPRRESET_END+1
-        ert 'spr_reset outgrew SPRRESET_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org sr_resume
 
 ;--------------------------------------------------------------
@@ -180,18 +130,7 @@ sr_resume = *
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_add
         jsr spr_chased               ; a CHASING monster is drawn from the
-                                     ;   subsector it walked to, not the one it
-                                     ;   was packed into (enemy_ai.asm) -- and
-                                     ;   the imp's fireball + the player's
-                                     ;   missile ride the same hook (proj.asm
-                                     ;   wraps ball.asm's spr_chaseb wrapper).
-                                     ; It runs BEFORE the table-full test now:
-                                     ;   the scenery of a subsector must never
-                                     ;   take the slot a MISSILE the player just
-                                     ;   fired needs. That is what made the
-                                     ;   rocket vanish with no pattern -- the
-                                     ;   room's items filled all 40 slots first
-                                     ;   in some views and not in others.
+                                     ;   subsector it walked to, not the one it ...
         lda sp_n                     ; vissprite table full? (front-to-back, so
         cmp #VIS_MAX-2               ; the ones already collected are the
         bcs ?ret                     ; nearest). Two short: the ball and the
@@ -204,16 +143,9 @@ sr_resume = *
         and #$7F
         adc th_ss+1
         sta sp_ptr+1
- .if 1
         lda (sp_ptr)                ; first thing of this subsector
         sta sp_i
         ldy #1
- .else
-        ldy #0
-        lda (sp_ptr),y               ; first thing of this subsector
-        sta sp_i
-        iny
- .endif
         lda (sp_ptr),y               ; first thing of the next one
         sta sp_last
         cmp sp_i
@@ -221,20 +153,13 @@ sr_resume = *
 ?ret    rts
 
 ?loop   ldx sp_i                     ; already picked up -> do not draw it
-        jsr thing_alive_bit
-.if 1
+        TALIVE                                ; (inlined 2026-09-26)
 	jeq ?skip
- .else
-        bne ?live
-        jmp ?skip
-?live
- .endif
 	lda sp_i                     ; spr_chase already drew it, from where it
         jsr ai_ischase               ;   actually stands
         bne ?skip
 
         lda sp_i                     ; thing record = th_things + i*8
- .if 1
 	rep #$20
 	.LONGA ON
 	and #$00ff
@@ -244,27 +169,9 @@ sr_resume = *
 ;	clc
         adc th_things
         sta sp_ptr
-	sep #$20
-	.LONGA OFF
- .else
-        sta m_prod
-        lda #0
-        sta m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        clc
-        lda m_prod
-        adc th_things
-        sta sp_ptr
-        lda m_prod+1
-        adc th_things+1
-        sta sp_ptr+1
- .endif
-        jsr spr_proj
+                                     ; 2026-09-22 (65816-windows): spr_proj past its
+        jsr spr_proj.spj_w16         ;   rep, still 16-bit (this sep and that rep were
+        .LONGA OFF                   ;   an empty pair)
 
 ?skip   inc sp_i
         lda sp_n
@@ -290,14 +197,9 @@ sr_resume = *
 .proc spr_proj
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
- .if 1
+spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         sec
         lda (sp_ptr)
- .else
-        ldy #0                       ; rx = x - px, ry = y - py
-        sec
-        lda (sp_ptr),y
- .endif
         sbc zp_px
         sta zp_rx
         ldy #2
@@ -308,21 +210,18 @@ sr_resume = *
         .LONGA OFF
         sep #$20
         jsr transform                ; -> zp_X, zp_Z (view space)
-        rep #$20
+                                     ; 2026-09-22: transform returns 16-bit now
         .LONGA ON
-        lda zp_Z                     ; too close / behind the eye?
-        bmi ?skip16
+;       lda zp_Z                     ; transform ends `adc / sta zp_Z / rts`: A IS zp_Z
+        bmi ?skip16                  ;   and N/Z are the adc's (the same value)
         cmp #SPR_MINZ                ; (unsigned 16-bit: Z >= 256 passes it too)
         bcs ?zok
 ?skip16 .LONGA OFF
         sep #$20
 ?skip   rts
-?zok    .LONGA OFF
-        sep #$20
-        jsr scale_z                  ; m_quot = VFOCAL*256/Z (Q8, vertical)
-        rep #$20
+                                      ; 2026-09-23: A IS Z here (16-bit): scale_z's 16-bit
+?zok    jsr scale_z.sz_a16           ;   entry, and it returns 16-bit with A = m_quot
         .LONGA ON
-        lda m_quot
         sta sp_scale
         lsr                          ; horizontal scale = vertical/2 (FOCAL 80:160)
         sta sp_hs
@@ -335,12 +234,7 @@ sr_resume = *
         sty sp_dfix                  ;   fresh here); spr_one replays instead
         lda sp_i                     ; dying? then the frame comes from the death
         jsr spr_dyn                  ;   table, already in sp_tab (enemy.asm)
-        ; --- 16-BIT A for the table-entry math and the header copy
-        ;     (2026-08-31, the drac030 hand-review): id*8 was an 8-bit
-        ;     shift ladder through m_prod and the header four lda/sta pairs --
-        ;     ~100 cycles a sprite; this is ~63. sp_w/sp_h/sp_left/sp_top are
-        ;     CONTIGUOUS in record order (memory_map.inc), so two 16-bit moves
-        ;     copy all four; @7 rides into the id load and `and #$FF` drops it.
+        ; --- 16-BIT A for the table-entry math and the header copy ...
         bcc ?comp
         rep #$20                     ; dying: spr_dyn already set sp_tab
         .LONGA ON
@@ -363,23 +257,21 @@ sr_resume = *
         ldy #5
         lda (sp_tab),y               ; left @5, top @6
         sta sp_left
+                                      ; screenx_signed: 16-bit in and out (2026-09-23)
+        jsr screenx_signed.sx_w16    ; m_xs = centre column (unclamped, signed)
+        .LONGA ON                    ; x1 = centre - (leftoffset*hs)>>8: both
+        lda sp_hs                    ;   operands as words in the window sx_w16
+        sta m_b                      ;   returns in (sp_left's word read drags
+        lda sp_left                  ;   sp_top in: masked, then sign-extended)
+        and #$00FF
+        cmp #$0080
+        bcc ?lp2
+        ora #$FF00
+?lp2    sta m_a
         .LONGA OFF
         sep #$20
-        jsr screenx_signed           ; m_xs = centre column (unclamped, signed)
-
-        ldx #0                       ; x1 = centre - (leftoffset*hs)>>8
-        lda sp_left
-        sta m_a
-        bpl ?lp2
-        dex                          ; sign-extend the signed offset
-?lp2    stx m_a+1
-        lda sp_hs
-        sta m_b
-        lda sp_hs+1
-        sta m_b+1
 
         jsr smul32
- .if 1
 	rep #$20
 	.LONGA ON
         sec
@@ -393,26 +285,10 @@ sr_resume = *
         sta m_b
 	sep #$20
 	.LONGA OFF
- .else
-        sec
-        lda m_xs
-        sbc m_prod+1
-        sta sp_x1
-        lda m_xs+1
-        sbc m_prod+2
-        sta sp_x1+1
-        lda sp_w                     ; on-screen width = (w*hs)>>8
-        sta m_a
-        lda #0
-        sta m_a+1
-        lda sp_hs
-        sta m_b
-        lda sp_hs+1
-        sta m_b+1
- .endif
-        jsr umul16
+        jsr umul16                   ; (no phx/plx: spr_proj's main path clobbers X
+                                     ;   anyway -- transform's FMUL -- so no caller
+                                     ;   keeps anything in it)
 
- .if 1
 	rep #$21		;absorb CLC
 	.LONGA ON
         lda m_prod+1
@@ -424,37 +300,6 @@ sr_resume = *
 	sep #$20
 	.LONGA OFF
 	xba			;set NZ acc. to MSB value
- .else
-        lda m_prod+1
-        sta m_a
-        lda m_prod+2
-        sta m_a+1
-        ora m_a
-        bne ?w1ok                    ; sub-column: DOOM has no far cull at all --
-        inc m_a                      ;   R_ProjectSprite draws a distant barrel as
-                                     ;   a SLIVER, and P_LineAttack reaches it out
-                                     ;   to MISSILERANGE (2048). Dropping it here
-                                     ;   made it both invisible and unshootable
-                                     ;   past 1664 units (tools/_dbg_shotrange.py),
-                                     ;   so a thing that projects to less than a
-                                     ;   column gets exactly one. SPR_HSMIN still
-                                     ;   ends the sprite at Z 2560, past DOOM's
-                                     ;   bullet range.
-?w1ok   clc                          ; xb = x1 + width - 1
-        lda sp_x1
-        adc m_a
-        sta m_b
-        lda sp_x1+1
-        adc m_a+1
-        sta m_b+1
-        sec
-        lda m_b
-        sbc #1
-        sta m_b
-        lda m_b+1
-        sbc #0
-        sta m_b+1
- .endif
         bmi ?skip2                   ; entirely off the left edge
         bne ?xbclamp                 ; >= 256 -> clamp to the right edge
         lda m_b
@@ -464,27 +309,15 @@ sr_resume = *
 ?xbok   sta sp_xb
         lda sp_x1+1                  ; xa = max(x1, 0); x1 >= 160 -> off the right
         bmi ?xazero
- .if 1
         bne ?skip2
- .else
-	beq ?xalow
-?skip2	rts
-?xalow
- .endif
 	lda sp_x1
         cmp #SCREEN_WIDTH
         bcs ?skip2
         sta sp_xa
- .if 1
 	bra ?xaok
 ?skip2  rts
 ?xazero stz sp_xa
 
- .else
-        jmp ?xaok
-?xazero lda #0
-        sta sp_xa
- .endif
 
 ?xaok   lda sp_xb
         cmp sp_xa
@@ -492,18 +325,15 @@ sr_resume = *
 
         lda sp_h                     ; on-screen height = (h*scale)>>8
         sta m_a
- .if 1
         stz m_a+1
- .else
-        lda #0
-        sta m_a+1
- .endif
         lda sp_scale
         sta m_b
         lda sp_scale+1
         sta m_b+1
 
-        jsr umul16
+        jsr umul16                   ; (no phx/plx: spr_proj's main path clobbers X
+                                     ;   anyway -- transform's FMUL -- so no caller
+                                     ;   keeps anything in it)
 
         lda m_prod+1
         sta sp_rows
@@ -511,7 +341,6 @@ sr_resume = *
         sta sp_rows+1
         ora sp_rows
         beq ?skip2
- .if 1
 	rep #$21		;absorb CLC
 	.LONGA ON
         ldy #4                       ; world height of the sprite's top row
@@ -527,40 +356,10 @@ sr_resume = *
         sta m_b
 	sep #$20
 	.LONGA OFF
- .else
-        ldy #4                       ; world height of the sprite's top row
-        lda (sp_ptr),y               ;   = thing z + topoffset, relative to the eye
-        sta m_a
-        iny
-        lda (sp_ptr),y
-        sta m_a+1
-
-        clc
-        lda m_a
-        adc sp_top
-        sta m_a
-        lda m_a+1
-        adc #0
-        sta m_a+1
-
-        sec
-        lda m_a
-        sbc zp_pz
-        sta m_a
-        lda m_a+1
-        sbc zp_pz+1
-        sta m_a+1
-
-        lda sp_scale
-        sta m_b
-        lda sp_scale+1
-        sta m_b+1
- .endif
-        jsr track_calc               ; m_prod[0..2] = horizon - world*scale (Q8)
-
- .if 1
-        rep #$20                     ; screen row of texture row 0, the two
-        .LONGA ON                    ;   visibility tests on the WORD, and the
+        jsr track_calc               ; m_prod[0..2] = horizon - world*scale (Q8),
+                                     ;   returned 16-bit
+        .LONGA ON                    ; screen row of texture row 0, the two
+                                     ;   visibility tests on the WORD, and the
         lda m_prod+1                 ;   bottom row off the same A (2026-09-15)
         sta sp_ytop
         bmi ?vis                     ; above the horizon -> definitely not below screen
@@ -576,45 +375,6 @@ sr_resume = *
         sta sp_ybot
 	sep #$20
 	.LONGA OFF
- .else
-        lda m_prod+1                 ; screen row of texture row 0
-        sta sp_ytop
-        lda m_prod+2
-        sta sp_ytop+1
-        bmi ?vis                     ; above the horizon -> definitely not below screen
-        beq ?vchk                    ; row >= 256 -> below the screen
-?bail	rts
-
-?vchk   lda sp_ytop
-        cmp #SCREEN_HEIGHT
-        bcs ?bail
-
-?vis
-	rep #$21	;absorb CLC
-	.LONGA ON
-        lda sp_ytop
-        adc sp_rows
-	dec
-        sta sp_ybot
-	sep #$20
-	.LONGA OFF
- .endif
- .if 0
-	clc                          ; bottom row = ytop + rows - 1
-        lda sp_ytop
-        adc sp_rows
-        sta sp_ybot
-        lda sp_ytop+1
-        adc sp_rows+1
-        sta sp_ybot+1
-        sec
-        lda sp_ybot
-        sbc #1
-        sta sp_ybot
-        lda sp_ybot+1
-        sbc #0
-        sta sp_ybot+1
- .endif
         bmi ?bail                    ; entirely above the screen
 
         ; --- snapshot the open window over [xa..xb] into the clip pool ---
@@ -624,7 +384,6 @@ sr_resume = *
         sta sp_cnt                   ; columns - 1
 
 ?csize
- .if 1
 	rep #$20
 	.LONGA ON
 	lda sp_cnt
@@ -636,49 +395,12 @@ sr_resume = *
 	cmp #CLIP_END
 	sep #$20
 	.LONGA OFF
- .else
-  .if 1
-        stz m_a+1
-  .else
-	lda #0                       ; bytes needed = 2*(cnt+1)
-        sta m_a+1
-  .endif
-        lda sp_cnt
-        sta m_a
-        inc m_a
-        bne ?n1
-        inc m_a+1
-?n1     asl m_a
-        rol m_a+1
-        clc
-        lda sp_clip
-        adc m_a
-        lda sp_clip+1
-        adc m_a+1
-        cmp #>CLIP_END
- .endif
         bcc ?cfit
-        ; --- POOL TOO TIGHT. Dropping the sprite here was a real bug and not
-        ;     just a cosmetic one: en_shoot aims at the VISSPRITE list, so a
-        ;     monster that lost its slot was invisible AND unkillable, and the
-        ;     more of them were on screen the more often it happened ("some
-        ;     enemies don't die", "corpses disappear", 2026-07-31).
-        ;     A per-column block is 2*(columns+1) bytes and a near sprite can
-        ;     want 80+ of the 256 the page holds, so three of them exhaust it.
-        ;     Collapse to ONE window over the whole sprite instead -- 2 bytes,
-        ;     the same shape the uniform case already produces, and the only
-        ;     cost is that a sprite straddling two different windows is clipped
-        ;     by its leftmost column's. Far better than not existing.
+        ; --- POOL TOO TIGHT.
         lda sp_cnt
         beq ?bail                    ; already one window: the page really is full
- .if 1
 	stz sp_cnt
 	bra ?csize
- .else
-        lda #0
-        sta sp_cnt
-        jmp ?csize
- .endif
 
 ?cfit   lda sp_clip                  ; block base (the pool is one page: hi = $07)
         sta sp_cbase
@@ -686,7 +408,7 @@ sr_resume = *
         sta sp_uni
 
         ldx sp_xa
- .if 1                                ; 2026-09-15: the window pair rides A:B (top
+                                      ; 2026-09-15: the window pair rides A:B (top
 ?snap   lda solid_arr,x              ;   low, bottom high) -- ONE 16-bit store into
         bne ?closed                  ;   the pool, ONE 16-bit compare against the
         lda ytopc_arr,x              ;   first column's pair, the pointer step a
@@ -701,9 +423,7 @@ sr_resume = *
         xba
         lda #255
         ; --- uniform test: 90% of sprites see ONE window over all their columns
-        ;     (measured, tools/_dbg_sprcap.py). Those keep just the first pair and
-        ;     spr_one re-reads it with a step of 0 -- that is what keeps the pool
-        ;     inside a single page at VIS_MAX 40.
+        ;     (measured, tools/_dbg_sprcap.py).
 ?put    ldy sp_clip                  ; first column? (Y: A/B hold the pair, and
         cpy sp_cbase                 ;   the pool is one page, so the low byte says)
         rep #$20
@@ -725,57 +445,6 @@ sr_resume = *
         inx
         dec sp_cnt
         bpl ?snap
- .else
-?snap   lda solid_arr,x
-        bne ?closed
-        lda ytopc_arr,x
-        cmp ybotc_arr,x
-        beq ?open
-        bcs ?closed                  ; top > bot -> nothing open in this column
-
-?open
-        sta (sp_clip)                ; window top (A = ytopc)
-        ldy #1
-        lda ybotc_arr,x
-        sta (sp_clip),y              ; window bottom
-        bra ?sadv
-
-?closed
-        lda #255                     ; 255 = fully covered by nearer geometry
-        sta (sp_clip)
-        ldy #1
-        sta (sp_clip),y
-?sadv   lda sp_clip                  ; first column? -> remember its window
-        cmp sp_cbase		;remark for later: this is only equal for the first column
-        bne ?ucmp
-	rep #$20
-	.LONGA ON
-        lda (sp_clip)
-        sta sp_t0	;sp_b0 is right next to sp_t0, word write ok
-	sep #$20
-	.LONGA OFF
-	bra ?s2
-
-?ucmp
-        lda (sp_clip)
-        cmp sp_t0
-        bne ?unot
-        ldy #1
-        lda (sp_clip),y
-        cmp sp_b0
-        beq ?s2
-?unot
-        stz sp_uni
-?s2	clc
-        lda sp_clip
-        adc #2
-        sta sp_clip
-        bcc ?s3
-        inc sp_clip+1
-?s3	inx
-        dec sp_cnt
-        bpl ?snap
- .endif
 
         lda sp_uni
         beq ?keep                    ; per-column windows: keep the whole block
@@ -784,11 +453,7 @@ sr_resume = *
         bne ?uni                     ; every column closed -> nothing to draw at
         lda sp_cbase                 ; all: hand the whole block back and drop it
         sta sp_clip                  ; (a hidden sprite must not eat a vissprite)
- .if 1
 	rts
- .else
-        jmp ?skip2		;(LOL)
- .endif
 
 ?uni    clc                          ; uniform: give the pool everything back but
         lda sp_cbase                 ; the one pair (hi stays $07 -- see CLIP_BASE)
@@ -823,8 +488,6 @@ sr_resume = *
         lda sp_dflip                 ; the ROTATION spr_wrot chose at projection
         sta vs_flip,x                ;   (slot bits 0-1, bit7 = mirrored; 0 for
                                      ;   statics/death -- spr_dyn clears it).
-                                     ;   spr_one replays it: zp_rx/ry are stale
-                                     ;   by draw time, so it must NOT recompute
         lda sp_i                     ; and the THING index: the hitscan needs the
         sta vs_th,x                  ;   thing (its health), not the sprite
         lda sp_cbase                 ; clip block, low byte; bit 0 = uniform window
@@ -833,8 +496,6 @@ sr_resume = *
         ; --- slot it into the draw order, NEAREST first ----------------------
         ; The BSP walk hands sprites over front-to-back already, so this insertion
         ; usually stops at the first compare (~10 inversions per frame, measured).
-        ; That is why there is no selection sort any more: at 40 sprites its 1600
-        ; probes would cost more than the whole billboard pass.
 ?ins    cpx #0
         beq ?place
         ldy vs_ord-1,x               ; sprite one slot nearer than the hole
@@ -848,11 +509,7 @@ sr_resume = *
 ?shift  tya
         sta vs_ord,x
         dex
- .if 1
 	bra ?ins
- .else
-        jmp ?ins
- .endif
 ?place  lda sp_n
         sta vs_ord,x
         inc sp_n
@@ -861,30 +518,7 @@ sr_resume = *
         .endseg
 
 ;--------------------------------------------------------------
-; spr_pickup -- once per frame: take everything the player REACHED FOR. Modelled
-;   on w3d/src/sprites.asm try_pickup + give_bonus: a thing flagged "pickup"
-;   within PICKUP_R in both axes is offered to give_bonus, and only removed if
-;   the bonus could actually be used -- a medikit at full health stays on the
-;   floor, exactly like the original. Removal = THING_ALIVE[i] = 0, which also
-;   stops spr_add from ever drawing it again. Called from the main loop after
-;   move_player.
-;
-;   IT TESTS pk_x/pk_y, NOT zp_px/zp_py (2026-08-12, "niektore items ked su
-;   vyssie, nedaju sa zobrat"). p_map.c hands items over inside
-;   P_CheckPosition(thing, x, y) -- the PIT_CheckThing loop, against the
-;   DESTINATION, and it is the first thing P_TryMove does. All three of
-;   P_TryMove's refusals (doesn't fit / step > 24 / dropoff) come afterwards and
-;   none of them undoes the pickup, so in DOOM a move that was REFUSED still
-;   takes the item: you get what is on a ledge you cannot climb by walking INTO
-;   the ledge, and what is behind a wall by walking into the wall. Testing where
-;   the player ENDED UP made every such item unobtainable -- 118 of them across
-;   episode 1, E1M2's green armour in its 32-high alcove at (0,976) among them,
-;   which is the one that was reported. The alcove line is 40 units of opening
-;   against PLAYER_H 56, so collide_blocked holds him 16 off it and the 24-unit
-;   move grid leaves him 53 away from a 36-unit reach; the point he asked for is
-;   16 away. Only ONE point is tested per frame, not the swept path: the port's
-;   frame is one 24-unit step where DOOM ticks 3-4 smaller ones, and 24 is well
-;   inside the 72-unit pickup box, so nothing slips through the gap.
+; spr_pickup -- once per frame: take everything the player REACHED FOR.
 ;--------------------------------------------------------------
 pk_resume = *
         org PICKUP_BASE              ; moved out of the $B000 segment -- see the
@@ -902,8 +536,9 @@ pk_loop                              ;   270 things (_bench_subsys 2026-08-31)
 ?go     lda.l PK_IDX,x               ; the thing index -- spr_take's and the
         sta sp_i                     ;   alive bit's key -- and its record
         tax                          ;   address, precomputed by pk_build: the
-        jsr thing_alive_bit          ;   i*8 shift run left this FLUSH block
-        bne ?have                    ;   (ends $FEAB, enemy.asm org'd at $FEAC)
+        TALIVE                       ;   i*8 shift run left this FLUSH block
+                                     ;   (2026-09-27: inline -- the far-x exit
+        bne ?have                    ;   above freed the branch reach)
 ?spent  jmp pk_rm                    ; taken item / collected drop: it can never
 ?have   ldx pk_j                     ;   match again -- swap-remove the slot and
         lda.l PK_ALO,x               ;   rescan it, so the walked list SHRINKS
@@ -923,8 +558,13 @@ pk_loop                              ;   270 things (_bench_subsys 2026-08-31)
         clc                          ;   <=> d in [-R, R-1], exactly the set the
         adc #PICKUP_R                ;   old ?near's four byte tests accepted
         cmp #2*PICKUP_R
-        bcs ?far16                   ; just out of reach: the entry stays
-        ldy #2                       ; |y - pk_y| < PICKUP_R ?
+        bcc ?xin                     ; 2026-09-27: out of reach on x is the COMMON
+        sep #$20                     ;   case -- it falls through to the next entry
+        .LONGA OFF                   ;   (was bcs ?far16 / sep / bra ?next / inc /
+        inc pk_j                     ;   bra: two taken branches fewer)
+        bra ?loop
+        .LONGA ON
+?xin    ldy #2                       ; |y - pk_y| < PICKUP_R ?
         sec
         lda (sp_ptr),y
         sbc pk_y
@@ -934,16 +574,25 @@ pk_loop                              ;   270 things (_bench_subsys 2026-08-31)
         .LONGA OFF
         sep #$20
         bcs ?next
-        jsr spr_take                 ; the whole "hand it over" tail moved to the
+        lda pl_air                   ; MID-AIR only: P_TouchSpecialThing's
+        beq ?take                    ;   delta = special->z - toucher->z, out
+        rep #$21                     ;   of reach above PLAYER_H or 8 below
+        .LONGA ON                    ;   his feet
+        ldy #4
+        lda (sp_ptr),y
+        sbc pl_z
+        clc                          ; (C was 0: delta-1, so +9 below)
+        adc #9                       ; delta + 8 in [0, PLAYER_H + 8]
+        cmp #PLAYER_H+9
+        sep #$20
+        .LONGA OFF
+        bcs ?next
+?take   jsr spr_take                 ; the whole "hand it over" tail moved to the
                                      ;   DROP block: adding the dropped-ammo path
                                      ;   inline pushed this proc past PICKUP_END
 ?next   inc pk_j
-        jmp ?loop
-        .LONGA ON
-?far16  sep #$20
-        .LONGA OFF
-        bra ?next
-.endp
+        jmp ?loop                    ; (2026-09-27: TALIVE inline put ?loop out of
+.endp                                ;   bra reach; jmp abs is 3 cycles as well)
         .endseg
     .if * > PICKUP_END+1
         ert 'spr_pickup outgrew PICKUP_BASE..END (memory_map.inc)'
@@ -959,15 +608,12 @@ pk_loop                              ;   270 things (_bench_subsys 2026-08-31)
 ;   those corpses live as they happen. Cost = one old-style full scan, once.
 ;--------------------------------------------------------------
 pkb_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org PKBUILD_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pk_build
-        lda #0
-        sta pk_n
-        sta pk_i
+        ;lda #0
+        stz pk_n
+        stz pk_i
 ?lp     lda pk_i
         cmp THINGS_BASE              ; the packed thing count
         bcs ?done
@@ -979,7 +625,7 @@ pkb_resume = *
         lda pk_i
         jsr pk_append
 ?nx     inc pk_i
-        jmp ?lp
+        bra ?lp
 ?done   lda #1
         sta pk_valid
         rts
@@ -1018,10 +664,6 @@ pkb_resume = *
 ; pk_rm -- spr_pickup's spent slot (taken item, or a corpse whose drop was
 ;   collected -- bit0 is static and F_DROP is set once, so neither can ever
 ;   match again): copy the LAST row over slot pk_j, shrink, rescan the slot.
-;   Long indexing is X-only, so the row rides the stack between the two X
-;   phases. pk_j == pk_n-1 copies the row onto itself and the loop's cpx
-;   ends the walk -- both edges fall out of the same code. Cold: runs once
-;   per spent entry ever, so its slow-window home costs nothing.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pk_rm
@@ -1047,12 +689,7 @@ pk_n     dta 0                       ; rows in the list
 pk_j     dta 0                       ; spr_pickup's cursor
 pk_i     dta 0                       ; pk_build's thing counter
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > PKBUILD_END+1
-        ert 'pk_build outgrew PKBUILD_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org pkb_resume
 
         icl 'spr_draw.asm'           ; billboard drawing: spr_draw / spr_one / spr_blit
@@ -1060,26 +697,6 @@ pk_i     dta 0                       ; pk_build's thing counter
 
 ;==============================================================
 ; IDLE ANIMATION (2026-08-07, "barely by mali byt animovane.. a aj ine veci").
-; info.c gives the barrel a two-frame spawnstate (S_BAR1 <-> S_BAR2, 6 tics) and
-; most pickups a ping-pong -- BON1/BON2/SOUL/PMAP are ABCDCB, PINS ABCD, the
-; keycards AB at 10 tics, the red torch ABCD at 4. This port drew frame A and
-; left it there.
-;
-; THE CHEAP WAY, and why it is also the RIGHT one. Every item of a kind spawns
-; on the same tic in DOOM, so they all run the same phase for the whole level --
-; there is nothing per-THING to keep. One ring per animated SPRITE is enough,
-; and a ring is a walk over DTAB rows, the same 8-byte rows the death, walk and
-; attack machines already use. A row's bytes 0..6 are frame id / 2 spare / w / h
-; / left / top, which IS the sprite table's own layout, so a step is a 7-byte
-; copy over the sprtab entry and every billboard drawn afterwards picks up the
-; new frame with no test anywhere in the draw path. Byte 7 of the row is the
-; tics, i.e. the next countdown; byte 7 of the SPRTAB is the bonus/kind id, and
-; the copy stops at 6 so it survives.
-;
-; COST, measured on E1M1 (5 rings): 552 cycles per DOOM tic, and a 5 fps frame
-; earns ~7 tics -- 3.9k of 2.5M, 0.16%, with nothing at all added to
-; render_world. Dividing a global counter per sprite per frame would have cost
-; more and drifted.
 ;==============================================================
 ANVARS = ANVARS_BASE
 an_i    = ANVARS                     ; [16] which row of its ring each slot shows
@@ -1129,12 +746,7 @@ an_resume = *
         lda an_i,x
         cmp an_n
         bcc ?ok
- .if 1
         stz an_i,x
- .else
-        lda #0
-        sta an_i,x
- .endif
 ?ok     txa
         ora #$10                     ; +$10 = ITAB_FIRST
         tay
@@ -1143,17 +755,11 @@ an_resume = *
         adc an_i,x
         sta en_k2+1                  ; en_row takes the row + 1 (a TH_STATE value)
         inc en_k2+1
- .if 1
 	txy
- .else
-        txa                          ; ...and the ring's SPRITE, before en_row
-        tay                          ;   walks zp_ptr off the ITAB
- .endif
         lda [zp_ptr],y
         sta an_n
         jsr en_row                   ; zp_ptr = &DTAB_ROWS[row], bank $01
- .if 1
-	rep #$20
+                                    ; 2026-09-22 (65816-windows): en_row returns 16-bit
 	.LONGA ON
 	lda an_n
 	and #$00ff
@@ -1165,23 +771,6 @@ an_resume = *
         sta sp_ptr
 	sep #$20
 	.LONGA OFF
- .else
-        lda #0                       ; sp_ptr = th_sprtab + id*8, the shifts in
-        sta sp_ptr+1                 ;   the ACCUMULATOR (a level can carry 50
-        lda an_n                     ;   sprites, so id*8 is 9 bits and the carry
-        asl                          ;   has to chain into the high byte)
-        rol sp_ptr+1
-        asl
-        rol sp_ptr+1
-        asl
-        rol sp_ptr+1
-        clc
-        adc th_sprtab
-        sta sp_ptr
-        lda sp_ptr+1
-        adc th_sprtab+1
-        sta sp_ptr+1
- .endif
 
         ldy #6                       ; row 0..6 IS sprtab 0..6; byte 7 is the
 ?cp     lda [zp_ptr],y               ;   bonus/kind id and must survive
@@ -1202,11 +791,7 @@ an_resume = *
         org ANINIT_BASE
 ;--------------------------------------------------------------
 ; an_init -- per level: park every ring one row BEFORE frame A with a single tic
-;   left, so the first DOOM tic wraps it to A and copies the row. Called from
-;   lt_init, i.e. at the END of init_level's mv_reset chain -- NOT from
-;   load_dtab, which is where it went first: read_ext walks zp_ptr and so does
-;   this, and load_los then streamed through a pointer it had moved (a flat pink
-;   screen, 2026-08-07).
+;   left, so the first DOOM tic wraps it to A and copies the row.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc an_init
@@ -1216,15 +801,8 @@ an_resume = *
         sta zp_ptr+1
         ldx #ITAB_MAX-1
 ?lp
- .if 1
         stz an_t,x                   ; assume the slot is empty
 	txy
- .else	
-	lda #0
-        sta an_t,x                   ; assume the slot is empty
-        txa
-        tay
- .endif
         lda [zp_ptr],y               ; a sprite id, or $FF for "no ring"
         cmp #$FF
         beq ?nx
@@ -1232,19 +810,9 @@ an_resume = *
         ora #$20                     ; ITAB_N
         tay
         lda [zp_ptr],y
- .if 1
 	dec
- .else
-        sec
-        sbc #1                       ; one before row 0: the first tic wraps
- .endif
         sta an_i,x
- .if 1
         inc an_t,x
- .else
-        lda #1
-        sta an_t,x
- .endif
 ?nx     dex
         bpl ?lp
         rts

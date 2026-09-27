@@ -4,9 +4,9 @@
 ; addresses hold whichever level is loaded. Per-level values -- counts, root
 ; node, spawn point -- are read from the header (MAP_H*) at runtime.
 ; RAM BUDGET: see the RAM-BUDGET block at the top of memory_map.inc.
-; LOW  $4000-$4B49 (2889 B, 23 sectors)
+; LOW  $4000-$4B5E (2910 B, 23 sectors)
 ; HIGH $D800-$D98C (396 B, 4 sectors) -- RAM under the OS ROM
-; EXT  $07:0100-$07:3A3C (14652 B, 115 sectors) -- Rapidus SRAM bank (VERTS+SEGOFF+SSECT);
+; EXT  $07:0100-$07:4890 (18320 B, 144 sectors) -- Rapidus SRAM bank (VERTS+SEGOFF+SSECT);
 ;      MAP_VERTS/MAP_SSECT below are OFFSETS inside that bank, read via
 ;      65816 [zp],y long indirect with zp+2 = MAP_EXT_BANK. (NODES
 ;      moved to the SEG bank 2026-08-18, SSECT in from HIGH -- E2/E3.)
@@ -24,7 +24,7 @@ MAP_EXT_BANK equ $07
 MAP_SEG_BANK equ $03
 MAP_LOW_SECT equ 23
 MAP_HI_SECT  equ 4
-MAP_EXT_SECT equ 115
+MAP_EXT_SECT equ 144
 MAP_SEG_SECT equ 448
 
 ; ---- runtime header fields (per level) ----
@@ -56,22 +56,29 @@ MAP_HSECS    equ $401F      ; SEG_FRONT of the secret exit ($FF = none); the
 MAP_VERTS    equ $0100
 MAP_SEGS     equ $0100
 MAP_TEXADDRLO  equ $4730
-MAP_TEXADDRMID equ $476F
-MAP_TEXADDRHI  equ $47AE
-MAP_TEXWMASK   equ $47ED
-MAP_TEXH       equ $482C
-MAP_TEXDOM     equ $486B
-MAP_TEXSWMATE  equ $48AA
-MAP_TEXIXLO    equ $48E9
-MAP_TEXIXHI    equ $4928
+MAP_TEXADDRMID equ $4792
+MAP_TEXADDRHI  equ $47F4
+MAP_TEXWMASK   equ $4856
+MAP_TEXH       equ $48B8
+MAP_TEXDOM     equ $491A
+MAP_TEXSWMATE  equ $073A3C   ; rows 6-8: EXT bank, lda.l
+MAP_TEXIXLO    equ $073A9E
+MAP_TEXIXHI    equ $073B00
+MAP_SNDIXL   equ $073B62    ; [SND_NODES] P_NoiseAlert graph (enemy_ai.asm snd_flood): a node edge list EXT offset, lo
+MAP_SNDIXH   equ $073C61    ;   ... hi. List = edges (node, my row, its row), $FF, block-line edges, $FF
+MAP_SNDHEARD equ $074260    ; [SND_NODES] b7 = soundtarget set, b0 = reached this flood; ships 0
+MAP_SNDQ     equ $07435F    ; [SND_NODES] the flood work queue
+MAP_SNDSS    equ $07445E    ; [ssect] subsector -> node
+MAP_THNODE   equ $074790    ; [256] thing -> spawn node (snd_thnode)
+SND_NODES    equ 255
 MAP_HSCRTEX    equ $401A
 MAP_DOORS    equ $D800
 MAP_DSND     equ $D8B0      ; soundorg pairs, 4 B a door
 MAP_DOORLOCK equ $D960
-MAP_YBITS    equ $4967
-MAP_YIDXLO   equ $4A98
-MAP_YIDXHI   equ $4AD3
-MAP_YVAL     equ $4B0E
+MAP_YBITS    equ $497C
+MAP_YIDXLO   equ $4AAD
+MAP_YIDXHI   equ $4AE8
+MAP_YVAL     equ $4B23
 MAP_SECTORS  equ $4020
 MAP_SSECT    equ $2D74      ; EXT-bank offset (2026-08-18: was HIGH)
 MAP_NODES    equ $8729      ; SEG-bank offset (2026-08-18: was EXT; zp_nodeptr+2 = MAP_SEG_BANK)
@@ -129,7 +136,7 @@ MAP_NYOFF    equ 59
 MAP_NLIGHTS  equ 21
 MAP_NLINES   equ 1764
 LIGHT_SIZE   equ 6
-TEX_COUNT    equ 63
+TEX_COUNT    equ 98
 ; 1 = textures are stored at HALF horizontal resolution (pack_textures.py
 ;     HALF_W). seg_len then halves the per-seg u track -- see tw_setup.asm.
 TEX_HALFW    equ 1

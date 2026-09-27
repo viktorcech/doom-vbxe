@@ -1,44 +1,6 @@
-; Part of enemy_ai.asm -- AUTO-SPLIT out of it 2026-08-09 -- assembled in place via icl at the
-; exact point the text was cut from, so every org and every block guard below is
-; unchanged (verified: build/doom_bsp.xex is byte-identical).
-;   A_Chase's ATTACK half + the damage rolls (AIATK_BASE, AICDMG_BASE)
-;==============================================================
-; A_CHASE'S ATTACK HALF (2026-07-31) -- p_enemy.c, parked at AIATK_BASE.
-;
-; RATE, straight out of A_Chase. Everything below happens once per RUN state,
-; i.e. every mk_ctic tics (POSS 4, TROO 3, SARG 2):
-;   1. reactiontime--                       (info.c mk_rt = 8 for every kind)
-;   2. MF_JUSTATTACKED set -> clear it, P_NewChaseDir, and do NOT attack. This
-;      is what stops a monster firing on two consecutive states.
-;   3. melee: meleestate && dist < MELEERANGE-20+player_radius = 60 units
-;   4. missile: movecount MUST be 0 (P_TryWalk reloads it with P_Random()&15,
-;      so this comes round about every 8 states), reactiontime 0, and then
-;      P_CheckMissileRange's own roll: dist = approx - 64, another -128 if the
-;      kind has no meleestate (POSS/SPOS "fire more"), clamped to 200, and
-;      P_Random() < dist means DO NOT fire. So P(fire) = (256-dist)/256 --
-;      point blank is certain, 200 units away is about one state in five.
-;
-; SKILL: the port ships skill 2 (sk_medium, pack_things SKILL). The only
-; skill-dependent lines in A_Chase are `gameskill < sk_nightmare` on the
-; movecount gate and `gameskill != sk_nightmare` on the JUSTATTACKED pause --
-; both TRUE here, so this is the standard rule set. sk_baby's `damage >>= 1`
-; (p_inter.c) does not apply either.
-;
-; NOT DOOM (the missing half): the CACODEMON and the LOST SOUL still do no
-; damage -- mk_atk is 0 for both. The caco wants MT_HEADSHOT and the soul wants
-; A_SkullAttack, which is a charge, not a missile, and neither has a path here
-; yet. Everything else lands: the hitscan pair (POSS/SPOS, and the SPIDER
-; MASTERMIND on the same id), the two melee attacks (TROO's claw, SARG's bite),
-; and the three MISSILES ball.asm carries -- the imp's, the baron's and the
-; CYBERDEMON's rocket. A_FaceTarget is not modelled: the sprite has 8 rotations
-; but the attack frames are one image.
-;
-; ONE MISSILE IN FLIGHT, globally (ball.asm): a second thrower whose shot found
-; the slot busy just animates, which doubles as the fire-rate limit. It is why
-; the cyberdemon's three-rocket A_CyberAttack chain lands one rocket per pass
-; and not three.
-;==============================================================
-        org AIATK_BASE
+;--------------------------------------------------------------
+; Part of enemy_ai.asm (icl in place): A_Chase's attack half + the damage rolls.
+;--------------------------------------------------------------
 
 ;--------------------------------------------------------------
 ; ai_try_atk -- A_Chase's attack branches. C=1: it attacked (or is in the
@@ -60,17 +22,10 @@
         sta ai_amode                 ;   ai_pdist both use ai_t2 as scratch
         cmp #1<<AIM_RTSH
         bcc ?nort                    ; (C = 1 past it: the sbc needs no sec)
- .if 1
         sbc #1<<AIM_RTSH
         sta ai_amode
 ?nort   and #AIM_JATK                ; --- "do not attack twice in a row" (A IS
                                      ;   ai_amode on both paths: no reload)
- .else
-        sbc #1<<AIM_RTSH
-        sta ai_amode
-?nort   lda ai_amode                 ; --- "do not attack twice in a row"
-        and #AIM_JATK
- .endif
         beq ?nojatk
         lda ai_amode
         and #255-AIM_JATK            ; clear it and spend this state turning
@@ -85,14 +40,7 @@
         jsr aif_isvis                ; the port's P_CheckSight -- the vissprite
         bcc ?nope                    ;   oracle ai_wake uses: a thing that got
                                      ;   drawn is by definition visible and
-                                     ;   wall-clipped. OFF SCREEN it is the
-                                     ;   cached ray instead -- ai_look writes
-                                     ;   every ray's answer to TH_SEEN and
-                                     ;   aif_pvis reads it, so the vissprite list
-                                     ;   stopped being the only source of truth
-                                     ;   when ai_look landed. (This comment still
-                                     ;   said "TH_SEEN has never been written"
-                                     ;   until 2026-08-25.)
+                                     ;   wall-clipped.
         jsr ai_pdist                 ; ai_ad = P_AproxDistance(player, thing)
         ldx ai_k                     ; --- melee: needs a meleestate and 60 units
         lda mk_hmel,x
@@ -117,16 +65,17 @@
         sta ai_amode
         ldx #>TH_MODE
         jsr ai_put
-        jmp ?fire
+        bra ?fire
 ?range  lda ai_amode                 ; reactiontime still running -> not yet
         cmp #1<<AIM_RTSH
         bcs ?nope
         jsr ai_mrange                ; P_CheckMissileRange's roll
         bcc ?nope
 ?fire
-        lda #>TH_MODE                ; MF_JUSTATTACKED: the NEXT state cannot
-        jsr ai_get                   ;   attack again
-        ora #AIM_JATK
+                                      ; 2026-09-23 (reload rule): TH_MODE == ai_amode here
+        lda ai_amode                 ;   -- both ways in just ai_put it, and nothing
+        ora #AIM_JATK                ;   between writes TH_MODE (aif_isvis, ai_pdist,
+        sta ai_amode                 ;   ai_mrange, ai_get: readers only)
         ldx #>TH_MODE
         jsr ai_put
         jmp ai_atk_enter
@@ -140,11 +89,7 @@
 ;       target->reactiontime = 0;        // we're awake now...
 ;   and, when the painchance roll passed, MF_JUSTHIT -- which makes the very
 ;   next P_CheckMissileRange return true regardless of reactiontime OR range.
-;   Together these are why a zombieman you shoot at across a room shoots back
 ;   instead of finishing its wind-up. Clobbers A/X.
-;   aif_retal is the rest of that same if-block (p_inter.c:904): the hit also
-;   points the victim at whoever landed it, ai_src -- which is the player on
-;   every path but a monster's own gunshot.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_hurt
@@ -155,14 +100,14 @@
         and #255-AIM_RTMASK          ; reactiontime = 0
         ldx en_painr
         beq ?put
-        ora #AIM_JHIT
+                                      ; 2026-09-22 p_inter.c:899: the painstate replaces
+        and #255-AIM_ATK             ;   the attack state -- a flinch cuts the attack
+        ora #AIM_JHIT                ;   short instead of resuming it afterwards
 ?put    ldx #>TH_MODE
         jmp ai_pain_row              ; ...which stores it and then, on the same
 .endp                                ;   roll, drops the FLINCH frame in. It is
         .endseg
-                                     ;   a jmp and not a jsr on purpose: this
-                                     ;   block is full to the byte, so the tail
-                                     ;   call had to stay exactly three bytes
+                                     ;   a jmp and not a jsr on purpose: this ...
 
 ;--------------------------------------------------------------
 ; ai_isvis -- C=1 if ai_t is in this frame's vissprite list. Clobbers A/X.
@@ -189,11 +134,12 @@
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_pdist
- .if 1
         jsr aif_tpos                 ; -> ai_tx/ai_ty
+                                    ; 2026-09-22 (65816-windows): aif_tpos returns 16-bit
+        sep #$20
         lda ai_t
-        jsr en_thing.en_th2
-        rep #$20                     ; ---- 16-bit A: |target - thing| per axis in
+                                      ; 2026-09-22: en_th2w returns 16-bit
+        jsr en_thing.en_th2w
         .LONGA ON                    ;   the accumulator, then dx+dy/2 with the
         sec                          ;   larger term whole (m_fixed.c)
         lda ai_tx
@@ -227,83 +173,6 @@
         sep #$20
         .LONGA OFF
         rts
- .else
-        jsr aif_tpos                 ; -> ai_tx/ai_ty
-        lda ai_t
-        jsr en_thing.en_th2
-        sec                          ; |target.x - thing.x|
-        ldy #0
-        lda ai_tx
-        sbc (sp_ptr),y
-        sta ai_ax
-        iny
-        lda ai_tx+1
-        sbc (sp_ptr),y
-        sta ai_ax+1
-        jsr ?abs_x
-        sec                          ; |target.y - thing.y|
-        ldy #2
-        lda ai_ty
-        sbc (sp_ptr),y
-        sta ai_ay
-        iny
-        lda ai_ty+1
-        sbc (sp_ptr),y
-        sta ai_ay+1
-        jsr ?abs_y
-        sec                          ; which is larger?
-        lda ai_ax
-        sbc ai_ay
-        lda ai_ax+1
-        sbc ai_ay+1
-        bcs ?xbig
-        lda ai_ax                    ; dy is larger: ad = dy + dx/2
-        sta ai_t2
-        lda ai_ax+1
-        lsr
-        ror ai_t2
-        clc
-        lda ai_ay
-        adc ai_t2
-        sta ai_ad
-        lda ai_ay+1
-        adc #0
-        sta ai_ad+1
-        rts
-?xbig   lda ai_ay                    ; dx is larger: ad = dx + dy/2
-        sta ai_t2
-        lda ai_ay+1
-        lsr
-        ror ai_t2
-        clc
-        lda ai_ax
-        adc ai_t2
-        sta ai_ad
-        lda ai_ax+1
-        adc #0
-        sta ai_ad+1
-        rts
-?abs_x  lda ai_ax+1
-        bpl ?xok
-        sec
-        lda #0
-        sbc ai_ax
-        sta ai_ax
-        lda #0
-        sbc ai_ax+1
-        sta ai_ax+1
-?xok    rts
-?abs_y  lda ai_ay+1
-        bpl ?yok
-        sec
-        lda #0
-        sbc ai_ay
-        sta ai_ay
-        lda #0
-        sbc ai_ay+1
-        sta ai_ay+1
-?yok    rts
- .endif
 .endp
         .endseg
 
@@ -314,34 +183,46 @@
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_mrange
-        sec
-        lda ai_ad
-        sbc #64
-        sta ai_t2
-        lda ai_ad+1
-        sbc #0
-        bmi ?point                   ; inside 64 units: always fires
-        bne ?far                     ; >= 256 left over -> clamp
+                                      ; 2026-09-22 p_enemy.c:216-253: dist = aprox - 64,
+    .if MK_COUNT <> MK_WSND+2         ;   -128 without a meleestate, >>1 for the
+        ert 'ai_mrange: kinds >= MK_WSND must be exactly CYBR, SPID'
+    .endif                           ;   cyberdemon and spider, <= 200 (cyberdemon 160)
         ldx ai_k
-        lda mk_hmel,x
-        bne ?have
-        sec                          ; no meleestate: 128 units closer to firing
-        lda ai_t2
+        rep #$20
+        .LONGA ON
+        lda ai_ad
+        sec
+        sbc #64                      ; dist = P_AproxDistance - 64
+        ldy mk_hmel,x
+        bne ?mel
+        sec                          ; no meleestate: fire more
         sbc #128
-        bcc ?point
-        sta ai_t2
-?have   lda ai_t2
-        cmp #200                     ; DOOM clamps dist at 200
+?mel    cpx #MK_WSND                 ; MT_CYBORG, MT_SPIDER: dist >>= 1
+        bcc ?one
+        cmp #$8000
+        ror @
+?one    cmp #$8000                   ; dist < 0: P_Random() < dist never holds
+        bcs ?point
+        cmp #200
+        bcc ?c200
+        lda #200
+?c200   cpx #MK_WSND                 ; MT_CYBORG only: at most 160
+        bne ?roll
+        cmp #160
         bcc ?roll
-?far    lda #200
-        sta ai_t2
-?roll   lda RANDOM
+        lda #160
+?roll   sep #$20
+        .LONGA OFF
+        sta ai_t2                    ; (dist <= 200: one byte)
+        lda RANDOM
         cmp ai_t2                    ; P_Random() < dist -> do NOT fire
         bcc ?no
         rts                          ; (C = 1 already: the bcc fell through)
 ?no     clc
         rts
-?point  sec
+        .LONGA ON
+?point  sep #$21                     ; C=1: fire
+        .LONGA OFF
         rts
 .endp
         .endseg
@@ -369,12 +250,6 @@
 ; ai_atk_next -- the current ATTACK state ran out. AT_LAST hands the thing back
 ;   to the RUN chain (info.c's last attack state points at S_x_RUN1), otherwise
 ;   step to the next one.
-;
-;   ...unless the chain LOOPS. S_SPID_ATK4 is the one last attack state in DOOM
-;   that does NOT point at S_x_RUN1 -- p_enemy.c A_SpidRefire sends it back to
-;   S_SPID_ATK2 and the spider mastermind keeps firing. ai_refire is that test,
-;   and it answers C=1 with ai_awst ALREADY back to 0, so ?step's own +1 lands on
-;   chain state 1 and this arm costs five bytes: a jsr and a branch.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_atk_next
@@ -397,18 +272,12 @@
         jsr ai_put
         jsr ai_setrow
         jmp ai_chase                 ; the RUN state's action is A_Chase
- .if 1
 ?step   lda ai_awst
         inc @
         ldx #>TH_WST
- .else
-?step   lda ai_awst
-        clc
-        adc #1
-        ldx #>TH_WST
- .endif
         jsr ai_put
-        jmp ai_atk_row
+                                     ; 2026-09-21 drac_bra: the target is the very
+        ert *<>ai_atk_row           ;   next byte of this segment -- fall through
 .endp
         .endseg
 
@@ -422,25 +291,19 @@
         ldx #>TH_DIR                 ;   the monster to its target first (the
         jsr ai_put                   ;   store lives here, see aif_oct)
         jsr ai_atk_tics
-        sta ai_atics                 ; NOT ai_t2: ai_put below overwrites that
+                                      ; 2026-09-22 (65816-style): the tics byte rides
+        pha                          ;   the stack across the two ai_put calls
         and #AT_TICS                 ; bits 0-5 are info.c's own tics
         ldx #>TH_WTIC
         jsr ai_put
- .if 1
         lda ai_arow                  ; TH_WROW is row+1 (0 = not chasing)
         inc @
         ldx #>TH_WROW
- .else
-        lda ai_arow                  ; TH_WROW is row+1 (0 = not chasing)
-        clc
-        adc #1
-        ldx #>TH_WROW
- .endif
         jsr ai_put
-        lda ai_atics
+        pla
         and #AT_FIRE
-        beq ?done
-        jmp ai_fire
+        bne ai_fire 
+        ;bra ai_fire
 ?done   rts
 .endp
         .endseg
@@ -452,18 +315,16 @@
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_atk_tics
- .if 1
         lda #>TH_WST
         jsr ai_get
         sta ai_awst
-        sta ai_asc                   ; the state, scaled by the stored-view
-        lda wrot_nst                 ;   count: attack rows are state-major
-        cmp #4                       ;   x NSTOR since the rotation slice (the
-        bne ?flat                    ;   .else side has the 2026-08-08 story)
-        lda ai_awst
-        asl                          ; *4
+                                      ; 2026-09-23: the *4 stays in A and ai_asc is stored
+        ldy wrot_nst                 ;   once (no reload of ai_awst). The state, scaled
+        cpy #4                       ;   by the stored-view count: attack rows are
+        bne ?fl2                     ;   state-major x NSTOR
+        asl                          ; *4 (a state index: no carry out)
         asl
-        sta ai_asc
+?fl2    sta ai_asc
 ?flat   ldy ai_k
         lda #<ATAB_EXT
         sta zp_ptr
@@ -486,54 +347,6 @@
         ldy #7
         lda [zp_ptr],y
         rts
- .else
-        lda #>TH_WST
-        jsr ai_get
-        sta ai_awst
-        sta ai_asc                   ; the state, scaled by the stored-view
-        lda wrot_nst                 ;   count: attack rows are state-major
-        cmp #4                       ;   x NSTOR since the rotation slice (all
-        bne ?flat                    ;   NSTOR slots carry the SAME tics byte, so
-        lda ai_awst                  ;   reading slot 0 is exact)
-        asl                          ; *4. This said *3, and pack_things has
-        asl                          ;   documented "NSTOR is 4 or 1 and NOTHING
-        sta ai_asc                   ;   ELSE" since STORED_ROTS went to four
-                                     ;   digits -- so the scale NEVER happened and
-                                     ;   an attacking monster walked rows 0,1,2 =
-                                     ;   the four VIEWS of its first attack state
-                                     ;   instead of states 0,1,2. That is the
-                                     ;   baron spinning on the spot before he
-                                     ;   throws (2026-08-08).
-?flat   ldy ai_k
-        lda #<ATAB_EXT
-        sta zp_ptr
-        lda #>ATAB_EXT
-        sta zp_ptr+1
-        lda [zp_ptr],y               ; the kind's first attack row
-        clc
-        adc ai_asc
-        sta ai_arow
-        lda #0                       ; row * 8 -> offset into DTAB_ROWS
-        sta m_prod+1
-        lda ai_arow
-        sta m_prod
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        asl m_prod
-        rol m_prod+1
-        clc
-        lda m_prod
-        adc #<DTAB_ROWS
-        sta zp_ptr
-        lda m_prod+1
-        adc #>DTAB_ROWS
-        sta zp_ptr+1
-        ldy #7
-        lda [zp_ptr],y
-        rts
- .endif
 .endp
         .endseg
 
@@ -542,27 +355,6 @@
 ;     1 A_PosAttack   pistol, ((P_Random()%5)+1)*3
 ;     2 A_SPosAttack  shotgun, THREE of the same roll
 ;     3 A_TroopAttack claw (P_Random()%8+1)*3 in melee range, else the fireball
-;     4 A_HeadAttack  the CACODEMON (2026-08-20): claw (P_Random()%6+1)*10 in
-;                     melee range, else MT_HEADSHOT -- the red BAL2 ball, damage
-;                     5. Until now it was mk_atk 0: the one monster in the game
-;                     that chased the player and could not touch him. It sits on
-;                     4, the slot A_SargAttack used to waste, so at_tables.inc
-;                     keeps all four MISSILE rows contiguous and does not grow
-;                     (there is no 30 B block left anywhere -- ram_map.py).
-;     5 A_BruisAttack claw (P_Random()%8+1)*10 in melee range, else the same
-;                     fireball with MT_BRUISERSHOT's damage byte (8, not 3)
-;     6 A_CyberAttack MT_ROCKET and nothing else -- no melee arm, no range test
-;                     (2026-08-20). The SPIDER MASTERMIND needs no id of its
-;                     own: its missile state runs A_SPosAttack, so it is a 2 and
-;                     shares the shotgun guy's three-pellet burst, exactly as
-;                     info.c has it.
-;     7 A_SargAttack  bite ((P_Random()%10)+1)*4 -- melee range only, and the
-;                     only action here that throws nothing, which is why it and
-;                     not a missile action holds the id outside 3..6.
-;   The hitscan pair rolls DOOM's angle spread instead of tracing it: the shot
-;   lands within about +-0.41*dist of the aim point, so it hits the player's
-;   16-unit radius when |spread| * dist is small enough. That keeps a zombieman
-;   across a room from being a guaranteed hit, which a bare damage call would be.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_fire
@@ -580,39 +372,14 @@
         beq ?sarg                    ; 7: demon -- melee range only
         cmp #6
         beq ?throw                   ; 6: cyberdemon -- A_CyberAttack is nothing
-                                     ;   BUT P_SpawnMissile. It has no melee
-                                     ;   branch and mobjinfo gives it no
-                                     ;   meleestate, so it never tests the range:
-                                     ;   point blank it fires a rocket too
+                                     ;   BUT P_SpawnMissile.
         bcc ?claw                    ; 3/4/5: imp / CACODEMON / baron -- one shape
                                      ;   (2026-08-20: this used to be four
                                      ;   compares picking 3 and 5 out of a range
-                                     ;   with the demon in the middle. With
-                                     ;   A_SargAttack moved to 7 the three
-                                     ;   melee-then-missile actions are
-                                     ;   CONSECUTIVE, so the carry off `cmp #6`
-                                     ;   sorts them in two bytes instead of eight)
+                                     ;   with the demon in the middle.
 ;   WHAT ?claw SERVES (the three melee-then-missile actions):
 ;   3: imp / 5: baron -- A_BruisAttack is A_TroopAttack's
-                                     ;   shape exactly (same melee gate, same
-                                     ;   sfx_claw, same "else launch a missile");
-                                     ;   only the two damage bytes differ, and
-                                     ;   ai_cdmg / bl_roll read those off ai_k.
-                                     ; 4: CACODEMON. A_HeadAttack is the same shape
-                                     ;   AGAIN -- melee gate, else
-                                     ;   P_SpawnMissile(MT_HEADSHOT) -- so it lands
-                                     ;   here too and ball.asm throws the red ball
-                                     ;   off at_tables (damage 5). Its melee roll
-                                     ;   is TWO REDUCTIONS, both forced by RAM:
-                                     ;     p_enemy.c  (P_Random()%6+1)*10  = 10..60
-                                     ;     here       (P_Random()%8+1)*10  = 10..80
-                                     ;   (?r8 is shared; a %6 loop is 15 B and the
-                                     ;   whole engine has no 24 B block left --
-                                     ;   ram_map.py), and the bite plays sfx_claw
-                                     ;   where A_HeadAttack is silent (info.c gives
-                                     ;   MT_HEAD no attacksound). The MISSILE half,
-                                     ;   which is the half that was missing
-                                     ;   entirely, is exact.
+                                     ;   shape exactly (same melee gate, same ...
 ?sarg   lda ai_ad+1                  ; 7: demon -- melee range only
         bne ?out
         lda ai_ad
@@ -623,12 +390,7 @@
         asl
         jsr aif_hurt                 ; a CALL, like the claw below: the bite
         lda #SFX_SGTATK              ;   (info.c attacksound) is queued AFTER the
- .if 1
         jmp snd_qp_ai                ; tail call --   damage so en_plr_hurt's grunt does not
- .else
-        jsr snd_qp_ai                ;   damage so en_plr_hurt's grunt does not
-        rts                          ;   overwrite it -- one sound slot
- .endif
 ?claw   lda ai_ad+1                  ; the imp's claw, same range test
         bne ?throw
         lda ai_ad
@@ -639,29 +401,16 @@
         inc @
         jsr ?x3                      ; ...*3 imp / *10 baron. A CALL, not a jump:
         lda #SFX_CLAW                ;   A_TroopAttack plays sfx_claw inside its
- .if 1
         jmp snd_qp_ai                ; tail call --   P_CheckMeleeRange branch, i.e. exactly
- .else
-        jsr snd_qp_ai                ;   P_CheckMeleeRange branch, i.e. exactly
-        rts                          ;   when the scratch connects -- but
- .endif
                                      ;   en_plr_hurt queues the player's own
                                      ;   grunt (sfx_plpain) on the way through,
-                                     ;   and there is ONE sound slot. Written
-                                     ;   before the damage the claw is silently
-                                     ;   overwritten and never heard; DOOM has
-                                     ;   both on separate channels.
+                                     ;   and there is ONE sound slot.
 ?throw  jmp ball_spawn               ; P_SpawnMissile: the ball flies, hits and
-                                     ;   bursts in ball.asm. WHOSE missile it is
-                                     ;   (damage 3 or 8) is decided there, from
-                                     ;   ai_k -- see bl_roll
+                                     ;   bursts in ball.asm.
 ?hitscan
         jsr aif_block                ; PTR_ShootTraverse's thing half: does the
                                      ;   bullet reach what it was aimed at, or
                                      ;   stop in whoever is standing in the way?
-                                     ;   That second case is where infighting
-                                     ;   comes from -- p_map.c has no species
-                                     ;   test on a hitscan at all.
         ldx ai_k                     ; the gunshot is heard whether it hits or not
         lda mk_atk,x                 ;   -- but it is queued AFTER the pellets and
         cmp #2                       ;   on the MONSTER's voice, not the frame's
@@ -673,14 +422,15 @@
         jsr ?shot                    ;   point blank the shot ALWAYS lands, so the
         jsr ?shot                    ;   gun was never once heard and the spider
         lda #SFX_SHOTGN              ;   mastermind's chaingun was the player's
-?voice  jsr snd_qm_ai                ;   own grunt. en_snd_q is the voice DOOM
+                                      ; 2026-09-22 idiom: snd_qm_ai inlined (-12)
+?voice  sta en_snd_q                 ;   own grunt. en_snd_q is the voice DOOM
+        lda ai_t
+        sta en_snd_th
                                      ;   (STEREO: ai_t is the one firing)
 ?out    rts                          ;   plays attacksound on -- S_StartSound
                                      ;   (actor, ...) -- and snd_dispatch starts
                                      ;   it on a channel of its own, so now BOTH
                                      ;   are heard, exactly as they are in DOOM.
-                                     ;   (SFX_PISTOL is 9, so the `bne` is a
-                                     ;   two-byte unconditional jump.)
 ;   one hitscan pellet: DOOM's spread, then the damage if it lands
 ?shot   lda ai_vic                   ; a body in the way is not something the
         cmp #$FF                     ;   spread can miss: the trace stops in it
@@ -696,15 +446,14 @@
 ;   C=1 if this pellet lands: |spread| * dist < 16 * 620, the lateral miss
 ;   distance against the player's radius (see the header comment).
 ?hits   jsr pw_spread                ; m_a = |the aim error|, DOOM's triangular
-                                     ;   (P_Random() - P_Random()) -- and TRIPLE
-                                     ;   that when the player carries the blur
-                                     ;   sphere, which is A_FaceTarget's whole
-                                     ;   MF_SHADOW branch (powerups.asm)
+                                     ;   (P_Random() - P_Random()) -- and TRIPLE ...
         lda ai_ad
         sta m_b
         lda ai_ad+1
         sta m_b+1
-        jsr umul16                   ; m_prod = |spread| * dist
+        phx                          ; umul16 no longer keeps X (2026-09-23)
+        jsr umul16
+        plx
         lda m_prod+2
         ora m_prod+3
         bne ?nohit                   ; way over 9920
@@ -719,7 +468,6 @@
 ?nohit  clc
         rts
 ;   P_Random()%N + 1, for the three N the four actions use
- .if 1
 ?r5     lda RANDOM
 ?m5     cmp #5
         bcc ?d5
@@ -738,35 +486,9 @@
         bra ?m10
 ?d10    inc @
         rts
- .else
-?r5     lda RANDOM
-?m5     cmp #5
-        bcc ?d5
-        sbc #5
-        jmp ?m5
-?d5     clc
-        adc #1
-        rts
-?r8     lda RANDOM
-        and #7
-        clc
-        adc #1
-        rts
-?r10    lda RANDOM
-?m10    cmp #10
-        bcc ?d10
-        sbc #10
-        jmp ?m10
-?d10    clc
-        adc #1
-        rts
- .endif
 .endp
         .endseg
 
-    .if * > AIATK_END+1
-        ert 'the A_Chase attack block outgrew AIATK_BASE..END (memory_map.inc)'
-    .endif
 ; EVERY variable this block owns lives OUT of it (the distance trio since
 ; 2026-08-20 morning, the five attack-state bytes since that afternoon): the
 ; segment runs FLUSH into mn_ld_tab at $B377, and AIATK_END said $B391 -- stale
@@ -778,10 +500,6 @@
 ; uses it for the halved delta, so anything that has to survive a call needs its
 ; own.
 aivar_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org AIVARS_BASE
- .endif
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ai_ad   dta 0,0                      ; P_AproxDistance(player, thing)
 ai_ax   dta 0,0                      ; its two |deltas|
@@ -792,47 +510,12 @@ ai_asc  dta 0                        ; ... scaled x NSTOR (rows are state-major)
 ai_atics dta 0                       ; that row's tics byte, flags and all
 ai_amode dta 0                       ; the working copy of TH_MODE
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > AIVARS_END+1
-        ert 'the AI attack scratch outgrew AIVARS_BASE..END (memory_map.inc)'
-    .endif
- .endif
         org aivar_resume
 
 ;==============================================================
 ; A_SpidRefire (p_enemy.c, 2026-08-20) -- the one attack chain in DOOM that does
 ; not end when its last state does.
-;
-;   void A_SpidRefire (mobj_t* actor)
-;   {
-;       A_FaceTarget (actor);
-;       if (P_Random () < 10)  return;                  // keep firing, blind
-;       if (!actor->target || actor->target->health <= 0
-;           || !P_CheckSight (actor, actor->target))
-;           P_SetMobjState (actor, actor->info->seestate);
-;   }
-;
-; S_SPID_ATK4's nextstate is S_SPID_ATK2, so that bare `return` means ATK2 (fire)
-; -> ATK3 (fire) -> ATK4 (test) round again: six pellets every NINE tics, for as
-; long as the spider mastermind can see you. That loop is what E3M8's boss is --
-; 3000 hit points and a chaingun. Without it the port ran the chain once and fell
-; back to A_Chase, which is six pellets and then a walk, and the gunfire was one
-; short blast where DOOM has a rattle.
-;
-; A_FaceTarget is NOT repeated here: ai_atk_row turns the monster to its target
-; on entry to every attack state (aif_oct), which covers both of DOOM's calls.
-; The `target dead` arm is aif_isvis' too -- a monster target that died is out of
-; TH_TARG, and the player's own death restarts the level.
-;
-; TWO procs for 27 bytes, the same bargain the FLINCH struck: ram_map.py has no
-; 27 B run left in the machine, so this is split over the two biggest gaps it has
-; -- the tail of door_force_open's block and the tail of pj_frameN's. ai_refire
-; ends on a jmp into ai_refire2 WITH THE CARRY LIVE; nothing else may claim
-; either run (AIRF_BASE / AIRF2_BASE in memory_map.inc).
 ;==============================================================
-airf_resume = *
-        org AIRF_BASE
 
 ;--------------------------------------------------------------
 ; ai_refire -- ai_atk_next's AT_LAST arm. C=1: keep firing, and ai_awst is
@@ -847,19 +530,12 @@ airf_resume = *
         beq ?no                      ;   runs once per attack PASS, not per tic
         lda RANDOM                   ; `if (P_Random () < 10) return` -- about one
         cmp #10                      ;   pass in 25 keeps firing without even
-        jmp ai_refire2               ;   asking whether the target is still there
+        bra ai_refire2               ;   asking whether the target is still there
 ?no     clc
         rts
 .endp
         .endseg
-    .if * > AIRF_END+1
-        ert 'ai_refire outgrew AIRF_BASE..AIRF_END (memory_map.inc)'
-    .endif
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org AIRF2_BASE
- .endif
 ;--------------------------------------------------------------
 ; ai_refire2 -- entered with C = (P_Random() >= 10), i.e. C=0 already means
 ;   "keep firing" and only C=1 pays for the sight test.
@@ -869,87 +545,24 @@ airf_resume = *
         bcc ?yes
         jsr aif_isvis                ; the port's P_CheckSight -- the same oracle
         bcc ?no                      ;   ai_try_atk decided to open fire on
- .if 1
 ?yes    stz ai_awst                  ; ai_atk_next's ?step reads ai_awst and adds
                                      ;   one, so 0 here IS P_SetMobjState(ATK2)
- .else
-?yes    lda #0                       ; ai_atk_next's ?step reads ai_awst and adds
-        sta ai_awst                  ;   one, so 0 here IS P_SetMobjState(ATK2)
- .endif
         sec
         rts
 ?no     clc
         rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > AIRF2_END+1
-        ert 'ai_refire2 outgrew AIRF2_BASE..AIRF2_END (memory_map.inc)'
-    .endif
- .endif
-        org airf_resume
 
 ;==============================================================
 ; THE FLINCH -- info.c's painstate (2026-08-16). p_inter.c P_DamageMobj:
 ;       if (P_Random () < info->painchance && !(flags & MF_SKULLFLY))
-;       {   flags |= MF_JUSTHIT;
-;           P_SetMobjState (target, info->painstate);   }
-; The roll and MF_JUSTHIT have been here since the pain SOUND landed (the
-; en_painr in enemy.asm's en_hurt_snd is that same P_Random); this is the FRAME
-; that was missing -- monsters took a shotgun blast without moving a pixel.
-;
-; NOT A STATE MACHINE, and that is the whole design. A pain chain is two states
-; of ONE image falling straight into S_x_RUN1, so instead of a third chain
-; beside RUN and ATTACK -- a mode bit, a per-kind state count, a dispatch in
-; ai_state, an AT_LAST exit -- the port drops the flinch row into TH_WROW and
-; puts the kind's tics on TH_WTIC. Whatever ai_state reaches for next takes
-; TH_WROW back on its own (ai_setrow off the RUN state, or ai_atk_row
-; mid-attack), and
-; that IS the fall back to RUN1. Nothing is added to the per-tic path, no bit
-; is added to a full TH_MODE, and the whole feature is 46 bytes.
-;
-; The rows are one image in the walk cycle's NSTOR views (pack_things
-; pack_pain), so spr_wrot turns the flinch with the monster exactly like a walk
-; frame. PTAB_EXT[kind] is $FF when the level's coltab run could not afford the
-; frame -- that kind then keeps its old flinch-less behaviour rather than
-; failing the build, the same bargain the gib chains strike.
-;
-; The HOLD is info.c's own, per kind, since 2026-08-26: PTIC_EXT (a tenth DTAB
-; header, pack_things.pain_tics) carries the painstate chain's length in tics
-; and ai_pain2 puts THAT on TH_WTIC. It used to be PAIN_TICS, one number -- 6
-; -- and info.c wants 4 for the imp, the demon and the baron, 6 for the two
-; zombies / the lost soul / the spider, 10 for the CYBERDEMON and 12 for the
-; cacodemon, so five of the nine kinds that flinch flinched for the wrong
-; length. The byte is free: base RAM had no room for a per-kind table, the
-; row array had 16 B spare (E1M6, the busiest level, packs 222 of 236).
-;
-; DELIBERATELY NOT DOOM, both worth knowing:
-;   * a monster hit MID-ATTACK keeps its attack chain (P_SetMobjState would
-;     have dropped it). The flinch shows, then the wind-up carries on.
-;   * the CACODEMON's chain is three states, E(3) E(3) F(6), and F is a
-;     DIFFERENT image -- the port holds E for the whole 12. The duration is
-;     exact, the second image is not, and a second row plus a chain step is
-;     the pain STATE machine this block exists to avoid. Every other kind's
-;     chain is one image, so every other kind is exact.
-;
-; TWO procs for one job: ram_map.py's answer to "where does a new .proc go" is
-; "not one block of 32 B is left", so this is split over the last two gaps in
-; the map -- PAINROW_BASE ($8105, 27 B) and PAINRW2_BASE ($1827, 25 B).
 ;==============================================================
-pain_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org PAINROW_BASE
- .endif
 
 ;--------------------------------------------------------------
 ; ai_pain_row -- ai_hurt's tail. Reached with A = the thing's new TH_MODE and
 ;   X = #>TH_MODE, which is precisely what ai_hurt's own `jmp ai_put` wanted,
 ;   so taking the call over costs that block nothing.
-;   Leaves Y = the kind and zp_ptr on PTAB_EXT for ai_pain2. zp_ptr+2 is the
-;   engine-wide MAP_EXT_BANK $01 that init_level seeds -- bank $01 is where
-;   every AI page and the whole .dtab live, so there is nothing to park back.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_pain_row
@@ -963,32 +576,17 @@ pain_resume = *
         sta zp_ptr+1
         lda #<PTAB_EXT
         sta zp_ptr
-        jmp ai_pain2
+        bra ai_pain2
 ?out    rts
 .endp
         .endseg
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > PAINROW_END+1
-        ert 'ai_pain_row outgrew PAINROW_BASE..END (memory_map.inc)'
-    .endif
- .endif
-        org PAINRW2_BASE
 
 ;--------------------------------------------------------------
 ; ai_pain2 -- Y = kind, zp_ptr = PTAB_EXT: the flinch row into TH_WROW and the
 ;   kind's own painstate duration onto the clock. The $FF test is not a nicety
 ;   -- TH_WROW is row+1 and 0 means "not chasing", so $FF+1 would stop the
 ;   monster dead and ai_tick would never look at it again.
-;
-;   THE TICS COME OFF PTIC_EXT (2026-08-26), not off a constant. It is the
-;   next 16 B page up from PTAB_EXT on purpose: `sta zp_ptr` with a new LOW
-;   byte is the whole address change, since zp_ptr+1 is $8C for both and
-;   zp_ptr+2 is the engine-wide bank $01. Four bytes, and this block had five.
-;
-;   The order is TICS FIRST because ai_put eats both zp_ptr and Y -- the row
-;   waits on the stack while the tics read still has the pointer it needs.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_pain2
@@ -1008,25 +606,13 @@ pain_resume = *
 .endp
         .endseg
 
-    .if * > PAINRW2_END+1
-        ert 'ai_pain2 outgrew PAINRW2_BASE..END (memory_map.inc)'
-    .endif
-        org pain_resume
 
 ;--------------------------------------------------------------
 ; ai_cdmg / ai_mul -- the CLAW half of A_TroopAttack and A_BruisAttack, which
 ;   p_enemy.c writes twice with one number changed:
 ;       imp:   damage = (P_Random()%8+1)*3
 ;       baron: damage = (P_Random()%8+1)*10
-;   so ?claw serves both and the number comes off the kind. IN: m_a = the 1..8
-;   roll. Falls through to aif_hurt, exactly as the old inline *3 did.
-;
-;   Parked here because the AIATK block has SEVEN spare bytes, not the 384 its
-;   _END advertised (PJGO_BASE is $5480). $5BDE and not $5BDB: the first three
-;   bytes of that "free" block are ENGIB_VARS, which the RAM budget cannot see.
 ;--------------------------------------------------------------
-cdmg_resume = *
-        org AICDMG_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_cdmg
         ldy #3                       ; A_TroopAttack's damage byte
@@ -1054,8 +640,4 @@ cdmg_resume = *
         rts
 .endp
         .endseg
-    .if * > AICDMG_END+1
-        ert 'ai_cdmg/ai_mul outgrew AICDMG_BASE..END (memory_map.inc)'
-    .endif
-        org cdmg_resume
 

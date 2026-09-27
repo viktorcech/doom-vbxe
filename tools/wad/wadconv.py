@@ -1084,8 +1084,10 @@ def check(iwad, pwad, maps, log, prog=None, resolved=False):
 
 
 # ------------------------------------------------------------------- build ----
-def build(iwad, pwad, maps, log, prog=None):
+def build(iwad, pwad, maps, log, prog=None, name=None):
     """Run the project's own pipeline with the WAD pair pointed at this set.
+    name = the ATR's file stem (test-level.py passes 'test-level'); None =
+    the WAD's own name, plus the map when there is one.
 
     The check runs first, always. Without it the first thing a converted map
     that does not fit produces is a Python traceback out of whichever packer
@@ -1151,6 +1153,13 @@ def build(iwad, pwad, maps, log, prog=None):
     # ATR (2026-08-10, found converting freedm.wad).
     want = re.compile(r'OK ->|ERROR|Error|AssertionError|Traceback|SystemExit|'
                       r'failed|WARNING|note:|'
+                      # the GUARDS' own diagnoses. build_atr.ps1 only says
+                      # 'menu overlay split failed'; the line that says WHY is
+                      # the tool's own, and it used to be filtered out here --
+                      # which left every failure in this pipeline undiagnosable
+                      # from the log (2026-09-16).
+                      r'split_menu_ovl:|split_b1:|check_xex|bank_map:|b1_check |'
+                      r'ram_map:|check_overlap:|outgrew|'
                       r'wrote map_syms|wrote atr_layout|ATR :|slot \d|'
                       r'runs into|too big|limit|B free|/\d+ B|texids|'
                       r'^\s*(E1M|E2M|E3M|E4M|MAP)\d')
@@ -1211,14 +1220,22 @@ def build(iwad, pwad, maps, log, prog=None):
         as_list(pwad)[-1] if pwad else iwad))[0]
     if len(maps) == 1:
         stem += f'_{maps[0]}'        # Doom2_MAP01.atr: one ATR per experiment
+    if name:
+        stem = name                  # the caller's own name (test-level.atr)
     if stem.lower() == 'doom':
         stem = 'doom_conv'        # never the name we are about to restore
-    # WHERE THE USER WILL LOOK FOR IT: beside the WAD they converted. In the
-    # packaged EXE the project tree is a temp directory that does not survive
-    # the run, so build/ is exactly the wrong place; and even from a checkout,
-    # next to the WAD is where somebody expects their ATR.
-    _home = os.path.dirname(os.path.abspath(as_list(pwad)[-1])) if pwad         else os.path.join(_PROJ, 'build')
-    if not os.access(_home, os.W_OK):
+    # WHERE IT GOES. From a checkout: build/, beside doom.atr, under the WAD's
+    # own name (2026-09-15, "aby aj wadconv.py ukladal testovacie atr do build/,
+    # ale s vlastnym nazvom") -- the stem guard above keeps it off doom.atr. In
+    # the packaged EXE the project tree is a temp directory that does not
+    # survive the run, so there build/ is exactly the wrong place and the ATR
+    # still goes beside the WAD they converted.
+    if getattr(sys, 'frozen', False):
+        _home = os.path.dirname(os.path.abspath(as_list(pwad)[-1])) if pwad \
+            else os.path.join(_PROJ, 'build')
+        if not os.access(_home, os.W_OK):
+            _home = os.path.join(_PROJ, 'build')
+    else:
         _home = os.path.join(_PROJ, 'build')
     out = os.path.join(_home, f'{stem}.atr')
     shutil.copyfile(src, out)

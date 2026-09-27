@@ -30,7 +30,9 @@ wi_resume = *
         sta wi_time
         bcc ?nc
         inc wi_time+1
-?nc     jmp wi_secr
+?nc
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>wi_secr              ;   next byte of this segment -- fall through
 .endp
         .endseg
     .if * > WITICK_END+1
@@ -43,21 +45,12 @@ wi_resume = *
         org WISECR_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wi_secr
- .if 1
         ldy #7
         lda (zp_ptr),y               ;   b4 SECRET (pack_map.py)
         bit #$10                     ; already clear (the usual case): nothing to
         beq ?out                     ;   write, and no and/cmp round trip to see it
         and #$EF
         sta (zp_ptr),y
- .else
-        ldy #7
-        lda (zp_ptr),y               ;   b4 SECRET (pack_map.py)
-        and #$EF
-        cmp (zp_ptr),y
-        beq ?out
-        sta (zp_ptr),y
- .endif
 ?out    jmp update_damage
 .endp
         .endseg
@@ -88,16 +81,9 @@ wi_resume = *
         org WINEW_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wi_newlvl
- .if 1
         stz wi_time
         stz wi_time+1
         jmp load_things
- .else
-        lda #0
-        sta wi_time
-        sta wi_time+1
-        jmp load_things
- .endif
 .endp
         .endseg
     .if * > WINEW_END+1
@@ -115,8 +101,12 @@ wi_resume = *
 ;--------------------------------------------------------------
 .proc wi_head
         ldy #0
- .if 1                                ; DRAC_PLAN 3b: 16 KB window
+                                      ; DRAC_PLAN 3b: 16 KB window
 WIOVL_WIN       equ MEMW16+[[WIOVL_BANK&3]<<12]
+WI2_WIN         equ MEMW16+[[WI2_BANK&3]<<12]    ; stage 2's chunk in the window
+    .if [>WI2_WIN] + WI2_PAGES > 255
+        ert 'wi_head: >WI2_WIN + page carries -- put the clc back'
+    .endif
 ?p      lda WIOVL_WIN+$100,y
         sta MENU_RUN+$100,y
         lda WIOVL_WIN+$200,y
@@ -124,15 +114,6 @@ WIOVL_WIN       equ MEMW16+[[WIOVL_BANK&3]<<12]
         lda WIOVL_WIN+$300,y
         sta MENU_RUN+$300,y
         lda WIOVL_WIN+$400,y
- .else
-?p      lda MEMW+$100,y
-        sta MENU_RUN+$100,y
-        lda MEMW+$200,y
-        sta MENU_RUN+$200,y
-        lda MEMW+$300,y
-        sta MENU_RUN+$300,y
-        lda MEMW+$400,y
- .endif
         sta MENU_RUN+$400,y
         iny
         bne ?p
@@ -144,32 +125,21 @@ WIOVL_WIN       equ MEMW16+[[WIOVL_BANK&3]<<12]
 ?inter  jsr wi_pre
         lda #BANK_EN | WI2_BANK
         sta VBXE_BANK_SEL
-        ldx #0
- .if 1
+                                      ; 2026-09-23: pages in any order (no overlap):
+        ldx #WI2_PAGES-1             ;   count down, dex/bpl, no cpx
 ?s2     txa                          ;   inside WI2_PAGES and the slot
         clc
-        adc #>MEMW
-        sta ?src+2                   ; $90+X cannot carry (X < WI2_PAGES), so
-        adc #<[[>WI2_RUN]-[>MEMW]]   ;   the second add rides on C=0 and A
-        sta ?dst+2
- .else
-?s2     txa                          ;   inside WI2_PAGES and the slot
-        clc
-        adc #>MEMW
-        sta ?src+2
-        txa
-        clc
-        adc #>WI2_RUN
-        sta ?dst+2
- .endif
-        ldy #0
-?src    lda MEMW,y
+        adc #>WI2_WIN                ; 2026-09-24: WHERE the chunk sits in the 16 KB
+        sta ?src+2                   ;   window, (WI2_BANK&3)*$1000 -- it was MEMW,
+        adc #<[[>WI2_RUN]-[>WI2_WIN]] ;   right only while WI2_BANK&3 was 2 (the
+        sta ?dst+2                   ;   crash when the run moved to $51). >WI2_WIN+X
+        ldy #0                       ;   cannot carry, so the second add rides C=0
+?src    lda WI2_WIN,y
 ?dst    sta WI2_RUN,y
         iny
         bne ?src
-        inx
-        cpx #WI2_PAGES
-        bne ?s2
+        dex
+        bpl ?s2
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
         jmp WI2_RUN
@@ -192,21 +162,22 @@ WIOVL_WIN       equ MEMW16+[[WIOVL_BANK&3]<<12]
         sta sp_ptr+1
         ldx MAP_HNSEC
         beq ?next
-?slp    ldy #7
-        lda (sp_ptr),y
+                                      ; 2026-09-23: Y walks the record offset (7, 15,
+        ldy #7                       ;   ...), the page bumps on its carry: the same
+?slp    lda (sp_ptr),y               ;   base + 8k + 7 addresses, no pointer add in RAM
         and #$10                     ; still SET = never walked into
         beq ?sn
         dec wi_secret
-?sn     clc
-        lda sp_ptr
+?sn     tya
+        clc
         adc #8
-        sta sp_ptr
+        tay
         bcc ?sc
         inc sp_ptr+1
 ?sc     dex
         bne ?slp
 ?next   ldx MAP_HNEXT
-        cpx #NUM_LEVELS              ;   on this ATR the next one is E1M1
+        cpx #NUM_LEVELS
         bcc ?ok
         ldx #0
 ?ok     stx wi_next
@@ -237,10 +208,7 @@ wi_next     dta 0
 ?w      cmp RTCLOK3
         beq ?w
         jsr mus_play_t ; ONE frame of the song per VBLANK, not
-                                     ;   per DOOM tic: the stream is authored
-                                     ;   at the PAL frame rate, and this loop
-                                     ;   can spin several VBLANKs before the
-                                     ;   35 Hz accumulator below carries.
+                                     ;   per DOOM tic: the stream is authored ...
         lda wi_tacc
         clc
         adc #WI_TICQ8
@@ -253,428 +221,66 @@ wi_bcnt     dta 0
 wi_tacc     dta 0                    ; the 50 Hz -> 35 Hz Q8 accumulator
 
 ;--------------------------------------------------------------
-; wi_rect -- one plain COPY: wc_src -> wc_dst, wc_w+1 bytes by wc_h+1 rows,
-;--------------------------------------------------------------
-.proc wi_rect
-        ldx #2
-?a      lda wc_src,x
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR,x
-        lda wc_dst,x
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR,x
-        dex
-        bpl ?a
-        lda #SCREEN_WIDTH
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
- .if 1
-        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
-        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
-        lda #1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda wc_w
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
-        lda wc_h
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-    .if BLT_COPY != 0
-        ert 'BLT_COPY is not 0: wi_rect/wi_erase stz the ctrl byte'
-    .endif
-        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
-        jsr hud_blit.hud_fire
-        jmp blitter_wait_t
- .else
-        lda #0
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
-        lda #1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda wc_w
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
-        lda wc_h
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        lda #BLT_COPY
-        sta MEMW+MEMW_HD_OFF+BCB_CTRL
-        jsr hud_blit.hud_fire
-        jmp blitter_wait
- .endif
-.endp
-
-;--------------------------------------------------------------
-; wi_set24 -- wc_src/wc_dst = a 24-bit base (wa_b) + row*160 + column, the one
-;--------------------------------------------------------------
-.proc wi_set24
-        lda row_lo,x
-        clc
-        adc wa_col
-        sta wc_src,y
-        lda row_hi,x
-        adc wa_b+1
-        sta wc_src+1,y
-        lda wa_b+2
-        adc #0
-        sta wc_src+2,y               ;   and +$7C00 crosses into $06
-        rts
-.endp
-
-;--------------------------------------------------------------
-; wi_grab -- the screen AS SHOWN -> wa_b. Two rectangles, because the port's
-;--------------------------------------------------------------
-.proc wi_grab
- .if 1
-        stz wa_col
-        stz wc_src
-        stz wc_src+1
-        lda ZFRONT
-        sta wc_src+2
-        stz wc_dst
-        lda wa_b+1
- .else
-        lda #0
-        sta wa_col
-        sta wc_src
-        sta wc_src+1
-        lda ZFRONT
-        sta wc_src+2
-        lda #0
-        sta wc_dst
-        lda wa_b+1
- .endif
-        sta wc_dst+1
-        lda wa_b+2
-        sta wc_dst+2
-        lda #SCREEN_WIDTH-1
-        sta wc_w
-        lda #VIEW_HEIGHT-1
-        sta wc_h
-        jsr wi_rect
-        lda #<VRAM_HUDROWS
-        sta wc_src
-        lda #>VRAM_HUDROWS
-        sta wc_src+1
-        lda #[VRAM_HUDROWS>>16]
-        sta wc_src+2
-        ldx #VIEW_HEIGHT             ; ...to the same rows of the target
-        ldy #3
-        jsr wi_set24
-        lda #WIPE_H-VIEW_HEIGHT-1
-        sta wc_h
-        jmp wi_rect
-.endp
-
-;--------------------------------------------------------------
-; wi_page -- a whole 200-row screen from wa_b to wa_b2 (or the other way).
-;--------------------------------------------------------------
-.proc wi_page
-        ldx #2
-?c      lda wa_b,x
-        sta wc_src,x
-        lda wa_b2,x
-        sta wc_dst,x
-        dex
-        bpl ?c
-        lda #SCREEN_WIDTH-1
-        sta wc_w
-        lda #WIPE_H-1
-        sta wc_h
-        jmp wi_rect
-.endp
-
-;--------------------------------------------------------------
-; wi_meltinit -- f_wipe.c wipe_initMelt (:141). P_Random is POKEY's LFSR here,
-;--------------------------------------------------------------
-.proc wi_meltinit
-        lda RANDOM
-        and #15
- .if 1
-        eor #15
-        inc @                        ; = 16 - (rnd&15), so 1..16
-        sta wy
- .else
-        eor #15
-        clc
-        adc #1                       ; = 16 - (rnd&15), so 1..16
-        sta wy
- .endif
-        ldx #1
-?l      lda RANDOM                   ; r = (M_Random()%3) - 1
-        and #3
-        cmp #3
-        bcc ?ok
-        lda #0
- .if 1
-?ok     dec @                        ; r - 1 (dec leaves C alone: the clc is next)
-        clc
-        adc wy-1,x                   ; y[i] = y[i-1] + r
- .else
-?ok     sec
-        sbc #1
-        clc
-        adc wy-1,x                   ; y[i] = y[i-1] + r
- .endif
-        cmp #WI_BIAS+1               ; "if (y[i] > 0) y[i] = 0"
-        bcc ?lo
-        lda #WI_BIAS
-        bne ?put                     ; (WI_BIAS is 16, never zero)
-?lo     bne ?put                     ; "else if (y[i] == -16) y[i] = -15"
-        lda #1
-?put    sta wy,x
-        inx
-        cpx #SCREEN_WIDTH
-        bne ?l
-        rts
-.endp
-
-;--------------------------------------------------------------
-; wi_melt -- run the whole wipe. One wipe_doMelt step per DOOM tic, so it
+; wi_melt -- X = 0: into the intermission, 1: out of it. The melt itself is
+;   melt.asm's (bank $01) at 320 on MT_SR; the tic loop stays here, beside
+;   the song (wi_tic). The chain's last tic has landed when it returns.
 ;--------------------------------------------------------------
 .proc wi_melt
-        jsr wi_meltinit
- .if 1
-?tic    jsr wi_tic
-        stz wm_busy
-        ldx #0
- .else
-?tic    jsr wi_tic
-        lda #0
-        sta wm_busy
-        ldx #0
- .endif
-        stx wa_col
-?col    lda wy,x
-        cmp #WI_BIAS
-        bcs ?run
-        inc wy,x
-        inc wm_busy
-        jmp ?next
-?run    sec
-        sbc #WI_BIAS                 ; ...and now it is a real row number
-        cmp #WIPE_H
-        bcc ?live
-        jmp ?next
-?live   sta wm_y                     ;   does not reach from here)
-        inc wm_busy
-        cmp #16                      ; dy = (y < 16) ? y+1 : 8
- .if 1
-        bcs ?d8
-        inc @                        ; (y+1 <= 16: never 0, the bne is always taken)
-        bne ?dy
- .else
-        bcs ?d8
-        clc
-        adc #1
-        bne ?dy
- .endif
-?d8     lda #8
-?dy     sta wm_dy
-        clc
-        adc wm_y                     ; clamp y+dy to the bottom
-        cmp #WIPE_H+1
-        bcc ?dok
-        sec
-        lda #WIPE_H
-        sbc wm_y
-        sta wm_dy
-?dok    lda #<WIPE_END
-        sta wa_b
-        lda #>WIPE_END
-        sta wa_b+1
-        lda #[WIPE_END>>16]
-        sta wa_b+2
-        ldx wm_y
-        ldy #0
- .if 1
-        jsr wi_set24                 ; src = END + y*160 + col
-        stz wa_b+1                   ; ...dst = the screen, same place
-        stz wa_b+2
-        ldx wm_y
-        ldy #3
-        jsr wi_set24
-        stz wc_w                     ; one byte wide -- a COLUMN
-        lda wm_dy
-        dec @
-        sta wc_h
- .else
-        jsr wi_set24                 ; src = END + y*160 + col
-        lda #0
-        sta wa_b+1                   ; ...dst = the screen, same place
-        sta wa_b+2
-        ldx wm_y
-        ldy #3
-        jsr wi_set24
-        lda #0
-        sta wc_w                     ; one byte wide -- a COLUMN
-        lda wm_dy
-        sec
-        sbc #1
-        sta wc_h
- .endif
-        jsr wi_rect
-        clc                          ; y += dy
-        lda wm_y
-        adc wm_dy
-        sta wm_y
-        clc
-        adc #WI_BIAS                 ; ...stored biased again
-        ldx wa_col
-        sta wy,x
-        lda wm_y
-        cmp #WIPE_H
-        bcc ?slide
-        jmp ?next
-?slide
-        lda #<WIPE_START
-        sta wa_b
-        lda #>WIPE_START
-        sta wa_b+1
-        lda #[WIPE_START>>16]
-        sta wa_b+2
-        ldx #0
-        ldy #0
- .if 1
-        jsr wi_set24
-        stz wa_b+1
-        stz wa_b+2
-        ldx wm_y
-        ldy #3
-        jsr wi_set24                 ; dst = the screen at row y
-        stz wc_w
-        sec                          ; height = 200 - y
- .else
-        jsr wi_set24
-        lda #0
-        sta wa_b+1
-        sta wa_b+2
-        ldx wm_y
-        ldy #3
-        jsr wi_set24                 ; dst = the screen at row y
-        lda #0
-        sta wc_w
-        sec                          ; height = 200 - y
- .endif
-        lda #WIPE_H-1
-        sbc wm_y
-        sta wc_h
-        jsr wi_rect
-?next   inc wa_col
-        ldx wa_col
-        cpx #SCREEN_WIDTH
-        beq ?all
-        jmp ?col
-?all    lda wm_busy                  ; "done" -- every column has landed
-        beq ?fin
-        jmp ?tic
-?fin    rts
-.endp
-
-;--------------------------------------------------------------
-; wi_wipe -- the whole ceremony around one melt: WIPE_START already holds the
-;--------------------------------------------------------------
-.proc wi_wipe
- .if 1
-        stz wa_b
-        stz wa_b+1
-        stz wa_b+2
-        lda #<WIPE_END
-        sta wa_b2
- .else
-        lda #0
-        sta wa_b
-        sta wa_b+1
-        sta wa_b+2
-        lda #<WIPE_END
-        sta wa_b2
- .endif
-        lda #>WIPE_END
-        sta wa_b2+1
-        lda #[WIPE_END>>16]
-        sta wa_b2+2
-        jsr wi_page
-        lda #<WIPE_START
-        sta wa_b
-        lda #>WIPE_START
-        sta wa_b+1
-        lda #[WIPE_START>>16]
- .if 1
-        sta wa_b+2
-        stz wa_b2
-        stz wa_b2+1
-        stz wa_b2+2
-        jsr wi_page
-        jsr wi_show
- .else
-        sta wa_b+2
-        lda #0
-        sta wa_b2
-        sta wa_b2+1
-        sta wa_b2+2
-        jsr wi_page
-        jsr wi_show
- .endif                  ; only NOW is FRAME_A worth showing
-        jmp wi_melt
-.endp
-
-;--------------------------------------------------------------
-; wi_melt2 -- the SECOND melt: the intermission picture (still in WIPE_START,
-;--------------------------------------------------------------
-.proc wi_melt2
- .if 1
-        stz XDLA_PEND
-        stz wa_b
-        stz wa_b+1
-        stz wa_b+2
-        lda ZFRONT
- .else
-        lda #0
-        sta XDLA_PEND
-        sta wa_b
-        sta wa_b+1
-        sta wa_b+2
-        lda ZFRONT
- .endif
-        beq ?have
-        jsr wi_grab                  ;    there on purpose)
-?have   jsr wi_wipe
-        lda #1
- .if 1
-        sta zback_hi
-        stz EXIT_REQ                 ; ...and the game goes on
- .else
-        sta zback_hi
-        lda #0
-        sta EXIT_REQ                 ; ...and the game goes on
- .endif
+        jsl B1CODE_BASE+mt_init_w1
+?t      jsr wi_tic
+        jsl B1CODE_BASE+mt_step_w1   ; C = a column still to land
+        bcs ?t
         rts
 .endp
 
 ;--------------------------------------------------------------
-; wi_show -- FRAME_A on screen, and nothing about to take it away again.
+; wi_melt2 -- the SECOND melt: the stats screen, on MT_SR through the level
+;   load (mt_keep), into the next level's first frame (ZFRONT, never FRAME_A:
+;   WI_XLOAD aims it at FRAME_B, and the chain lives in FRAME_A).
 ;--------------------------------------------------------------
-.proc wi_show
- .if 1
-        stz zback_hi
-        stz ZFRONT
-        stz XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
- .else
-        lda #0
-        sta zback_hi
-        sta ZFRONT
-        sta XDLA_PEND                ; $00 = rom_nmi's "nothing pending"
- .endif
-        lda #>VRAM_XDL_L             ; the LEGACY list (2026-09-16): the stats
-        sta VBXE_XDLA1               ;   screen is a full 160x200 picture in
-        rts                          ;   FRAME_A and its bottom 32 rows are not
-                                     ;   the SR status bar (xdl.asm)
+.proc wi_melt2
+        stz XDLA_PEND                ; list R stays up until the melt is over
+        ldx #1
+        jsr wi_melt
+        stz EXIT_REQ                 ; ...and the game goes on: its next flip
+        rts                          ;   takes the display back
 .endp
 
-wc_src      dta 0,0,0
-wc_dst      dta 0,0,0
-wc_w        dta 0
-wc_h        dta 0
-wa_b        dta 0,0,0
-wa_b2       dta 0,0,0
-wa_col      dta 0
-wm_y        dta 0
-wm_dy       dta 0
-wm_busy     dta 0
-wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
+;--------------------------------------------------------------
+; melt.asm's data: bank 0 for its bank-$01 code, and here because D0 is full
+;   and no melt runs without stage 1.
+;--------------------------------------------------------------
+    .if [*&$FF] <> 0                   ; mt_step's row*320 lookups: page-aligned
+          :[256-[*&$FF]] dta 0       ;   (a read crossing a page is +1)
+    .endif
+mt_r320   .rept WIPE_H+1
+          dta a(#*MT_W)
+          .endr
+mt_r      :SCREEN_WIDTH dta a(0)     ; f_wipe.c's y[], signed, per column
+mt_y      dta a(0)
+mt_n      dta a(0)                   ; y + dy
+mt_t      dta a(0)
+mt_busy   dta a(0)
+;   per melt (X = 0 into the intermission, 1 out of it): slot A's source
+mt_pst    dta <MT_W, <SCREEN_WIDTH   ; SRC_STEPY
+mt_psth   dta >MT_W, >SCREEN_WIDTH
+mt_pw     dta 1, 0                   ; WIDTH-1
+mt_pz     dta BLT_ZOOM_1X, BLT_ZOOM_2X
+mt_psp    dta WIPE_H, VIEW_HEIGHT
+mt_pop    dta $EA, $4A               ; nop / lsr @
+mt_r3     dta a($FFFF), a(0), a(1), a($FFFF)   ; mt_init: (rnd & 3) -> r - 1
+;   one column's three BCBs (64 B: a pad byte for the word loop). S moves the
+;   old picture down bottom-up; A and B bring in the new one.
+mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
+          dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1, a(1), 0, $FF, 0, 0, 0, 0, BLT_COPY|BLT_NEXT
+          dta 0, 0, 0, a(MT_W), 1                             ; A
+          dta 0, 0, MT_BK, a(MT_W), 1, a(1), 0, $FF, 0, 0, 0, 0, BLT_COPY|BLT_NEXT
+          dta 0, 0, [VRAM_BAR320>>16], a(MT_W), 1             ; B
+          dta 0, 0, MT_BK, a(MT_W), 1, a(1), 0, $FF, 0, 0, 0, 0, BLT_COPY|BLT_NEXT
+          dta 0
+    .if *-mt_img <> MT_COL+1
+        ert 'wi.asm: mt_img is three BCBs and a pad byte'
+    .endif
 
     .if * > WI_XLOAD
         ert 'wi.asm STAGE 1 ran into WI_XLOAD (memory_map.inc)'
@@ -704,19 +310,27 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_main -- WI_Start, then WI_Ticker/WI_Drawer once per DOOM tic.
 ;--------------------------------------------------------------
 .proc wi_main
-        lda #<WIPE_START
-        sta wa_b                     ;   picture the first melt takes away
-        lda #>WIPE_START
-        sta wa_b+1
-        lda #[WIPE_START>>16]
-        sta wa_b+2
-        jsr wi_grab
-        jsr wi_bgsel                 ; WIMAP%d: before anything draws the map
+        lda #[WI_SRVRAM>>16]         ; mn_sbox's screen (wi_erase): the surface,
+        sta mn_dbk                   ;   whatever the ESC panel left there
+        jsr wi_bgfetch               ; WIMAP%d at 320 onto it, with its list
+        jsl B1CODE_BASE+mt_grab_w1   ; the frame shown, at 320 on MT_SR and up
+        jsl B1CODE_BASE+wi_kitfetch_w1  ; ...and the patches, full width
         jsr wi_stats
         jsr wi_initstats             ; WI_initStats
-        jsr wi_slam
-        jsr wi_redraw
-        jsr wi_wipe
+        jsr wi_slam                  ; (no wi_redraw: every counter is still -1
+                                     ;   and the map is fresh -- nothing to erase)
+        ldx #0
+        jsr wi_melt                  ; the game melts into the stats surface
+        lda #[WI_SRBG>>16]           ; the pristine map wi_erase restores from
+        jsr wi_bgfetch
+        lda #[WI_SRBG>>16]
+        sta mn_sbk
+        rep #$20
+        .LONGA ON
+        lda #WI_SRXDL&$FFFF
+        ldx #[WI_SRXDL>>16]
+        jsl B1CODE_BASE+xdl_to_r_w1  ; ...and the surface itself up (returns 8-bit)
+        .LONGA OFF
 ?loop   jsr wi_tic
         jsr wi_accel                 ; WI_checkForAccelerate
         jsr wi_anim                  ; WI_updateAnimatedBack
@@ -724,30 +338,12 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda wi_state
         cmp #WI_ST_DONE
         bne ?loop
- .if 1
         jsr wi_nextloc
-        stz wa_b
-        stz wa_b+1                   ;   survives it; nothing in RAM does)
-        stz wa_b+2
- .else
-        jsr wi_nextloc
-        lda #0
-        sta wa_b
-        sta wa_b+1                   ;   survives it; nothing in RAM does)
-        sta wa_b+2
- .endif
-        lda #<WIPE_START
-        sta wa_b2
-        lda #>WIPE_START
-        sta wa_b2+1
-        lda #[WIPE_START>>16]
-        sta wa_b2+2
-        jsr wi_page
+        jsl B1CODE_BASE+mt_keep_w1   ; the stats onto MT_SR and up: the level
+                                     ;   load takes the pool, not MT_SR, and the
+                                     ;   second melt starts from it
         jsr mus_stop_t ; the stats screen is over: drop AUDC2/3/4
-                                     ;   before WI_XLOAD, or the last note of
-                                     ;   the song hangs through the level load
-                                     ;   (SIO takes POKEY over whole -- the same
-                                     ;    hazard mn_quiet exists for).
+                                     ;   before WI_XLOAD, or the last note of ...
         jmp WI_XLOAD
 .endp                                ;   second melt for the frame after it
 
@@ -755,20 +351,11 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_stats -- everything G_DoCompleted puts in wminfo, derived rather than
 ;--------------------------------------------------------------
 .proc wi_stats
- .if 1
         stz wi_kills
         stz wi_items
         stz wi_maxkills              ;   throw the tally away
         stz wi_maxitems
         lda th_things
- .else
-        lda #0
-        sta wi_kills
-        sta wi_items
-        sta wi_maxkills              ;   throw the tally away
-        sta wi_maxitems
-        lda th_things
- .endif
         sta sp_ptr
         lda th_things+1
         sta sp_ptr+1
@@ -794,11 +381,11 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta zp_ptr+1
         lda [zp_ptr],y
         bne ?gotkill
-        ldx wi_i
+                                      ; 2026-09-22 idiom: X IS wi_i (stx wi_i at ?lp;
         jsr thing_alive_bit_t          ;   en_kill just cleared the ALIVE bit
         bne ?next
 ?gotkill inc wi_kills
-        jmp ?next
+        bra ?next
 ?item   ldy #6
         lda (sp_ptr),y
         jsr wi_bonus
@@ -834,36 +421,26 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta wi_secs+1
         ldx current_level            ; pars[1][map] (g_game.c:981)
         lda wi_par,x
- .if 1
         sta wi_parsec
         stz wi_parsec+1
         rts
- .else
-        sta wi_parsec
-        lda #0
-        sta wi_parsec+1
-        rts
- .endif
 .endp
 
 ;--------------------------------------------------------------
 ; wi_bonus -- A = sprite id -> A/Z = th_sprtab[id*8 + 7], the shared kind/bonus
 ;--------------------------------------------------------------
 .proc wi_bonus
-        ldy #0
-        sty wi_t2+1
-        asl
-        rol wi_t2+1
-        asl
-        rol wi_t2+1
-        asl
-        rol wi_t2+1
-        clc
+                                      ; 2026-09-23: id*8 + th_sprtab in 16-bit A (the
+        rep #$20                     ;   shifts of a byte cannot carry out: C = 0 for
+        .LONGA ON                    ;   the add)
+        and #$00FF
+        asl @
+        asl @
+        asl @
         adc th_sprtab
         sta sp_tab
-        lda wi_t2+1
-        adc th_sprtab+1
-        sta sp_tab+1
+        sep #$20
+        .LONGA OFF
         ldy #7
         lda (sp_tab),y
         rts
@@ -875,7 +452,6 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 .proc wi_initstats
         lda #1
         sta wi_sp
- .if 1
         stz wi_accelst
         stz wi_bcnt
         stz wi_state
@@ -885,18 +461,6 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         stz wi_ctime+1               ;   WI_drawTime returns on t < 0)
         stz wi_cpar
         stz wi_cpar+1
- .else
-        lda #0
-        sta wi_accelst
-        sta wi_bcnt
-        sta wi_state
-        sta wi_tacc
-        sta wi_tvis
-        sta wi_ctime                 ;   and cnt_par start at -1, and
-        sta wi_ctime+1               ;   WI_drawTime returns on t < 0)
-        sta wi_cpar
-        sta wi_cpar+1
- .endif
         ldx #2
         lda #$FF
 ?z      sta wi_cnt,x
@@ -915,18 +479,10 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         and #4                       ; bit2 = 0 while a key is held
         bne ?up
         lda wi_karm
- .if 1
         beq ?no
         stz wi_karm
         lda #1
         sta wi_accelst
- .else
-        beq ?no
-        lda #0
-        sta wi_karm
-        lda #1
-        sta wi_accelst
- .endif
 ?no     rts
 ?up     lda #1
         sta wi_karm
@@ -941,16 +497,9 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         beq ?state
         lda wi_sp
         cmp #10
- .if 1
         beq ?state
         stz wi_accelst
         jsr wi_finals
- .else
-        beq ?state
-        lda #0
-        sta wi_accelst
-        jsr wi_finals
- .endif
         ldx #SFX_BAREXP
         jsr snd_play_t
         lda #10
@@ -965,7 +514,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         beq ?tp
         tax                          ; states 2/4/6 -> rows 0/1/2
         dex
-        jmp wi_ratio
+        bra wi_ratio
 ?tp     jmp wi_timepar
 ?pause  dec wi_pause
         bne ?out
@@ -1024,49 +573,36 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         bne ?not
         ldx #SFX_PISTOL
         jsr snd_play_t
-?not    clc                          ; cnt_time += 3, clamped at stime
+?not
+                                      ; 2026-09-23: both counters as words, one window
+        rep #$21                     ; cnt_time += 3, clamped at stime
+        .LONGA ON
         lda wi_ctime
         adc #3
-        sta wi_ctime
-        bcc ?t1
-        inc wi_ctime+1
-?t1     lda wi_ctime+1
-        cmp wi_secs+1
-        bcc ?par
-        bne ?tclamp
-        lda wi_ctime
         cmp wi_secs
-        bcc ?par
-?tclamp lda wi_secs
-        sta wi_ctime
-        lda wi_secs+1
-        sta wi_ctime+1
-?par    clc                          ; cnt_par += 3, clamped at partime
+        bcc ?t16
+        lda wi_secs
+?t16    sta wi_ctime
+        clc                          ; cnt_par += 3, clamped at partime
         lda wi_cpar
         adc #3
-        sta wi_cpar
-        bcc ?p1
-        inc wi_cpar+1
-?p1     lda wi_cpar+1
-        cmp wi_parsec+1
-        bcc ?draw
-        bne ?pclamp
-        lda wi_cpar
         cmp wi_parsec
-        bcc ?draw
-?pclamp lda wi_parsec                ; par has landed -- and time too?
+        bcs ?pl16
         sta wi_cpar
-        lda wi_parsec+1
-        sta wi_cpar+1
-        lda wi_ctime+1
-        cmp wi_secs+1
-        bne ?draw
+        sep #$20
+        .LONGA OFF
+        jmp wi_redraw
+        .LONGA ON
+?pl16   lda wi_parsec                ; par has landed -- and time too?
+        sta wi_cpar
         lda wi_ctime
         cmp wi_secs
+        sep #$20
+        .LONGA OFF
         bne ?draw
         ldx #SFX_BAREXP
         jsr snd_play_t
-        inc wi_sp
+        inc wi_sp                    ; (falls into ?draw)
 ?draw   jmp wi_redraw
 .endp
 
@@ -1081,14 +617,15 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta wi_cnt,x
         dex
         bpl ?r
+                                      ; 2026-09-22 idiom: two word copies in a row -> one
+        rep #$20                     ;   16-bit window (wi.asm runs in-game, native --
+        .LONGA ON                    ;   its other windows prove it)
         lda wi_secs
         sta wi_ctime
-        lda wi_secs+1
-        sta wi_ctime+1
         lda wi_parsec
         sta wi_cpar
-        lda wi_parsec+1
-        sta wi_cpar+1
+        sep #$20
+        .LONGA OFF
         inc wi_tvis
         rts
 .endp
@@ -1101,7 +638,6 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_mul100 -- A -> wi_m = A*100, as 4 + 32 + 64 shifted and added. 255*100 is
 ;--------------------------------------------------------------
 .proc wi_mul100
- .if 1
         rep #$21                     ; ---- 16-bit A, C=0: *4 -> t3, *32 -> m,
         .LONGA ON                    ;   *64 + *32 + *4 = *100, all in A. No
         and #$FF                     ;   sum passes 25500, so no add carries
@@ -1119,42 +655,6 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sep #$20
         .LONGA OFF
         rts
- .else
-        sta wi_m
-        lda #0
-        sta wi_m+1
-        asl wi_m
-        rol wi_m+1                   ; *2
-        asl wi_m
-        rol wi_m+1                   ; *4
-        lda wi_m
-        sta wi_t3
-        lda wi_m+1
-        sta wi_t3+1                  ; keep *4
-        asl wi_m
-        rol wi_m+1                   ; *8
-        asl wi_m
-        rol wi_m+1                   ; *16
-        asl wi_m
-        rol wi_m+1                   ; *32
-        clc
-        lda wi_m
-        adc wi_t3
-        sta wi_t3
-        lda wi_m+1
-        adc wi_t3+1
-        sta wi_t3+1                  ; *36
-        asl wi_m
-        rol wi_m+1                   ; *64
-        clc
-        lda wi_m
-        adc wi_t3
-        sta wi_m
-        lda wi_m+1
-        adc wi_t3+1
-        sta wi_m+1                   ; *100
-        rts
- .endif
 .endp
 
 ;--------------------------------------------------------------
@@ -1168,7 +668,6 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ; wi_entry -- A = wi.tab index -> zp_ptr = its 7-byte row, so hud_blit can draw
 ;--------------------------------------------------------------
 .proc wi_entry
- .if 1
         rep #$20                     ; ---- 16-bit A: index*7 = *8 - index, and
         .LONGA ON                    ;   8i >= i leaves C=1: that is the +1 of a
         and #$FF                     ;   16-bit add of WI_TAB-1
@@ -1183,42 +682,26 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sep #$20
         .LONGA OFF
         rts
- .else
-        sta wi_ix
-        lda #0
-        sta zp_ptr+1
-        lda wi_ix
-        asl
-        rol zp_ptr+1
-        asl
-        rol zp_ptr+1
-        asl
-        rol zp_ptr+1                 ; index*8
-        sec
-        sbc wi_ix                    ; ...-index = *7
-        bcs ?nb
-        dec zp_ptr+1
-?nb     clc
-        adc #<WI_TAB
-        sta zp_ptr
-        lda zp_ptr+1
-        adc #>WI_TAB
-        sta zp_ptr+1
-        rts
- .endif
 .endp
 
 ;--------------------------------------------------------------
-; wi_put -- A = lump, X = column, Y = row. V_DrawPatch, through hud_blit --
+; wi_putx / wi_put -- A = lump, Y = row, the column in X (< 256) or in wi_px
+;   (a word: the intermission's x reaches 304). V_DrawPatch at DOOM's own 320.
 ;--------------------------------------------------------------
-.proc wi_put
+.proc wi_putx                        ; X = the column, when it is < 256
         stx wi_px
-        sty wi_py
-        jsr wi_entry
-        ldx wi_px
-        ldy wi_py
-        jmp hud_blit
+        stz wi_px+1
+?put                                 ; A = lump, wi_px = the column (a word),
+        pha                          ;   Y = the row. The wait (A/Y): sr_put
+        phy                          ;   writes the shared BCB before ITS wait,
+        jsr blitter_wait_t           ;   and the last rect/erase is async
+        ply
+        pla
+        jsr wi_entry                 ; (A only: Y rides through)
+        jsl B1CODE_BASE+sr_put_w1    ; 2026-09-24: 1:1 onto the 320 SR surface
+        rts
 .endp
+wi_put  = wi_putx.?put
 
 ;--------------------------------------------------------------
 ; wi_slam -- WI_slamBackground + WI_drawLF: the background, the ten animations,
@@ -1240,7 +723,7 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda wi_lblix,x
         ldx #WI_STATSX
         ldy wi_arg
-        jsr wi_put
+        jsr wi_putx
         inc wi_row
         lda wi_row
         cmp #3
@@ -1248,11 +731,11 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda #WI_I_TIME
         ldx #WI_TIMEX
         ldy #WI_TIMEY
-        jsr wi_put
+        jsr wi_putx
         lda #WI_I_PAR
         ldx #WI_PARX
         ldy #WI_TIMEY
-        jmp wi_put
+        jmp wi_putx
 .endp
 
 ;--------------------------------------------------------------
@@ -1263,13 +746,16 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
 ?l      ldx wi_row
         lda wi_rowy,x
         sta wi_py
-        ldx #WI_PCTX-WI_FLDW
+        ldx #WI_PCTXH-WI_FLDW        ; (erase boxes are in 160 units)
         ldy wi_py
         jsr wi_erase
         ldx wi_row
         lda wi_cnt,x
         bmi ?nx
-        ldx #WI_PCTX                 ;      `if (p < 0) return`)
+        ldx #<WI_PCTX                ;      `if (p < 0) return`); the '%'
+        stx wi_px                    ;   at x = 270, a word
+        ldx #>WI_PCTX
+        stx wi_px+1
         ldy wi_py
         jsr wi_pct
 ?nx     inc wi_row
@@ -1280,10 +766,10 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta wi_ew                    ;   -- nothing between the two erases
         lda #WI_FLDH                 ;   touches wi_ew or wi_eh
         sta wi_eh
-        ldx #WI_TIMEVX-WI_TFLDW
+        ldx #WI_TIMEVXH-WI_TFLDW
         ldy #WI_TIMEY
         jsr wi_erase.wi_erasew
-        ldx #WI_PARVX-WI_TFLDW
+        ldx #WI_PARVXH-WI_TFLDW
         ldy #WI_TIMEY
         jsr wi_erase.wi_erasew
         lda wi_tvis
@@ -1292,14 +778,19 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         sta wi_cur
         lda wi_ctime+1
         sta wi_cur+1
-        ldx #WI_TIMEVX
+        ldx #WI_TIMEVX               ; (< 256)
+        stx wi_px
+        stz wi_px+1
         ldy #WI_TIMEY
         jsr wi_dotime
         lda wi_cpar
         sta wi_cur
         lda wi_cpar+1
         sta wi_cur+1
-        ldx #WI_PARVX
+        ldx #<WI_PARVX               ; x = 304: a word
+        stx wi_px
+        ldx #>WI_PARVX
+        stx wi_px+1
         ldy #WI_TIMEY
         jsr wi_dotime
 ?out    rts
@@ -1314,77 +805,22 @@ wy          :SCREEN_WIDTH dta 0      ; f_wipe.c's y[], one per column
         lda #WI_FLDH
         sta wi_eh
 wi_erasew
-        stx wi_px
-        sty wi_py
-        ldx wi_py
-        lda row_lo,x
-        clc
-        adc wi_px                    ;   the column is a plain add.
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        lda row_hi,x
-        adc WI_TAB+1                 ; the background's base = its row 0's address:
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1  ; and threw the carry away -- and it
-        lda WI_TAB+2                 ;   WI_VRAM, or WI_BGARENA after wi_bgsel
-        adc #0                       ;   the TIME row alone is +$6900, so
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
-        lda #SCREEN_WIDTH
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
- .if 1
-        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
-        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
-        lda #1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda wi_ew
-        dec @
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
-        lda wi_eh
-        dec @
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
- .else
-        lda #0
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
-        lda #1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda wi_ew
-        sec
-        sbc #1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
-        lda wi_eh
-        sec
-        sbc #1
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
- .endif
-        lda row_lo,x
-        clc
-        adc wi_px
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        lda row_hi,x
-        adc #0
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        lda #[VRAM_SCREEN>>16]
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
- .if 1
-        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY: opaque, this IS the
-        jsr hud_blit.hud_fire                  ;   background (ert in wi_rect)
-        jmp blitter_wait_t
+        stx mn_bx                    ; 2026-09-24: the box, in 160 units, back out
+        sty mn_by                    ;   of the pristine map (WI_SRBG, mn_sbk) at
+        ldx wi_ew                    ;   320 -- menu.asm mn_sbox, the title's own
+        dex                          ;   restore
+        stx mn_bw
+        ldx wi_eh
+        dex
+        stx mn_bh
+        jsr blitter_wait_t           ; mn_sbox writes the BCB before ITS wait
+        jmp mn_sbox_t
 .endp
 
 ;--------------------------------------------------------------
 ; wi_num
- .else
-        lda #BLT_COPY                ; opaque: this IS the background
-        sta MEMW+MEMW_HD_OFF+BCB_CTRL
-        jsr hud_blit.hud_fire
-        jmp blitter_wait
-.endp
-
 ;--------------------------------------------------------------
-; wi_num
- .endif -- WI_drawNum(x, y, n, digits): digits right to left from x, leaving
-;--------------------------------------------------------------
-.proc wi_num
-        stx wi_px
+.proc wi_num                         ; A = n, wi_px = its right edge, Y = row
         sty wi_py
         sta wi_n
         lda wi_dig
@@ -1400,61 +836,52 @@ wi_erasew
 ?got    stx wi_dig
 ?have   lda wi_n
 ?loop   ldx #0                       ; digit = n mod 10, X = n / 10
- .if 1
 ?d      cmp #10
         bcc ?done                    ; (not taken: C=1, the sbc needs no sec)
         sbc #10
         inx
         bra ?d
- .else
-?d      cmp #10
-        bcc ?done
-        sec
-        sbc #10
-        inx
-        jmp ?d
- .endif
-?done   sta wi_arg                   ; the digit
-        stx wi_n                     ; ...and what is left
+                                      ; 2026-09-23: the digit stays in A -- C = 0 from
+?done   stx wi_n                     ;   the taken bcc ?done, so the lump add needs no
+        adc #WI_I_NUM0               ;   clc; parked on the stack while x steps left
+        pha
+        rep #$20                     ; x -= WINUM0's width: a word (x reaches 304)
+        .LONGA ON
         lda wi_px
         sec
         sbc #WI_NUMW
         sta wi_px
-        lda wi_arg
-        clc
-        adc #WI_I_NUM0
-        ldx wi_px
+        .LONGA OFF
+        sep #$20
+        pla
         ldy wi_py
         jsr wi_put
         dec wi_dig
         beq ?out
         lda wi_n
-        jmp ?loop
+        bra ?loop
 ?out    rts
 .endp
 
 ;--------------------------------------------------------------
 ; wi_pct -- WI_drawPercent: the '%' AT x, then the digits leftwards from it.
 ;--------------------------------------------------------------
-.proc wi_pct
+.proc wi_pct                         ; A = the value, wi_px = the '%''s x, Y = row
         sta wi_n2
-        stx wi_px
         sty wi_py
         lda #WI_I_PCNT
         jsr wi_put
         lda #$FF
         sta wi_dig
         lda wi_n2
-        ldx wi_px
         ldy wi_py
-        jmp wi_num
+        bra wi_num
 .endp
 
 ;--------------------------------------------------------------
 ; wi_dotime -- WI_drawTime(x, y, wi_cur): two digits, a colon, and the next
 ;--------------------------------------------------------------
-.proc wi_dotime
-        stx wi_px
+.proc wi_dotime                      ; wi_px = the right edge, Y = the row
         sty wi_py
         lda wi_cur+1                 ; > 3599 s? (61*59, wi_stuff.c:388)
         cmp #>3600
@@ -1464,7 +891,6 @@ wi_erasew
         cmp #<3600
         bcc ?ok
 ?sucks  lda #WI_I_SUCKS
-        ldx wi_px
         ldy wi_py
         jmp wi_put
 ?ok     lda wi_cur                   ; minutes = t/60, seconds = t mod 60
@@ -1474,33 +900,33 @@ wi_erasew
         lda #60
         jsr wi_div16_t                 ; wi_m = minutes
         lda wi_m
-        sta wi_mins
+                                      ; 2026-09-22 (65816-style): the minutes ride the
+        pha                          ;   stack across the seconds' print
         jsr wi_mul60
+                                      ; 2026-09-23: the seconds straight from A
+        lda #2
+        sta wi_dig
         sec
         lda wi_cur
         sbc wi_m
-        sta wi_arg
-        lda #2
-        sta wi_dig
-        lda wi_arg
-        ldx wi_px
         ldy wi_py
         jsr wi_num
-        lda wi_px                    ; ...then the colon left of them
+        rep #$20                     ; ...then the colon left of them (a word)
+        .LONGA ON
+        lda wi_px
         sec
         sbc #WI_COLONW
         sta wi_px
+        .LONGA OFF
+        sep #$20
         lda #WI_I_COLON
-        ldx wi_px
         ldy wi_py
         jsr wi_put
-        lda wi_mins
+        pla                          ; (pla sets Z as the lda did)
         beq ?out
-        sta wi_n2
-        lda #$FF
-        sta wi_dig
-        lda wi_n2
-        ldx wi_px
+                                      ; the minutes stay in A
+        ldx #$FF
+        stx wi_dig
         ldy wi_py
         jmp wi_num
 ?out    rts
@@ -1510,7 +936,6 @@ wi_erasew
 ; wi_mul60 -- A -> wi_m = A*60 (= 32 + 16 + 8 + 4), for the seconds remainder.
 ;--------------------------------------------------------------
 .proc wi_mul60
- .if 1
         rep #$20                     ; ---- 16-bit A: *60 = *64 - *4, in A
         .LONGA ON
         and #$FF
@@ -1527,47 +952,6 @@ wi_erasew
         sep #$20
         .LONGA OFF
         rts
- .else
-        sta wi_m
-        lda #0
-        sta wi_m+1
-        asl wi_m
-        rol wi_m+1
-        asl wi_m
-        rol wi_m+1                   ; *4
-        lda wi_m
-        sta wi_t3
-        lda wi_m+1
-        sta wi_t3+1
-        asl wi_m
-        rol wi_m+1                   ; *8
-        clc
-        lda wi_m
-        adc wi_t3
-        sta wi_t3
-        lda wi_m+1
-        adc wi_t3+1
-        sta wi_t3+1                  ; *12
-        asl wi_m
-        rol wi_m+1                   ; *16
-        clc
-        lda wi_m
-        adc wi_t3
-        sta wi_t3
-        lda wi_m+1
-        adc wi_t3+1
-        sta wi_t3+1                  ; *28
-        asl wi_m
-        rol wi_m+1                   ; *32
-        clc
-        lda wi_m
-        adc wi_t3
-        sta wi_m
-        lda wi_m+1
-        adc wi_t3+1
-        sta wi_m+1                   ; *60
-        rts
- .endif
 .endp
 
 ;==============================================================
@@ -1583,57 +967,35 @@ wi_erasew
         inc wi_af
         lda wi_af
         cmp #WI_ANIMF
- .if 1
         bcc ?draw
         stz wi_af
 ?draw   ldx current_level
- .else
-        bcc ?draw
-        lda #0
-        sta wi_af
-?draw   ldx current_level
- .endif            ; epsd0animinfo is the only set packed, so
         lda wi_ebase,x               ;   only episode 1 has animations at all --
- .if 1
         bne wi_over                  ;   see wi_syms.inc. Episode 1 IS ebase 0.
         stz wi_ai
- .else
-        bne wi_over                  ;   see wi_syms.inc. Episode 1 IS ebase 0.
-        lda #0
-        sta wi_ai
- .endif
-?l      ldy wi_ai
+                                      ; 2026-09-23: X/Y straight from the tables, the
+?l      ldy wi_ai                    ;   row parked on the stack; wi_ai < 10, so the
+        ldx wi_animx,y               ;   asl and every add stay < 256 (C = 0 through)
         lda wi_animy,y
-        sta wi_arg
-        lda wi_animx,y
-        sta wi_arg+1
-        lda wi_ai                    ; lump = ANIM0 + anim*ANIMF + frame
+        pha
+        tya                          ; lump = ANIM0 + anim*ANIMF + frame
         asl
-        clc
         adc wi_ai                    ; *3
         adc wi_af
-        clc
         adc #WI_I_ANIM0
-        ldx wi_arg+1
-        ldy wi_arg
-        jsr wi_put
+        ply
+        jsr wi_putx                  ; (X = the anim's x, < 256)
         inc wi_ai
         lda wi_ai
         cmp #WI_ANIMS
         bne ?l
-        jmp wi_over                  ; the anims just stamped their rectangles
+        bra wi_over                  ; the anims just stamped their rectangles
 ?out    rts                          ;   OVER the once-drawn layer -- re-assert
 .endp                                ;   all of it, not only the title
 
 ;--------------------------------------------------------------
 ; wi_over -- everything that lives ABOVE the animations, repainted after every
-;   anim redraw. DOOM repaints the WHOLE screen each tic (WI_drawStats /
-;   WI_drawShowNextLoc: background, anims, THEN labels/splats/pointer/title);
-;   this port draws incrementally, and redrawing only the title here left the
-;   rest to be eaten: anim 1 sits on E1M1's node and chewed its splat to an
-;   outline (flak.png), anims 4/5 sit in the KILLS/SECRET labels. Order is
-;   DOOM's: stats = LF title then labels; ENTERING = splats, pointer, EL
-;   title LAST (it overlaps node 8's splat).
+;   anim redraw.
 ;--------------------------------------------------------------
 .proc wi_over
         lda wi_tmode
@@ -1644,7 +1006,9 @@ wi_erasew
         lda wi_yon
         beq ?ttl
         jsr wi_yahput
-?ttl    jmp wi_title
+?ttl
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>wi_title             ;   next byte of this segment -- fall through
 .endp
 
 ;--------------------------------------------------------------
@@ -1653,32 +1017,29 @@ wi_erasew
 .proc wi_title
         lda wi_tmode
         bne ?el
-        ldx current_level            ; --- WI_drawLF
-        lda wi_lvx,x
-        sta wi_arg
-        lda current_level
+                                      ; 2026-09-23: X straight from the table
+        ldy current_level            ; --- WI_drawLF
+        ldx wi_lvx,y
+        tya
         clc
         adc #WI_I_LV0
-        ldx wi_arg
         ldy #WI_TITLEY
-        jsr wi_put
+        jsr wi_putx                  ; (every title x is < 256: centred)
         ldx wi_finx
         lda #WI_I_FINISH
         ldy #WI_LFY2
-        jmp wi_put
+        jmp wi_putx
 ?el     lda #WI_I_ENTER              ; --- WI_drawEL
         ldx wi_entx
         ldy #WI_TITLEY
-        jsr wi_put
-        ldx wi_next
-        lda wi_lvx,x
-        sta wi_arg
-        lda wi_next
+        jsr wi_putx
+        ldy wi_next
+        ldx wi_lvx,y
+        tya
         clc
         adc #WI_I_LV0
-        ldx wi_arg
         ldy #WI_LFY2
-        jmp wi_put
+        jmp wi_putx
 .endp
 
 ;==============================================================
@@ -1688,17 +1049,9 @@ wi_erasew
         lda #1
         sta wi_tmode
         jsr wi_slambg                ; the map again, over the tally -- and its
-                                     ;   anim pass tail-draws the whole ABOVE
-                                     ;   layer (wi_over: splats + EL title;
-                                     ;   wi_yon is still 0 here)
- .if 1
+                                     ;   anim pass tail-draws the whole ABOVE ...
         stz wi_accelst               ; cnt = SHOWNEXTLOCDELAY * TICRATE
         stz wi_yon
- .else
-        lda #0                       ; cnt = SHOWNEXTLOCDELAY * TICRATE
-        sta wi_accelst
-        sta wi_yon
- .endif
         lda #<[WI_SNLDELAY*WI_TICRATE]
         sta wi_cnt16
         lda #>[WI_SNLDELAY*WI_TICRATE]
@@ -1713,12 +1066,12 @@ wi_erasew
         rol                          ; A = 1 while the pointer is ON
         eor #1
         jsr wi_yah
-        lda wi_cnt16                 ; --cnt
-        bne ?d1
-        dec wi_cnt16+1
-?d1     dec wi_cnt16
-        lda wi_cnt16
-        ora wi_cnt16+1
+                                      ; 2026-09-23: --cnt as ONE word; Z of the 16-bit
+        rep #$20                     ;   dec is the whole word's, sep keeps it
+        .LONGA ON
+        dec wi_cnt16
+        .LONGA OFF
+        sep #$20
         beq ?done
         lda wi_accelst
         beq ?loop
@@ -1751,26 +1104,15 @@ wi_erasew
         ldx wi_next                  ;   shows next-1 instead (wi_stuff.c:790)
         sec
         lda wi_next
- .if 1
         sbc wi_ebase,x
         dec @
 ?have   clc
- .else
-        sbc wi_ebase,x
-        sec
-        sbc #1
-?have   clc
- .endif
         adc wi_ai                    ; ...so stop at ebase + last, INCLUSIVE
         sta wi_arg+1                 ;   (wi_stuff.c:793 is i <= last)
+                                      ; 2026-09-23: Y straight from the table
 ?sp     ldx wi_ai
-        lda wi_nodey,x
-        sta wi_arg
-        ldx wi_ai
-        lda wi_nodex,x
-        tax
+        jsr wi_nodepx                ; wi_px = the node's x, Y = its y
         lda #WI_I_SPLAT
-        ldy wi_arg
         jsr wi_put
         inc wi_ai
         lda wi_ai
@@ -1787,14 +1129,25 @@ wi_erasew
 ;--------------------------------------------------------------
 .proc wi_yahput
         ldx wi_next
-        ldy wi_nodey,x
-        lda wi_yahdx,x               ; WI_drawOnLnode's WIURH0/WIURH1 pick, made
-        asl @                        ;   at pack time: C = the sign = WIURH1
-        lda wi_nodex,x               ;   (lda/tax leave C alone)
-        tax
-        lda #WI_I_YAH0
+        jsr wi_nodepx                ; C = wi_nodexh bit 7: WI_drawOnLnode's
+        lda #WI_I_YAH0               ;   WIURH0/WIURH1 pick, made at pack time
         adc #0                       ; + C
         jmp wi_put
+.endp
+
+;--------------------------------------------------------------
+; wi_nodepx -- X = level: wi_px = its lnode's x (a word: nodes reach 281),
+;   Y = its y, C = bit 7 of the x high byte (the WIURH1 pick). Keeps X.
+;--------------------------------------------------------------
+.proc wi_nodepx
+        ldy wi_nodey,x
+        lda wi_nodexl,x
+        sta wi_px
+        lda wi_nodexh,x
+        cmp #$80                     ; C = bit 7: the WIURH1 pick
+        and #$7F                     ; the x high byte (and leaves C alone)
+        sta wi_px+1
+        rts
 .endp
     .if WI_I_YAH1 != WI_I_YAH0+1
         ert 'wi_yahput adds the WIURH1 pick to WI_I_YAH0: WIURH1 must be the next lump'
@@ -1806,15 +1159,9 @@ wi_erasew
 .proc wi_yah
         cmp wi_yon
         beq ?out
- .if 1
         sta wi_yon
         tay                          ; (sta keeps the cmp's flags: tay sets them
         bne wi_yahput                ;  from A; Y is dead on both paths)
- .else
-        sta wi_yon
-        lda wi_yon                   ; (sta keeps the cmp's flags -- refresh)
-        bne wi_yahput
- .endif
         ldx wi_next                  ; OFF: erase its box back to the map
         lda #WI_YAHW
         sta wi_ew
@@ -1824,10 +1171,8 @@ wi_erasew
         sec
         sbc #WI_YAHDY
         tay
-        lda wi_nodex,x
-        clc
-        adc wi_yahdx,x               ; SIGNED: +1 for WIURH0, -31 for WIURH1
-        tax
+        lda wi_yahex,x               ; the box's left edge in 160 units, per
+        tax                          ;   level (pack_wi.py: x - left, halved)
         jmp wi_erase.wi_erasew
 ?out    rts
 .endp
@@ -1836,62 +1181,48 @@ wi_erasew
 ; wi_slambg -- background + animations, no title lines: WI_slamBackground.
 ;--------------------------------------------------------------
 .proc wi_slambg
-        lda #BLT_COPY
-        sta hb_ctrl
-        lda #WI_I_BG
-        ldx #0
-        ldy #0
-        jsr wi_put
-        lda #BLT_BSTENCIL
- .if 1
+        lda wi_tmode                 ; ShowNextLoc's: the map back from the
+        beq ?fresh                   ;   pristine copy, whole screen (the stats'
+        stz mn_bx                    ;   slam finds it fresh from wi_bgfetch --
+        stz mn_by                    ;   and there is no pristine copy yet)
+        lda #SCREEN_WIDTH-1
+        sta mn_bw
+        lda #SCREEN_HEIGHT-1
+        sta mn_bh
+        jsr blitter_wait_t           ; mn_sbox writes the BCB before ITS wait
+        jsr mn_sbox_t
+?fresh  lda #BLT_BSTENCIL
         sta hb_ctrl
         stz wi_bcnt
         stz wi_anext                 ;   all ten over the fresh background
- .else
-        sta hb_ctrl
-        lda #0
-        sta wi_bcnt
-        sta wi_anext                 ;   all ten over the fresh background
- .endif
         jmp wi_anim
 .endp
 
 ;--------------------------------------------------------------
-; wi_bgsel -- WI_loadData's background: WIMAP%d for wbs->epsd (wi_stuff.c:1548).
-;   WI_TAB row 0 is WIMAP0 at WI_VRAM, the one world map the boot stream has
-;   room for, and until 2026-09-16 every episode got it -- E2/E3's splats and
-;   "you are here" pointer sat at their own lnodes on episode 1's picture. Their
-;   maps are in Rapidus SDRAM now (WIMAP_BANK, load_music), so an E2/E3 level
-;   copies its own into WI_BGARENA and points row 0 there. wi_slambg and
-;   wi_erase both reach the background through row 0, and stage 2 is copied
-;   fresh out of VRAM for every intermission, so the patch dies with this one.
-;   Called right behind wi_grab, whose blitter wait frees the MEMAC window
-;   spr_fcopy borrows.
+; wi_bgfetch -- A = the bank to fill (WI_SRVRAM's or WI_SRBG's): WI_loadData's
+;   background, WIMAP%d for wbs->epsd (wi_stuff.c:1548), at 320 with its SR
+;   list, out of its SDRAM bank (wi_bgm) -- WI_WIMCOPY bytes by spr_fcopy.
 ;--------------------------------------------------------------
-.proc wi_bgsel
+.proc wi_bgfetch
+        sta sp_addr+2                ; destination: bank A, offset 0
         ldx current_level
         lda wi_bgm,x
-        cmp #255                     ; 255 = WIMAP0: row 0 is already right
-        beq ?out
-        stz sf_src                   ; both low bytes are 0 (the source by
-        stz sp_addr                  ;   pack_wi's stride, the arena by the ert)
+        clc
+        adc #WIMAP_BANK
+        sta sf_src+2                 ; source: the map's own bank, offset 0
         rep #$20
         .LONGA ON
-        and #$00FF                   ; (B is junk from the 8-bit load)
-        ora #[WIMAP_BANK<<8]
-        sta sf_src+1                 ; source WIMAP_BANK:mid00, mid + bank
-        lda #[WI_BGARENA>>8]
-        sta sp_addr+1                ; destination, mid + bank...
-        sta WI_TAB+1                 ; ...and row 0's (its low byte is WI_VRAM's 0)
-        lda #[SCREEN_WIDTH*WIPE_H]
+        stz sp_addr
+        stz sf_src
+        lda #WI_WIMCOPY
         sta sf_size
-        sep #$20
         .LONGA OFF
+        sep #$20
         jsl B1CODE_BASE+spr_fcopy_w1
-?out    rts
+        rts
 .endp
-    .if [WI_BGARENA&$FF] != 0 .or [WI_VRAM&$FF] != 0
-        ert 'wi_erase adds no low byte to row 0: WI_BGARENA and WI_VRAM must be page-aligned'
+    .if WI_SRVRAM <> MENU_SRVRAM || WI_SRXDL <> MENU_SRXDL || [WI_SRBG & $FFFF] <> 0
+        ert 'wi.asm draws through mn_sdraw/mn_sbox: the surface must be MENU_SRVRAM, the pristine copy bank-aligned'
     .endif
 
         icl 'wi_tables.inc'          ; mk_ckill / bn_citem, from info.c
@@ -1925,9 +1256,7 @@ wi_accelst  dta 0                    ; acceleratestage
 wi_pause    dta 0                    ; cnt_pause
 wi_cnt16    dta 0,0                  ; ShowNextLoc's cnt
 wi_karm     dta 0                    ; 0 = the key HELD from the exit press must
-                                     ;   be released first (DOOM's attackdown/
-                                     ;   usedown gate) -- 1 let it slam the
-                                     ;   tally on the very first tic
+                                     ;   be released first (DOOM's attackdown/ ...
 wi_yon      dta 0
 wi_af       dta 0                    ; the animations' shared frame...
 wi_anext    dta 0                    ; ...and the bcnt it next changes on
@@ -1941,7 +1270,7 @@ wi_ix       dta 0
 wi_n        dta 0
 wi_n2       dta 0
 wi_dig      dta 0
-wi_px       dta 0
+wi_px       = sr_x                   ; the column, a WORD (menu.asm sr_put's)
 wi_py       dta 0
 wi_arg      dta 0,0
 wi_m        dta 0,0
@@ -1964,24 +1293,110 @@ wi_d        dta 0
 ; per-episode lnodes + wi_ebase and the episode-relative wi_splats pushed stage
 ; 2 fourteen bytes past $4C00). They are pure arithmetic on stage-2 VARIABLES,
 ; so only the CODE moved; both are called with the ROM banked out like the rest.
-; They live down HERE, past stage 2's guard, and not behind an `org`-and-back in
-; the middle of it: stage 2 is assembled at its run address with no parking
-; address of its own, so a detour splits its single $4100 segment in two and
-; tools/split_menu_ovl.py only lifts the half that starts there -- the other
-; half then lands in the map slot and check_xex.py stops the build.
 ;==============================================================
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WIPCT_BASE
- .endif
+;--------------------------------------------------------------
+; wi_kitfetch -- the patches at full width, out of SDRAM into the pool behind
+;   the SR surface (pack_wi.py): the kit at WI_KITVRAM, then the finished
+;   level's name into slot A and the next one's into slot B -- and their two
+;   WI_TAB rows pointed at the slots. The level is over: the pool is free.
+;--------------------------------------------------------------
+        .segment B1
+.proc wi_kitfetch
+        lda #[WI_KITVRAM>>16]
+        sta sp_addr+2
+        lda #WIMAP_BANK+WI_KITBK
+        sta sf_src+2
+        rep #$20
+        .LONGA ON
+        lda #WI_KITVRAM&$FFFF
+        sta sp_addr
+        stz sf_src
+        lda #WI_KITLEN
+        sta sf_size
+        .LONGA OFF
+        sep #$20
+        jsr spr_fcopy
+        lda #[WI_LVA>>16]            ; slot A: the level just finished
+        sta sp_addr+2
+        rep #$20
+        .LONGA ON
+        lda #WI_LVA&$FFFF
+        sta sp_addr
+        .LONGA OFF
+        sep #$20
+        lda current_level
+        jsr ?name
+        lda #[WI_LVB>>16]            ; slot B: the one it leads to (the same
+        sta sp_addr+2                ;   level twice is harmless: both rows
+        rep #$20                     ;   are its, B is written last)
+        .LONGA ON
+        lda #WI_LVB&$FFFF
+        sta sp_addr
+        .LONGA OFF
+        sep #$20
+        lda wi_next
+?name   pha                          ; A = level k: its WI_TAB row first --
+        clc                          ;   (I_LV0 + k)*7 + WI_TAB, *8 - itself,
+        adc #WI_I_LV0                ;   and 8i >= i leaves C = 1: the +1 of
+        rep #$20                     ;   WI_TAB-1
+        .LONGA ON
+        and #$00FF
+        sta zp_ptr
+        asl @
+        asl @
+        asl @
+        sec
+        sbc zp_ptr
+        adc #WI_TAB-1
+        sta zp_ptr
+        lda sp_addr                  ; the row's vram = the slot, lo/mid ...
+        sta (zp_ptr)
+        .LONGA OFF
+        sep #$20
+        ldy #2
+        lda sp_addr+2                ; ... and bank
+        sta (zp_ptr),y
+        pla                          ; the name's SDRAM slot: bank = NAMEBK +
+        pha                          ;   k/16, mid = (k & 15) * 16 (4 KB each)
+        lsr
+        lsr
+        lsr
+        lsr
+        clc
+        adc #WIMAP_BANK+WI_NAMEBK
+        sta sf_src+2
+        pla
+        asl
+        asl
+        asl
+        asl                          ; the top four bits fall out: (k & 15) << 4
+        sta sf_src+1
+        stz sf_src
+        rep #$20
+        .LONGA ON
+        lda #WI_NAMESZ
+        sta sf_size
+        .LONGA OFF
+        sep #$20
+        jmp spr_fcopy
+.endp
+wi_kitfetch_w1 jsr wi_kitfetch       ; wi_main's (stage 2, bank 0)
+        rtl
+    .if WI_NAMESLOT <> $1000 || WI_NAMESZ > WI_NAMESLOT
+        ert 'wi_kitfetch steps names by 4 KB: WI_NAMESLOT must be $1000'
+    .endif
+        .endseg
+
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 4b: bank $01
 .proc wi_pctof
         lda wi_max,x
         beq ?none
-        sta wi_t2
+                                      ; 2026-09-22 (65816-style): parked on the stack
+        pha                          ;   across the jsl (rtl balances it)
         lda wi_val,x
         jsl wi_mul100_w0
-        lda wi_t2
+        pla
         jsr wi_div16
         lda wi_m
         rts
@@ -1989,39 +1404,31 @@ wi_d        dta 0
         rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WIPCT_END+1
-        ert 'wi_pctof outgrew WIPCT_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WIDIV_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 4b: bank $01
 .proc wi_div16
-        sta wi_d
+                                      ; 2026-09-23: in 16-bit A. The divisor is a WORD on
+        rep #$20                     ;   the stack (1,s), the remainder (< 2*255) in A,
+        .LONGA ON                    ;   and the quotient bit rides in on C: rol, no inc
+        and #$00FF                   ;   (C = 0 first, so the 17th rol drops a 0). Callers
+        pha                          ;   read wi_m only; X = 0 on exit as before
         lda #0
         ldx #16
-?l      asl wi_m
-        rol wi_m+1
-        rol
-        bcs ?sub
-        cmp wi_d
-        bcc ?next
-?sub    sec
-        sbc wi_d
-        inc wi_m                     ; quotient bit
-?next   dex
+        clc
+?l      rol wi_m
+        rol @
+        cmp 1,s
+        bcc ?s
+        sbc 1,s                      ; C = 1 after: rem >= d
+?s      dex
         bne ?l
+        rol wi_m                     ; the last quotient bit
+        pla
+        sep #$20
+        .LONGA OFF
         rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WIDIV_END+1
-        ert 'wi_div16 outgrew WIDIV_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)

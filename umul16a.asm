@@ -1,4 +1,5 @@
 ; umul16 for Antonia II hardware
+; !!! THIS FILE MUST NEVER BE CHANGED. It is drac030's code, icl'd verbatim by
 ;
 ; m_prod = m_a * m_b
 ;

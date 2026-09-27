@@ -1,19 +1,7 @@
-; AUTO-SPLIT from bsp_main.asm 2026-07-24 -- assembled in place via icl (verified
-; byte-identical). All ATR/SIO streaming: the DCB constants, load_level,
-; read_sectors, load_vram (wall textures + sprite pixels into VBXE banks) and the
-; one-shot loaders relocated to $8640 (load_sprites, load_things).
-;==============================================================
-; Disk level streaming -- raw ATR sectors via SIO (no DOS).
 ;--------------------------------------------------------------
-; Reuses the woll3d diskio approach (read_sectors): command $52, single-density
-; 128-byte sectors, via the OS SIOV. The map blob streams to MAP_LOAD ($4000) --
-; exactly where the old `ins` embed put it, so map_syms.inc addresses stay valid.
-; The engine is BOOTED from the ATR (boot.asm loader in sectors 1-3), so the OS
-; has cold-started cleanly -- VIMIRQ + serial IRQ vectors are valid and SIOV
-; works. (Running the bare XEX without a clean boot left VIMIRQ -> RAM -> BRK on
-; every IRQ -> SIO hang.) SIOV waits on the serial IRQ, so it runs with the OS
-; VBI on + IRQs enabled (NMIEN=$40 + CLI), then main SEIs back.
-;==============================================================
+; diskio.asm -- ATR/SIO streaming (no DOS): load_level, read_sectors, the SDRAM
+;   level cache and the one-shot asset loaders.
+;--------------------------------------------------------------
 SIOV    equ $E459
 DDEVIC  equ $0300
 DUNIT   equ $0301
@@ -36,22 +24,6 @@ tex_chunk  dta 0                     ; load_textures: current 4KB chunk (survive
 ;--------------------------------------------------------------
 ; load_level -- stream `current_level` from the ATR. woll3d-style fixed stride:
 ;   base_sec = LVL_SEC1 + current_level*LVL_SECTORS (atr_layout.inc).
-;
-;   FOUR REGIONS since format v3 (pack_map.py): the level does not fit the
-;   $4000..$85FF slot even compacted, so the blob is, in read order,
-;       [ LOW:  header, sectors, textab, yoffs ] -> $4000,     MAP_LOW_SECT
-;       [ HIGH: ssectors, doors, doorlock      ] -> $D800,     MAP_HI_SECT
-;       [ EXT:  verts, nodes, segoff           ] -> $01:0100,  MAP_EXT_SECT
-;       [ SEG:  seg records + the automap tables] -> $03:0100,  MAP_SEG_SECT
-;   The HIGH half is RAM UNDER THE OS ROM, and SIOV is IN that ROM, so it cannot
-;   be read there directly: it goes through the staging buffer a page at a time
-;   and is copied across with the ROM briefly banked out (same trick load_vram
-;   uses for VBXE banks). The two bank regions stage the same way, with a 65816
-;   long store instead of the ROM banking (read_ext). Every region length is a
-;   whole number of sectors by construction.
-;   2026-07-31: SEG is new. The seg table was 14,896 of the LOW region's 17,644 B
-;   and moving it to a bank of its own is what turned $4C00-$85FF back into
-;   ordinary RAM -- see tools/ram_map.py and map_syms.inc.
 ;--------------------------------------------------------------
 ll_dst  dta a(0)                     ; under-ROM copy destination
 ll_left dta 0                        ; HIGH sectors still to read
@@ -71,15 +43,17 @@ ll_stride dta a(0)
 .proc lvl_offset
         ldx current_level
         beq ?done
-?add    clc
+                                      ; the running sum stays in 16-bit A, stored once
+        rep #$20                     ;   (bank $01: native, 65816-windows)
+        .LONGA ON
         lda ll_sec
+?add    clc
         adc ll_stride
-        sta ll_sec
-        lda ll_sec+1
-        adc ll_stride+1
-        sta ll_sec+1
         dex
         bne ?add
+        sta ll_sec
+        .LONGA OFF
+        sep #$20
 ?done   rts
 .endp
         .endseg
@@ -99,7 +73,8 @@ ll_stride dta a(0)
         sta ll_cnt
         lda #>MAP_LOW_SECT
         sta ll_cnt+1
-        lda #<MAP_LOAD
+                                      ; 2026-09-22 (drac030 RELOAD): A = >MAP_LOW_SECT = <MAP_LOAD = 0
+        ert [>MAP_LOW_SECT]<>[<MAP_LOAD]
         sta DBUFLO
         lda #>MAP_LOAD
         sta DBUFHI
@@ -124,20 +99,12 @@ ll_stride dta a(0)
         sta ll_dst                   ;     of their OWN (bank $01 is 40 KB full).
         lda #>MAP_SEGS               ;     MAP_SEGS = offset $100 in MAP_SEG_BANK,
         sta ll_dst+1                 ;     and the AUTOMAP's three side tables
-                                     ;     (MAP_AMSEG/AMFLG/AMSEEN) ride at the
-                                     ;     end of the SAME region -- which is why
-                                     ;     the automap needed no loader and no
-                                     ;     region of its own (pack_map._automap).
-                                     ;     AMSEEN ships as zeros, so "nothing seen
-                                     ;     yet" resets itself on every level load.
+                                     ;     (MAP_AMSEG/AMFLG/AMSEEN) ride at the ...
         lda #MAP_SEG_BANK
         sta ll_bank
         sta zp_sptr+2                ; ...and the seg pointer's bank byte, for good.
         sta zp_nodeptr+2             ;   NODES ride the SEG bank too (2026-08-18,
-                                     ;   E2/E3: 28 B x 817 nodes blew EXT's $6400)
-                                     ;   -- both seeds belong in init_level, but
-                                     ;   that block is the FULL 128 B at $1B00
-                                     ;   and the value is already in A here
+                                     ;   E2/E3: 28 B x 817 nodes blew EXT's $6400) ...
     .if MAP_SEG_SECT > 255           ; the NODES move pushed the region past a
         lda #255                     ;   byte of sectors: two passes -- read_ext
         sta ll_left                  ;   advances ll_sec AND ll_dst, so the
@@ -172,16 +139,9 @@ ll_stride dta a(0)
 ?go     cmp #8                       ; 8 sectors = the 1 KB staging buffer
         bcc ?part
         lda #8
- .if 1
 ?part   sta ll_pass
         sta ll_cnt
         stz ll_cnt+1
- .else
-?part   sta ll_pass
-        sta ll_cnt
-        lda #0
-        sta ll_cnt+1
- .endif
         lda #<TEX_STAGE
         sta DBUFLO
         lda #>TEX_STAGE
@@ -225,7 +185,7 @@ ll_stride dta a(0)
         lda ll_left
         sbc ll_pass
         sta ll_left
-        jmp ?pass
+        bra ?pass
 .endp
         .endseg
 
@@ -234,14 +194,9 @@ ll_stride dta a(0)
 ; into the RAM the seg table vacated (2026-07-31). Every proc below runs only
 ; while a level (or the boot set) is loading, never in the frame path, and all
 ; of them drive SIOV -- so they must stay below $C000, which DISKIO2_BASE is.
-; This is the first tenant of $4C00-$85FF; without it the SEG pass added to
-; load_level pushed the engine segment onto wp_fenter at $26E7.
 ;==============================================================
 dio2_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org DISKIO2_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; read_urom -- read ll_left sectors from ll_sec into (ll_dst), which is RAM UNDER
@@ -257,16 +212,9 @@ dio2_resume = *
 ?go     cmp #8                       ; 8 sectors = 1 KB, the staging buffer's size
         bcc ?part                    ;   (2 KB until 2026-07-28, when tw_setup --
         lda #8                       ;   CODE -- moved to $1500; see TEX_STAGE)
- .if 1
 ?part   sta ll_pass
         sta ll_cnt
         stz ll_cnt+1
- .else
-?part   sta ll_pass
-        sta ll_cnt
-        lda #0
-        sta ll_cnt+1
- .endif
         lda #<TEX_STAGE
         sta DBUFLO
         lda #>TEX_STAGE
@@ -282,18 +230,13 @@ dio2_resume = *
         sta zp_ptr+1
         ; The ROM has to go out to reach $D800, and while it IS out the vectors at
         ; $FFFA/$FFFE are RAM -- which urom_init has not necessarily filled yet on
-        ; the very first load. IRQs are also ON here (SIO needs them). So mask both
-        ; for the duration of the copy; SIO is idle by now, so nothing is missed.
- .if 1
+        ; the very first load.
         sei
         stz NMIEN
-        jsr rom_out
- .else
-        sei
-        lda #0
-        sta NMIEN
-        jsr rom_out
- .endif
+                                      ; 2026-09-22 idiom: rom_out inlined (-12)
+        lda PORTB
+        and #$FE
+        sta PORTB
         ldx ll_pass                  ; copy ll_pass x 128 B (SECTORS, not pages: the
 ?sec    jsr cp128_ur                 ;   HIGH region is not a whole number of pages)
         lda zp_tsrc                  ;   -- the 128 B loop itself is in fast win1
@@ -310,7 +253,7 @@ dio2_resume = *
         sta zp_ptr+1
         dex
         bne ?sec
-        jsr rom_in
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a)
         lda #$40
         sta NMIEN
         cli
@@ -326,12 +269,7 @@ dio2_resume = *
 .endp
         .endseg
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > DISKIO2_END+1
-        ert 'read_urom outgrew DISKIO2_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; cp128_ur -- read_urom's inner copy: 128 B (zp_tsrc) -> (zp_ptr). Split out
@@ -358,23 +296,13 @@ dio2_resume = *
 ; read_sectors -- read ll_cnt sectors from ll_sec into (DBUFLO/HI), advancing
 ;   both. All non-constant DCB fields are rewritten each sector (SIOV may touch
 ;   them; woll3d's diskio does the same). 16-bit ll_cnt so >255-sector maps work.
-;   2026-08-03: ld_src = 1 serves the sector out of the Rapidus SDRAM preload
-;   instead (PREn_BASE + (sec - PREn_SEC)*128 -- boot_loadall filled it), so
-;   every loader above this becomes a memory copy with no code change. The
-;   advance tail is shared; zp_ptr/zp_tsrc/m_a are free here (every caller
-;   seeds its own copy pointers AFTER this returns; init_level re-parks
-;   zp_ptr+2 on MAP_EXT_BANK when the loads are done).
-;   2026-08-17: moved to DIOFAST (fast win1) from the win2 SIO block -- this
-;   proc IS the per-sector cost of every load (the DCB setup, the SDRAM tee
-;   and the cached-copy loop all run per sector), and win2's x11.2 fetch rate
-;   made it the single biggest CPU item of a level transition (_prof_wi).
 ;--------------------------------------------------------------
         org DIOFAST_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc read_sectors
 ?lp     lda ld_src
-        beq ?sio
-        jmp ?sdram                   ; the SIO body below is past branch range
+        bne ?sdram 
+        ;bra ?sdram                   ; the SIO body below is past branch range
 ?sio    lda #$31                     ; disk drive serial id (D1:)
         sta DDEVIC
         lda #$01
@@ -383,27 +311,16 @@ dio2_resume = *
         sta DCOMND
         lda #$40                     ; input direction (device -> memory)
         sta DSTATS
- .if 1
         lda #128
         sta DBYTLO
         stz DBYTHI
- .else
-        lda #128
-        sta DBYTLO
-        lda #0
-        sta DBYTHI
- .endif
         lda #$0F
         sta DTIMLO
         lda ll_sec
         sta DAUX1
         lda ll_sec+1
         sta DAUX2
- .if 1
         jsl siov_r_w0 ; DRAC_PLAN 4a: SIOV with the ROM banked in
- .else
-        jsr SIOV
- .endif
         sty sio_status               ; capture SIO status (Y on return; 1 = success)
         cpy #1                       ; --- the TEE: every good sector read off
         bne ?adv                     ;     the drive is ALSO parked in its SDRAM
@@ -418,10 +335,10 @@ dio2_resume = *
         sta [zp_ptr],y
         dey
         bpl ?tee
-        jmp ?adv
+        bra ?adv
 ?sdram  jsr pre_map                  ; zp_ptr = this sector's SDRAM home
-        bcs ?insd                    ;   (defensive: outside the mapped ranges
-        jmp ?sio                     ;   fall back to the drive)
+        bcc ?sio                    ;   (defensive: outside the mapped ranges
+        ;bra ?sio                     ;   fall back to the drive)
 ?insd   lda DBUFLO                   ; the caller's target, indirect-capable
         sta zp_tsrc
         lda DBUFHI
@@ -459,10 +376,7 @@ ld_src  dta 0                        ; 0 = SIO + the tee, 1 = SDRAM serves every
     .if * > DIOFAST_END+1
         ert 'read_sectors+ld_src outgrew DIOFAST_BASE..END (memory_map.inc)'
     .endif
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org DISKIO2B_BASE            ; 2026-08-11: the cold SIO block split in
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
                                      ;   two -- no single win2 hole held 637 B
                                      ;   (memory_map.inc DISKIO2/DISKIO2B)
 
@@ -530,8 +444,6 @@ pre_b2  dta [PRE0_BASE>>16], [PRE1_BASE>>16]
 ;   TEX_CHUNKS x 4KB: read 32 sectors -> $B000 staging (RAM, BASIC off), then copy
 ;   through the MEMAC window ($9000) into VBXE bank $20+chunk. Runs right after
 ;   load_level (map at $4000 survives; MEMW/$B000 are above it) with IRQs on (SIO).
-;   read_sectors auto-advances ll_sec, so it walks the whole texture region.
-;   Single-level for now (level 0 .tex at TEX_SEC1). Restores MEMAC to bank $0A.
 ;--------------------------------------------------------------
 ; !! $B000-$BFFF IS NOT FREE RAM !! It looks free to MADS and carries no XEX
 ;    segment, but load_textures streams 4 KB texture chunks through it at boot,
@@ -569,41 +481,17 @@ ld_half     dta 0                    ; load_vram: MEMW page offset of the curren
         lda pool_res                 ; already streamed -> nothing to do, on
         bne ?done                    ;   EVERY level including this one's reload
         inc pool_res
-        lda #<POOL_SEC
-        sta ll_sec
-        lda #>POOL_SEC
-        sta ll_sec+1
-        lda #<POOL_SECTORS           ; a whole number of 8-sector passes: the
-        sta ld_drain                 ;   packer pads the blob to 1 KB so this
-        lda #>POOL_SECTORS           ;   loop needs no tail case
-        sta ld_drain+1
-?pass   lda ld_drain
-        ora ld_drain+1
-        beq ?done
-        lda #<TEX_STAGE
-        sta DBUFLO
-        lda #>TEX_STAGE
-        sta DBUFHI
- .if 1
-        lda #8
-        sta ll_cnt
-        stz ll_cnt+1
-        jsr read_sectors
- .else
-        lda #8
-        sta ll_cnt
-        lda #0
-        sta ll_cnt+1
-        jsr read_sectors
- .endif
-        sec
-        lda ld_drain
-        sbc #8
-        sta ld_drain
-        lda ld_drain+1
-        sbc #0
-        sta ld_drain+1
-        jmp ?pass
+        lda #<POOL_SEC               ; the pool is ONE DEFLATE stream on the
+        sta ll_sec                   ;   disk now (2026-09-26, make_atr_doom):
+        lda #>POOL_SEC               ;   inflate depacks it straight onto its
+        sta ll_sec+1                 ;   SDRAM home -- the tee never sees it
+        lda #[LVL_TEXSD_C]&$FF       ;   (POOL_SEC sits past PRE0's end)
+        sta inf_out
+        lda #[LVL_TEXSD_C>>8]&$FF
+        sta inf_out+1
+        lda #LVL_TEXSD_C>>16
+        sta inf_out+2
+        jsr inflate
 ?done   rts
 .endp
         .endseg
@@ -625,37 +513,24 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
         clc
         adc ld_bank0
         ora #BANK_EN
- .if 1
         sta VBXE_BANK_SEL
         stz ld_half
- .else
-        sta VBXE_BANK_SEL
-        lda #0
-        sta ld_half
- .endif
 ?half   lda #<TEX_STAGE             ; read 8 sectors (1KB) -> staging
         sta DBUFLO
         lda #>TEX_STAGE
         sta DBUFHI
- .if 1
         lda #8
         sta ll_cnt
         stz ll_cnt+1
         jsr read_sectors
- .else
-        lda #8
-        sta ll_cnt
-        lda #0
-        sta ll_cnt+1
-        jsr read_sectors
- .endif            ; advances ll_sec by 8
-        lda #<TEX_STAGE             ; copy 4 pages staging -> MEMW window quarter
-        sta zp_tsrc
-        lda #>TEX_STAGE
-        sta zp_tsrc+1
- .if 1                                ; DRAC_PLAN 3b: 16 KB window
+                                      ; 2026-09-22 (rapidus-bus-timing): the WINDOW is
+        stz zp_savex                 ;   written through [zp_tsrc],y (its bank byte
+        lda #<TEX_STAGE              ;   zp_savex = 0) and the staging read through
+        sta zp_ptr                   ;   (zp_ptr),y: a (dp),y store dummy-reads the
+        lda #>TEX_STAGE              ;   window first, a chip cycle for every byte
+        sta zp_ptr+1
         lda #<MEMW16
-        sta zp_ptr
+        sta zp_tsrc
         lda tex_chunk                ; the chunk's place in its page
         clc
         adc ld_bank0
@@ -667,23 +542,21 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
         ora #>MEMW16
         clc
         adc ld_half
-        sta zp_ptr+1
- .else
-        lda #<MEMW
-        sta zp_ptr
-        lda #>MEMW
-        clc
-        adc ld_half                 ; pass n lands at MEMW + n*$400
-        sta zp_ptr+1
- .endif
+        sta zp_tsrc+1
         ldx #4
-?pg     ldy #0
-?by     lda (zp_tsrc),y
-        sta (zp_ptr),y
+                                      ; 2026-09-22 (65816-style: a byte sweep read as words):
+?pg     ldy #0                       ;   two bytes a pass into the window
+        rep #$20
+        .LONGA ON
+?by     lda (zp_ptr),y
+        sta [zp_tsrc],y
+        iny
         iny
         bne ?by
-        inc zp_tsrc+1
+        sep #$20
+        .LONGA OFF
         inc zp_ptr+1
+        inc zp_tsrc+1
         dex
         bne ?pg
         lda ld_half
@@ -692,7 +565,7 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
         cmp #16                     ; 4 quarters fill the 4 KB bank
         bcs ?filled
         sta ld_half
-        jmp ?half
+        bra ?half
 ?filled ldx tex_chunk
         inx
         cpx ld_chunks
@@ -700,20 +573,11 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
         lda #BANK_EN | BANK_OVERHEAD ; park MEMAC back on the overhead bank
         sta VBXE_BANK_SEL
         rts                          ; (the 8x scratch holds a column of the
-                                     ;  PREVIOUS level here -- same VRAM
-                                     ;  addresses, new pixels -- and tw_lastsrc
-                                     ;  was invalidated for it. tw_expand's
-                                     ;  cache is gone since 2026-08-14, so
-                                     ;  there is nothing stale to serve.)
+                                     ;  PREVIOUS level here -- same VRAM ...
 .endp
         .endseg
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > DISKIO2B_END+1
-        ert 'pre_map..load_vram outgrew DISKIO2B_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org dio2_resume
 
 ;--------------------------------------------------------------
@@ -724,39 +588,30 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
 ; The palette is read into the SIO staging buffer and installed from there, so it
 ; costs no permanent RAM (that 768 B is now movers.asm).
 pld_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org PALLD_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_palette
         lda #<PAL_SEC1
         sta ll_sec
         lda #>PAL_SEC1
         sta ll_sec+1
-        ldx #0
+                                      ; 2026-09-22 (6502-idioms: an index counting UP to
+        ldx #256-PAL_COUNT           ;   zero -- same order, pld_i is only this loop's)
 ?pal    stx pld_i                    ; one palette per pass: the staging buffer is
         lda #PAL_SECTORS             ;   1 KB and a palette is 768 B, so they cannot
- .if 1
         sta ll_cnt                   ;   all be read first and installed after
         stz ll_cnt+1
- .else
-        sta ll_cnt                   ;   all be read first and installed after
-        lda #0
-        sta ll_cnt+1
- .endif
         lda #<TEX_STAGE
         sta DBUFLO
         lda #>TEX_STAGE
         sta DBUFHI
         jsr read_sectors             ; leaves ll_sec on the next palette
         ldx pld_i
-        lda pld_psel,x
+        lda pld_psel+PAL_COUNT-256,x
         jsr setup_palette            ; -> VBXE palette pld_psel[x]
         ldx pld_i
         inx
-        cpx #PAL_COUNT
-        bcc ?pal
+        bne ?pal                     ; (the wrap to 0 after the last one)
         rts
 .endp
         .endseg
@@ -767,30 +622,14 @@ pld_resume = *
 pld_psel dta 1, 2, 3                 ; ...and NEVER palette 0: see FL_PAL_GOLD
 pld_i    dta 0
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > PALLD_END+1
-        ert 'load_palette outgrew PALLD_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org pld_resume
 
 ; ---------------------------------------------------------------
-; load_things2 -- the .things blob's SECOND read (2026-08-29). Piece 1 (header,
-;   subsector prefix, things, sprite table) went to $C000 in THINGS_SECT whole
-;   sectors; everything from the TRIGGER TABLE on lives at THINGS2_BASE
-;   ($DA00), the map HIGH region's unused tail. read_urom left ll_sec on the
-;   first sector of piece 2 and load_things touched neither ll_sec nor ll_cnt
-;   after it, so all this has to say is where the bytes go and how many.
-;   The blob's header carries ABSOLUTE pointers (p_trig/p_tele/p_hp), so no
-;   reader knows or cares that the two pieces are not adjacent.
-;   Parked at THG2LD_BASE: read_urom drives SIOV, which must stay below $C000.
+; load_things2 -- the .things blob's SECOND read (2026-08-29).
 ; ---------------------------------------------------------------
 thg2_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org THG2LD_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_things2
     .if THG_SECTORS > THINGS_SECT
@@ -802,15 +641,11 @@ thg2_resume = *
         sta ll_left
         jsr read_urom
     .endif
-        jmp load_dtab                ; the death-frame table rides along
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>load_dtab            ;   next byte of this segment -- fall through
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > THG2LD_END+1
-        ert 'load_things2 outgrew THG2LD_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
     .if [THG_SECTORS-THINGS_SECT]*128 > [THINGS2_END+1-THINGS2_BASE]
         ert 'the .things blob piece 2 overruns THINGS2_BASE..END'
@@ -847,7 +682,8 @@ dtbld_resume = *
         lda #DTB_SECTORS
         sta ll_left
         jsr read_ext
-        jmp load_los                 ; the barrel sight table rides along too
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>load_los             ;   next byte of this segment -- fall through
     .endif
 .endp
         .endseg
@@ -862,10 +698,7 @@ dtbld_resume = *
 ;   rule: read_ext drives SIOV, so this must live below $C000.
 ; ---------------------------------------------------------------
 losld_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org LOSLD_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_los
     .if LOS_SECTORS = 0
@@ -887,16 +720,12 @@ losld_resume = *
         lda #LOS_SECTORS
         sta ll_left
         jsr read_ext
-        jmp load_sprcol              ; the T4 column tables ride along too
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>load_sprcol          ;   next byte of this segment -- fall through
     .endif
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > LOSLD_END+1
-        ert 'load_los outgrew LOSLD_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org losld_resume
 
 ; ---------------------------------------------------------------
@@ -907,10 +736,7 @@ losld_resume = *
 ;   so it must stay below $C000 -- parked at SPRCLD_BASE.
 ; ---------------------------------------------------------------
 scld_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org SPRCLD_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_sprcol
     .if SPRC_SECTORS = 0
@@ -936,18 +762,17 @@ scld_resume = *
                                      ;   byte, so the read is passes of 128
         jsr arena_init               ; B1: FARENA clear + arena bounds + the
                                      ;   .spr's SDRAM base for spr_fget
-        jmp lvl_mark                 ; the WHOLE per-level chain is in now:
+                                      ; 2026-09-22 (drac030 inline): lvl_mark
+        ldx current_level            ; the WHOLE per-level chain is in now:
+        lda #1
+        sta lvl_res,x
+        rts
                                      ;   the next load of this level comes out
                                      ;   of the SDRAM cache (load_level_c)
     .endif
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > SPRCLD_END+1
-        ert 'load_sprcol outgrew SPRCLD_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
     .if SPRC_LAST > 128 || SPRC_PASSES < 1
         ert 'SPRC_PASSES/SPRC_LAST are not a 128-sector split of SPRC_SECTORS'
@@ -960,16 +785,86 @@ scld_resume = *
 
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_hud
-        lda #<HUD_SEC1
-        sta ll_sec
-        lda #>HUD_SEC1
-        sta ll_sec+1
-        lda #HUD_CHUNKS
-        sta ld_chunks
-        lda #HUD_BANK0
-        sta ld_bank0
-        jmp load_vram
+        lda #<HUD_SEC1               ; the status bar: ONE DEFLATE stream
+        sta ll_sec                   ;   (2026-09-26) -> MENU_BOUNCE (free:
+        lda #>HUD_SEC1               ;   this runs before menu_boot claims
+        sta ll_sec+1                 ;   it), then spr_fcopy hands the 24 KB
+        stz inf_out                  ;   to VRAM through the MEMAC window
+        stz inf_out+1
+        lda #MENU_BOUNCE>>16
+        sta inf_out+2
+        jsr inflate
+        stz sf_src
+        stz sf_src+1
+        lda #MENU_BOUNCE>>16
+        sta sf_src+2
+        lda #[HUD_BANK0*4096]&$FF
+        sta sp_addr
+        lda #[[HUD_BANK0*4096]>>8]&$FF
+        sta sp_addr+1
+        lda #[HUD_BANK0*4096]>>16
+        sta sp_addr+2
+        lda #[HUD_CHUNKS*4096]&$FF
+        sta sf_size
+        lda #[[HUD_CHUNKS*4096]>>8]&$FF
+        sta sf_size+1
+        jmp spr_fcopy
 .endp
+        .endseg
+    .if HUD_CHUNKS*4096 > $10000
+        ert 'load_hud hands spr_fcopy a 16-bit size'
+    .endif
+
+;--------------------------------------------------------------
+; fin_pak -- X = fn_ep-1: that episode's packed finale -> MENU_BOUNCE ->
+;   the arena, a 4 KB spr_fcopy call per chunk (sf_size is 16-bit and E3's
+;   run is 37 chunks). fin_pklo/fin_nch sit in the finale overlay
+;   (f_finale.asm), which is in place for the whole finale.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc fin_pak
+        lda fin_pklo,x
+        sta ll_sec
+        lda fin_pkhi,x
+        sta ll_sec+1
+        lda fin_nch,x
+        sta ld_chunks                ; free: no other loader runs mid-finale
+        stz inf_out
+        stz inf_out+1
+        lda #MENU_BOUNCE>>16
+        sta inf_out+2
+        jsr inflate
+        stz sf_src
+        stz sf_src+1
+        lda #MENU_BOUNCE>>16
+        sta sf_src+2
+        stz sp_addr
+        lda #[[FIN_ARBANK*4096]>>8]&$FF
+        sta sp_addr+1
+        lda #[FIN_ARBANK*4096]>>16
+        sta sp_addr+2
+?ch     stz sf_size
+        lda #$10                     ; 4 KB a call
+        sta sf_size+1
+        jsr spr_fcopy                ; preserves sf_src/sp_addr (reads only)
+        lda sf_src+1                 ; both cursors += $1000
+        clc
+        adc #$10
+        sta sf_src+1
+        bcc ?s1
+        inc sf_src+2
+?s1     lda sp_addr+1
+        clc
+        adc #$10
+        sta sp_addr+1
+        bcc ?s2
+        inc sp_addr+2
+?s2     dec ld_chunks
+        bne ?ch
+        rts
+.endp
+fin_pak_w1 jsr fin_pak               ; fin_load's jsl from the bank-0 overlay
+        rtl
         .endseg
 
 ;--------------------------------------------------------------
@@ -977,57 +872,24 @@ scld_resume = *
 ;   Rapidus SRAM at WEAP_EXT ($04:0000), once at boot -- the same read_ext
 ;   chunk walk load_sounds does for the SFX blob in bank $02. VRAM keeps only
 ;   the 24 KB active-weapon slot (WEAP_SLOT), which wp_wload (weapon.asm)
-;   fills from this master on a weapon switch.
-;   The blob is 19 chunks (76 KB), so it CROSSES into bank $05: read_ext's
-;   ll_dst is 16-bit and wraps at $FFFF, which is exactly when ll_bank must
-;   step -- the ora test below catches the wrap between chunks (a chunk is
-;   4 KB, so the wrap can only fall on a chunk boundary).
-;   Parked at WEAPLD2_BASE: it drives SIOV, so it MUST stay below $C000.
 ;--------------------------------------------------------------
 wld_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WEAPLD2_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_weapons
-        lda #<WEAP_SEC1
-        sta ll_sec
-        lda #>WEAP_SEC1
- .if 1
-        sta ll_sec+1
-        stz ll_dst                   ; WEAP_EXT = offset 0 of its bank
-        stz ll_dst+1
- .else
-        sta ll_sec+1
-        lda #0
-        sta ll_dst                   ; WEAP_EXT = offset 0 of its bank
-        sta ll_dst+1
- .endif
+        lda #<WEAP_SEC1              ; weapons + colormap + sky: ONE DEFLATE
+        sta ll_sec                   ;   stream (2026-09-26) across the whole
+        lda #>WEAP_SEC1              ;   $04:0000-$05:E09F run -- inflate's
+        sta ll_sec+1                 ;   24-bit cursor crosses the bank line
+        stz inf_out                  ;   the old chunk walk stepped by hand
+        stz inf_out+1
         lda #WEAP_EXT_BANK
-        sta ll_bank
-        lda #WEAP_CHUNKS
-        sta wld_i
-?chunk  lda #32                      ; one 4 KB chunk per read_ext pass
-        sta ll_left
-        jsr read_ext                 ; carries ll_dst/ll_sec forward
-        lda ll_dst
-        ora ll_dst+1
-        bne ?same                    ; ll_dst wrapped to 0: the run crossed
-        inc ll_bank                  ;   into the next 64 KB SRAM bank
-?same   dec wld_i
-        bne ?chunk
-        lda #MAP_EXT_BANK            ; put ll_bank back: load_dtab/load_los
-        sta ll_bank                  ;   stream into bank $01 and assume it
-        jmp load_music               ; TAIL CALL: the song streams to SDRAM
-                                     ;   MUS_BANK0 right behind the weapons, and
-                                     ;   load_music puts ll_bank back itself.
-                                     ;   (An rts from 2026-08-08, when the songs
-                                     ;    were taken out, until 2026-09-11.)
+        sta inf_out+2
+        jsr inflate
+        jmp load_music               ; TAIL CALL: the song rides behind, and
+                                     ;   load_music restores ll_bank for
+                                     ;   load_dtab/load_los itself.
 .endp
-        .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-wld_i   dta 0
         .endseg
 ; ---- per-level VRAM pool split (make_atr_doom.py -> atr_levels.inc) ---------
 ;   LVL_TEXCH:  how many 4 KB chunks of level n's .tex to stream to $018000
@@ -1036,12 +898,41 @@ wld_i   dta 0
 ;               whole-frame spills into the fixed scraps (pack_things.SCRAPS)
 ;   Pure data read by load_textures/load_sprites with ,x (x = current_level).
         icl 'atr_levels.inc'
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WEAPLD2_END+1
-        ert 'load_weapons + atr_levels.inc outgrew WEAPLD2_BASE..END (memory_map.inc)'
+; ---- per-level DEFLATE directory (make_atr_doom.py, 2026-09-26) -----------
+;   lvp_<r>_lo/_hi = each level's stream start for region r; a _hi column
+;   sits exactly NUM_LEVELS behind its _lo (lvl_pak indexes one pointer).
+;   Parked in the $561C-$5BC4 ram_map free hole, right behind the inflate
+;   scratch (inflate816.asm caps inf_end at LVPTAB_BASE).
+LVPTAB_BASE equ $5940
+lvptab_resume = *
+        org LVPTAB_BASE
+        icl 'lvlpak.inc'
+; lvl_pak's per-region row: directory column (2), home base (3), step (3).
+;   home(n) = base + n*step -- where the old tee parked the region's slot.
+lvp_par dta a(lvp_map_lo)
+        dta [PRE0_BASE]&$FF, [PRE0_BASE>>8]&$FF, [PRE0_BASE>>16]&$FF
+        dta [LVL_SECTORS*128]&$FF, [[LVL_SECTORS*128]>>8]&$FF, [[LVL_SECTORS*128]>>16]&$FF
+        dta a(lvp_thg_lo)
+        dta [PRE1_BASE+[THG_SEC1-PRE1_SEC]*128]&$FF, [[PRE1_BASE+[THG_SEC1-PRE1_SEC]*128]>>8]&$FF, [[PRE1_BASE+[THG_SEC1-PRE1_SEC]*128]>>16]&$FF
+        dta [THG_SECTORS*128]&$FF, [[THG_SECTORS*128]>>8]&$FF, [[THG_SECTORS*128]>>16]&$FF
+        dta a(lvp_dtb_lo)
+        dta [PRE1_BASE+[DTB_SEC1-PRE1_SEC]*128]&$FF, [[PRE1_BASE+[DTB_SEC1-PRE1_SEC]*128]>>8]&$FF, [[PRE1_BASE+[DTB_SEC1-PRE1_SEC]*128]>>16]&$FF
+        dta [DTB_SECTORS*128]&$FF, [[DTB_SECTORS*128]>>8]&$FF, [[DTB_SECTORS*128]>>16]&$FF
+        dta a(lvp_los_lo)
+        dta [PRE1_BASE+[LOS_SEC1-PRE1_SEC]*128]&$FF, [[PRE1_BASE+[LOS_SEC1-PRE1_SEC]*128]>>8]&$FF, [[PRE1_BASE+[LOS_SEC1-PRE1_SEC]*128]>>16]&$FF
+        dta [LOS_SECTORS*128]&$FF, [[LOS_SECTORS*128]>>8]&$FF, [[LOS_SECTORS*128]>>16]&$FF
+        dta a(lvp_spc_lo)
+        dta [PRE1_BASE+[SPRC_SEC1-PRE1_SEC]*128]&$FF, [[PRE1_BASE+[SPRC_SEC1-PRE1_SEC]*128]>>8]&$FF, [[PRE1_BASE+[SPRC_SEC1-PRE1_SEC]*128]>>16]&$FF
+        dta [SPRC_SECTORS*128]&$FF, [[SPRC_SECTORS*128]>>8]&$FF, [[SPRC_SECTORS*128]>>16]&$FF
+lvp_i   dta 0
+    .if LVL_SEC1<>PRE0_SEC || DTB_SECTORS=0 || LOS_SECTORS=0 || SPRC_SECTORS=0
+        ert 'lvl_pak prices five live regions with LVL_SEC1 = PRE0_SEC'
     .endif
- .endif
+    .if * > $5BC4+1
+        ert 'the lvl_pak directory outgrew the $561C-$5BC4 free hole'
+    .endif
+        org lvptab_resume
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wld_resume
 
 ; (load_sounds -- the SFX blob's equivalent of load_hud -- lives in sound.asm:
@@ -1052,12 +943,6 @@ wld_i   dta 0
 ;==============================================================
 ; SDRAM LEVEL CACHE (2026-08-03) -- the Rapidus carries 16 MB of SDRAM (linear
 ; at $08:0000-$EF:FFFF, always mapped, fast bus -- alt-src rapidus.cpp:128).
-; The first visit of a level streams from the drive EXACTLY as before, but
-; read_sectors' TEE parks every good sector in its SDRAM home as it passes
-; through -- so a REVISIT (death restart, coming back a level) is a pure
-; memory copy: zero SIO, a fraction of a second. Boot time is unchanged.
-; (The full preload-everything-at-boot variant was tried first and read
-; 4.4 MB through SIOV: minutes of drive chatter even on accelerated setups.)
 ;==============================================================
 prld_resume = *
         org PRELOAD_BASE
@@ -1071,21 +956,12 @@ prld_resume = *
 .proc load_level_c
         stz pk_valid                 ; new records -> new pickup list: the next
                                      ;   spr_pickup rebuilds it (pk_build).
-                                     ;   HERE because every level (re)load --
-                                     ;   boot, exit_level, pl_reload, the save
-                                     ;   loader's boot phase -- enters here,
-                                     ;   and en_init's own block is full
-        ldx current_level
-        lda lvl_res,x
-        sta ld_src
-        jmp load_level
+        jsr lvl_first                ; first visit: depack the level's five
+        jmp load_level               ;   streams onto the cache; ld_src = 1
 .endp
         .endseg
 lvl_res :32 dta 0                    ; 1 = level n's whole chain (map, tex, spr,
-                                     ;   things, dtab, los) is in the SDRAM
-                                     ;   cache -- set by the END of the chain
-                                     ;   (load_los), so a load that dies midway
-                                     ;   never fakes residency
+                                     ;   things, dtab, los) is in the SDRAM ...
 
 ;--------------------------------------------------------------
 ; lvl_mark -- the per-level chain finished: everything this level streams is
@@ -1097,6 +973,76 @@ lvl_res :32 dta 0                    ; 1 = level n's whole chain (map, tex, spr,
         ldx current_level
         lda #1
         sta lvl_res,x
+        rts
+.endp
+
+;--------------------------------------------------------------
+; lvl_first / lvl_pak -- a level's FIRST load (2026-09-26): the plain slots
+;   left the disk, so depack its five DEFLATE streams (lvlpak.inc directory)
+;   straight onto the SDRAM cache homes the tee used to fill, mark the level
+;   resident, and let the untouched chain read it all back with ld_src = 1.
+;--------------------------------------------------------------
+.proc lvl_first
+        ldx current_level
+        lda lvl_res,x
+        bne ?res
+        jsr lvl_pak
+        ldx current_level
+        lda #1
+        sta lvl_res,x
+?res    sta ld_src                   ; both paths arrive with A = 1
+        rts
+.endp
+
+.proc lvl_pak
+        stz lvp_i
+?reg    ldx lvp_i
+        lda lvp_par,x                ; the region's directory column: zp_tmp
+        sta zp_tmp                   ;   -> lvp_<r>_lo, +NUM_LEVELS = _hi
+        lda lvp_par+1,x              ;   (B1 code cannot patch its own
+        sta zp_tmp+1                 ;   operands: sta abs writes DBR 0)
+        lda lvp_par+2,x              ; the region's slot-0 home...
+        sta inf_out
+        lda lvp_par+3,x
+        sta inf_out+1
+        lda lvp_par+4,x
+        sta inf_out+2
+        lda lvp_par+5,x              ; ...and the slot stride, bytes (24-bit)
+        sta m_a
+        lda lvp_par+6,x
+        sta m_a+1
+        lda lvp_par+7,x
+        sta m_b
+        ldy current_level
+        lda (zp_tmp),y               ; the stream's first sector
+        sta ll_sec
+        tya
+        clc
+        adc #NUM_LEVELS
+        tay
+        lda (zp_tmp),y
+        sta ll_sec+1
+        ldx current_level            ; home += level x stride (27 adds at
+        beq ?go                      ;   most -- cold, like lvl_offset)
+?add    clc
+        lda inf_out
+        adc m_a
+        sta inf_out
+        lda inf_out+1
+        adc m_a+1
+        sta inf_out+1
+        lda inf_out+2
+        adc m_b
+        sta inf_out+2
+        dex
+        bne ?add
+?go     jsr inflate
+        lda lvp_i
+        clc
+        adc #8
+        sta lvp_i
+        cmp #5*8
+        bcc ?reg
         rts
 .endp
         .endseg

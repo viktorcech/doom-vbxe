@@ -1,36 +1,11 @@
-; Part of enemy_ai.asm -- AUTO-SPLIT out of it 2026-08-09 -- assembled in place via icl at the
-; exact point the text was cut from, so every org and every block guard below is
-; unchanged (verified: build/doom_bsp.xex is byte-identical).
-;   the PLAYER's death + the hitscan leaf walk (PLDTH_BASE)
-;==============================================================
-; THE PLAYER'S DEATH -- p_user.c P_DeathThink + P_KillMobj's player half.
-;   Before this the level simply restarted the instant health hit 0, with no
-;   scream and no pause. DOOM does three things instead:
-;     * A_PlayerScream plays sfx_pldeth (p_enemy.c),
-;     * P_DeathThink lowers viewheight by one unit per tic until it reaches 6,
-;       so the camera sinks to the floor,
-;     * and it waits for BT_USE before PST_REBORN -- nothing restarts on its own.
-;   The port takes ANY key rather than only USE, and only once the fall has
-;   finished, so a key still held from before the death does not skip it.
-;==============================================================
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org PLDTH_BASE
- .endif
+;--------------------------------------------------------------
+; Part of enemy_ai.asm (icl in place): the player's death (P_DeathThink) and the
+;   hitscan leaf walk.
+;--------------------------------------------------------------
 
 ;--------------------------------------------------------------
 ; pl_die -- health reached 0. X = the cry, chosen by pl_dieq (its one caller;
 ;   the nukage reaches here through en_plr_hurt like everything else).
-;
-;   IT PLAYS, IT DOES NOT QUEUE (2026-08-19, "hrac po smrti raketou nevyda
-;   ziadny zvuk"). snd_pending is ONE slot and the last writer takes it, and
-;   the rocket that kills you writes it after you die: pj_frame's arrival is
-;       ?burst  jsr pj_hit      -> A_Explode -> en_plr_hurt -> here
-;               jmp pj_burst    -> lda pj_bsnd / sta snd_pending
-;   so the barexp landed on top of the scream every single time. DOOM mixes
-;   eight channels and plays both; snd_play asks snd_alloc for a voice of its
-;   own, which is the same answer and costs nothing here -- the two bytes it
-;   saves over `lda #imm / sta snd_pending` are why the block still fits.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_die
@@ -43,7 +18,7 @@
         lda #1
         sta pl_keyw                  ; ignore whatever is held right now
         stz PSTATE+PS_HEALTH
-        lda #1
+                                      ; 2026-09-22 idiom: A is still 1 (the pl_keyw
         sta hud_dirty                ; the HUD has to show the 0
         jsr snd_play                 ; X = A_PlayerScream / A_XScream, and it
                                      ;   gets a VOICE, not the one queue slot
@@ -57,30 +32,9 @@
 
 ;--------------------------------------------------------------
 ; pl_dieq -- the killing blow from en_plr_hurt, the only path that can GIB.
-;   A = health - damage, i.e. the negative health DOOM keeps: p_inter.c clamps
-;   the player's own copy at 0 but P_KillMobj tests the mobj's, which keeps the
-;   sign. Damage is a byte and health is never below 0, so health - damage can
-;   never reach -256 -- which makes A = 0 unambiguous: the blow landed on
-;   EXACTLY zero and there is no overkill at all.
-;
-;   p_inter.c:719 sends anything past -spawnhealth to xdeathstate, and info.c
-;   gives MT_PLAYER spawnhealth 100 with xdeathstate S_PLAY_XDIE1. That chain's
-;   second frame is {A_XScream} where the ordinary S_PLAY_DIE2 carries
-;   {A_PlayerScream}, so a player torn apart yells sfx_slop -- the same sound a
-;   gibbed zombieman does (p_enemy.c:1572). A_PlayerScream's other sound,
-;   sfx_pdiehi, is `gamemode == commercial` only, so episodes 1-3 never see it.
-;
-;   The cry is chosen HERE and pl_die plays it, rather than pl_die queueing the
-;   ordinary one and this overwriting it: snd_pending is a single slot and the
-;   rocket that killed you writes it AFTER you die (pj_frame runs pj_hit, whose
-;   A_Explode reaches en_plr_hurt, and only then pj_burst), so the scream never
-;   survived to the frame's dispatch -- "hrac po smrti raketou nevyda ziadny
-;   zvuk". Deciding first also drops the pha/jsr/pla that used to carry the
-;   negative health across pl_die.
 ;--------------------------------------------------------------
 pldq_resume = *
         .endseg
-        org PLDIEQ_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_dieq
         beq ?plain                   ; A = 0: the blow landed on EXACTLY zero,
@@ -91,16 +45,9 @@ pldq_resume = *
 ?plain  ldx #SFX_PLDETH              ; A_PlayerScream (info.c S_PLAY_DIE2)
         bne ?go                      ; always -- the id is 13
 ?slop   ldx #SFX_SLOP                ; A_XScream (S_PLAY_XDIE2, p_enemy.c:1572)
-?go     jmp pl_die
+?go     bra pl_die
 .endp
         .endseg
-    .if * > PLDIEQ_END+1
-        ert 'pl_dieq outgrew PLDIEQ_BASE..END (memory_map.inc)'
-    .endif
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org pldq_resume
- .endif
 
 ;--------------------------------------------------------------
 ; pl_dthink -- one DOOM tic of P_DeathThink, from wp_think's tic loop so it
@@ -112,10 +59,170 @@ pldq_resume = *
         beq ?out
         lda pl_vh                    ; "if (viewheight > 6) viewheight -= 1".
         cmp #DEAD_EYE_H+1            ;   The bcc alone IS that test: 7 must still
-        bcc ?out                     ;   decrement. An extra `beq ?out` here
-        dec pl_vh                    ;   parked it at 7, pl_deadkey never matched
+                                      ; 2026-09-22: then P_DeathThink's turn to the
+        bcc ?turn                    ;   attacker (pl_dturn), every tic
+        dec pl_vh
+?turn   jmp pl_dturn
 ?out    rts                          ;   and SPACE fell through to try_use.
 .endp
+        .endseg
+
+;--------------------------------------------------------------
+; pl_dturn -- p_user.c:200-222: the dead view turns ANG5 a tic towards
+;   player->attacker (pl_atk = thing+1, 0 = none) and locks on inside ANG5.
+;   ANG5 is 3.6 BAM bytes: 4 a tic, then k = round(delta) bytes and done.
+;   fwd/side = the attacker in view space (Q14 sin/cos, the high word = v/4).
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc pl_dturn
+        lda pl_atk
+        bne ?go
+        rts                          ; no attacker: nothing to turn to
+?go     dec @
+                                      ; 2026-09-22: en_th2w returns 16-bit
+        jsr en_thing.en_th2w          ; sp_ptr = the attacker's record
+        .LONGA ON
+        lda (sp_ptr)                 ; v = attacker - player
+        sec
+        sbc zp_px
+        sta swr_vx
+        ldy #2
+        lda (sp_ptr),y
+        sec
+        sbc zp_py
+        sta swr_vy
+        sta m_a
+        .LONGA OFF
+        sep #$20
+        ldx zp_ang
+        lda.l TRGX_SIN_LO,x
+        sta m_b
+        lda.l TRGX_SIN_HI,x
+        sta m_b+1
+        jsr smul32                   ; vy*sin
+        rep #$20
+        .LONGA ON
+        lda m_prod
+        sta pd_p
+        lda m_prod+2
+        sta pd_p+2
+        lda swr_vx
+        sta m_a
+        .LONGA OFF
+        sep #$20
+        ldx zp_ang
+        lda.l TRGX_COS_LO,x
+        sta m_b
+        lda.l TRGX_COS_HI,x
+        sta m_b+1
+        jsr smul32                   ; vx*cos
+        rep #$21
+        .LONGA ON
+        lda m_prod                   ; fwd = vx*cos + vy*sin (the low words only
+        adc pd_p                     ;   carry into the high one)
+        lda m_prod+2
+        adc pd_p+2
+        sta pd_fwd
+        lda swr_vx
+        sta m_a
+        .LONGA OFF
+        sep #$20
+        ldx zp_ang
+        lda.l TRGX_SIN_LO,x
+        sta m_b
+        lda.l TRGX_SIN_HI,x
+        sta m_b+1
+        jsr smul32                   ; vx*sin
+        rep #$20
+        .LONGA ON
+        lda m_prod
+        sta pd_p
+        lda m_prod+2
+        sta pd_p+2
+        lda swr_vy
+        sta m_a
+        .LONGA OFF
+        sep #$20
+        ldx zp_ang
+        lda.l TRGX_COS_LO,x
+        sta m_b
+        lda.l TRGX_COS_HI,x
+        sta m_b+1
+        jsr smul32                   ; vy*cos
+        rep #$20
+        .LONGA ON
+        sec                          ; side = vx*sin - vy*cos: > 0 = on the right
+        lda pd_p
+        sbc m_prod
+        lda pd_p+2
+        sbc m_prod+2
+        sta pd_side
+        bpl ?sp
+        eor #$FFFF
+        inc @
+?sp     sta pd_as                    ; |side| < 4096: |v| < 16384, a quarter of it
+        ldx #4                       ; k = 4: a whole ANG5
+        lda pd_fwd
+        bmi ?turn                    ; behind the view
+        beq ?turn
+        lda pd_as                    ; |side|*10 >= fwd: more than 5.7 deg off. No
+        asl @                        ;   asl can carry (|side| < 4096), so the adc
+        sta pd_t                     ;   needs no clc
+        asl @
+        asl @
+        adc pd_t
+        cmp pd_fwd
+        bcs ?turn
+        lda pd_as                    ; inside: k = round(delta in BAM) = how many j
+        asl @                        ;   in 1..4 have |side|*81 >= fwd*(2j-1)
+        asl @                        ;   (|side| < fwd/10 < 410: no carries)
+        asl @
+        asl @
+        sta pd_t
+        asl @
+        asl @
+        adc pd_t
+        adc pd_as
+        sta pd_t                     ; |side|*81
+        lda pd_fwd
+        asl @
+        sta pd_f2                    ; 2*fwd
+        lda pd_fwd                   ; fwd*(2j-1), j = 1
+        ldx #0
+?fk     cmp pd_t
+        beq ?fk1
+        bcs ?turn                    ; beyond |side|*81: k = j-1
+?fk1    inx
+        cpx #4
+        bcs ?turn
+        adc pd_f2                    ; (C = 0: the bcs fell through)
+        bra ?fk
+?turn   sep #$20
+        .LONGA OFF
+        stx pd_k
+        lda zp_ang
+        bit pd_side+1                ; side >= 0: right (or dead behind, as DOOM's
+        bmi ?left                    ;   delta >= ANG180): clockwise, BAM down
+        sec
+        sbc pd_k
+        sta zp_ang
+        rts
+?left   clc
+        adc pd_k
+        sta zp_ang
+        rts
+.endp
+        .endseg
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+pl_src  dta 0                        ; the NEXT en_plr_hurt's source, thing+1 (0 = none)
+pl_atk  dta 0                        ; player->attacker, thing+1 (0 = none)
+pd_p    dta a(0),a(0)                ; pl_dturn: a 32-bit product...
+pd_fwd  dta a(0)                     ; ...the attacker along the view (v/4)
+pd_side dta a(0)                     ; ...and across it, > 0 = right
+pd_as   dta a(0)                     ; |side|
+pd_t    dta a(0)
+pd_f2   dta a(0)
+pd_k    dta 0                        ; the BAM step, 0..4
         .endseg
 
 ;--------------------------------------------------------------
@@ -131,15 +238,11 @@ pldq_resume = *
         bne ?rel                     ; nothing down -> arm the edge
         lda pl_keyw                  ; a key held from BEFORE the death must not
         bne ?out                     ;   count: wait for a release first, then the
-        jsr pl_restart               ;   next press restarts. (DOOM takes BT_USE
-        rts                          ;   (tail call across the bank line)
- .if 1
+        jmp pl_restart               ;   next press restarts. (DOOM takes BT_USE
+                                     ;   2026-09-22 idiom: jsr X / rts -> jmp X; both
+                                     ;   procs are bank $01 code (.lab), rts type
 ?rel    stz pl_keyw                  ;   the instant P_DeathThink runs; any key is
                                      ;   easier to hit by accident, hence the edge)
- .else
-?rel    lda #0                       ;   the instant P_DeathThink runs; any key is
-        sta pl_keyw                  ;   easier to hit by accident, hence the edge)
- .endif
 ?out    rts
 .endp
         .endseg
@@ -151,22 +254,12 @@ pldq_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_restart
- .if 1
         stz pl_dead
         stz ps_started
         lda #EYE_H
         sta pl_vh
-        jsr rom_in                   ; SIOV is in the OS ROM
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a)
         jmp exit_level.pl_reload     ; reload current_level, then init_level
- .else
-        lda #0
-        sta pl_dead
-        sta ps_started
-        lda #EYE_H
-        sta pl_vh
-        jsr rom_in                   ; SIOV is in the OS ROM
-        jmp exit_level.pl_reload     ; reload current_level, then init_level
- .endif
 .endp
         .endseg
 
@@ -175,21 +268,9 @@ pldq_resume = *
 ;   the leaf in zp_nid is CROSSED by the ray USE_PT_A..USE_PT_B and stops a
 ;   bullet. Parked in the death block's slack -- ROCKW holds sh_trace itself and
 ;   has no room, and this runs once per sample, i.e. cold.
-;
-;   use_leaf's twin, minus every special: a bullet opens no door, fires no
-;   switch and sets no EXIT_REQ (p_map.c:955-975 spawns a puff and returns
-;   false, nothing else). What is left is DOOM's two rejects:
-;     * one-sided line              -> `if (!(li->flags & ML_TWOSIDED)) goto hitline`
-;     * two-sided with no opening   -> P_LineOpening, openrange <= 0
-;   DOOM also stops a shot whose SLOPE leaves the opening at that distance
-;   (p_map.c:940-951). This port's shots are level -- proj.asm's note, "no z
-;   slope, it flies level at eye - 9" -- so the slope pair collapses into
-;   use_shut's "is the opening shut at all", which is the same test try_use
-;   already trusts.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_leaf
- .if 1
         jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
         lda zp_segcnt
         ora zp_segcnt+1
@@ -215,39 +296,6 @@ pldq_resume = *
         rts
 ?block  sec
         rts
- .else
-        jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
-?loop   lda zp_segcnt
-        ora zp_segcnt+1
-        beq ?none
-        ldy #SEG_BACK                ; the CHEAP half first: can this seg stop a
-        lda [zp_sptr],y              ;   bullet at all? use_seg_hit is 2625
-        cmp #NO_SECTOR               ;   cycles (four use_side calls) and
-        beq ?geo                     ;   use_shut is a pair of compares, so an
-        jsr sg_shut                  ;   open portal must not pay the geometry
-                                     ;   (sg_shut IS use_shut for the hitscan; for
-                                     ;   the SIGHT ray it is use_shut plus
-                                     ;   p_sight.c's sill -- enemy_ai.asm)
-        beq ?next                    ;   -- and most of a leaf's segs are one
-?geo    jsr use_seg_hit              ;   (this order was the other way round and
-        bne ?block                   ;   cost 13471 cycles on E1M1's spawn leaf)
-?next   clc
-        lda zp_sptr
-        adc #SEG_SIZE
-        sta zp_sptr
-        lda zp_sptr+1
-        adc #0
-        sta zp_sptr+1
-        lda zp_segcnt
-        bne ?dec
-        dec zp_segcnt+1
-?dec    dec zp_segcnt
-        jmp ?loop
-?block  sec
-        rts
-?none   clc
-        rts
- .endif
 .endp
         .endseg
 
@@ -257,29 +305,16 @@ pldq_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_setb
- .if 1
         jsr sh_dist
-        rep #$20
+                                    ; 2026-09-22 (65816-windows): sh_dist returns 16-bit
         .LONGA ON
-        lda zp_px
+                                      ; A = zp_px: sh_dist's LAST pass is X = 0 (2026-09-23)
         sta USE_PT_B
         lda zp_py
         sta USE_PT_B+2
         sep #$20
         .LONGA OFF
         rts
- .else
-        jsr sh_dist
-        lda zp_px
-        sta USE_PT_B
-        lda zp_px+1
-        sta USE_PT_B+1
-        lda zp_py
-        sta USE_PT_B+2
-        lda zp_py+1
-        sta USE_PT_B+3
-        rts
- .endif
 .endp
         .endseg
 
@@ -290,8 +325,7 @@ pldq_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_end
- .if 1
-        php                          ; C has to survive the restore below
+                                      ; 2026-09-23: rep/lda/sta/sep leave C alone, and
         rep #$20                     ; ---- 16-bit A: four word moves
         .LONGA ON
         lda zp_px                    ; the impact point...
@@ -304,29 +338,7 @@ pldq_resume = *
         sta zp_py
         sep #$20
         .LONGA OFF
-        plp
         rts
- .else
-        php                          ; C has to survive the restore below
-        lda zp_px                    ; the impact point...
-        sta en_bx
-        lda zp_px+1
-        sta en_bx+1
-        lda zp_py
-        sta en_by
-        lda zp_py+1
-        sta en_by+1
-        lda USE_PT_A                 ; ...and the player goes back where he was
-        sta zp_px
-        lda USE_PT_A+1
-        sta zp_px+1
-        lda USE_PT_A+2
-        sta zp_py
-        lda USE_PT_A+3
-        sta zp_py+1
-        plp
-        rts
- .endif
 .endp
         .endseg
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
@@ -339,10 +351,4 @@ sh_lo   dta a(0)                     ; binary search: the longest CLEAR ray...
 sh_hi   dta a(0)                     ;   ...and the shortest BLOCKED one
 
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > PLDTH_END+1
-        ert 'the death block outgrew PLDTH_BASE..PLDTH_END (memory_map.inc)'
-    .endif
- .endif
 

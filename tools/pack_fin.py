@@ -13,16 +13,14 @@ floor and then shows a full-screen picture:
     3   E3TEXT   MFLR8_4   F_BunnyScroll -- PFUB1 scrolling into PFUB2, then
                                        END0..END6 spelling "THE END"
 
-Everything here is halved horizontally, like every other graphic in this port
-(160 across where DOOM draws 320). Vertically nothing changes: SCREEN_HEIGHT is
-DOOM's own 200, so a full-screen picture is exactly 160 x 200 = 32,000 B -- the
-same shape pack_menu.py already gives TITLEPIC and the READ THIS! pages.
+NOTHING here is halved (2026-09-24): the text stage and stage 1 are both VBXE
+SR screens at DOOM's own 320x200, like the title.
 
 Four things ship:
 
   THE FLATS are ONE 64x64 flat each, not a rendered page. F_TextWrite tiles them
   (`memcpy(dest, src+((y&63)<<6), 64)` per row) and the VBXE blitter tiles just
-  as happily -- 5 across by 4 down, at 2 KB of VRAM instead of 32.
+  as happily -- 5 across by 4 down.
 
   THE FONT is the real thing. Everything else this port draws is a
   pre-rasterised patch (pack_menu.py's HU strips, pack_wi.py's labels), which
@@ -30,17 +28,22 @@ Four things ship:
   glyph N of a string at tic N. So hu_font is packed as a FIXED-STRIDE cell
   block -- STCFN033..STCFN095, '!' through '_' -- and the engine gets a glyph's
   address with a shift instead of a table lookup. Widths still vary, so a
-  63-byte advance table rides along in fin_syms.inc.
+  63-byte advance table rides along in fin_syms.inc. Font and flat ride each
+  episode's finpic.bin section, behind its art.
 
   THE TEXTS are E1TEXT/E2TEXT/E3TEXT from d_englsh.h, upper-cased the way
   F_TextWrite upper-cases them, newlines kept as $0A, NUL-terminated. They stay
   in VRAM and are read a character at a time through the MEMAC window: 1.6 KB of
   6502 RAM is 1.6 KB this port does not have.
 
-  THE PICTURES are halved 160x200 pages, one section each, plus the seven END
-  patches. Every section is CHUNK-ALIGNED so the engine can stream any one of
-  them on its own into a VBXE bank without reading the others -- the bunny
-  scroll is the only moment that needs two pages at once.
+  THE PICTURES are NOT halved (2026-09-24): stage 1 is shown at DOOM's own
+  320x200 in VBXE SR mode, like the title and the READ THIS! pages. HELP2 and
+  VICTORY2 are one 16-chunk page each with its SR list in the padding. The
+  bunny pair is ONE 640x200 surface (PFUB2 | PFUB1, 32 chunks, its list at
+  +128000 showing scrolled = 320) -- the engine scrolls it by adding to the
+  list's addresses, no blit at all -- then the seven END patches, full width.
+  Every episode's section is CHUNK-ALIGNED so it streams on its own into
+  FIN_ARENA.
 
   python tools/pack_fin.py
 """
@@ -52,18 +55,28 @@ sys.path.insert(0, _HERE)
 
 from wadlib import Wad, DEFAULT_WAD                              # noqa: E402
 from wadtex import WadTextures                                   # noqa: E402
+import pack_menu                                                 # noqa: E402
 
 ROOT = os.path.dirname(_HERE)
 CHUNK = 4096
 
-SCREEN_W = 160                       # memory_map.inc SCREEN_WIDTH (halved)
-SCREEN_H = 200                       # ...and SCREEN_HEIGHT, DOOM's own
+SR_W, SR_H = pack_menu.SR_W, pack_menu.SR_H   # stage 1: 320x200 SR
+BUN_W = 2 * SR_W                     # the bunny pair, PFUB2 | PFUB1
+FIN_ARENA_VRAM = 0x018000            # memory_map.inc FIN_ARENA (f_finale checks)
+ARENA_TOP = 0x03D000                 # ...ARENA_SPR_TOP: the episode picker above
+PAGE_XDL = pack_menu.SR_XDL_OFF      # a page's list, inside it
+BUN_XDL = BUN_W * SR_H               # = $1F400, page-aligned
+TXT_SR = 0x060000                    # the TEXT stage's SR surface: VRAM the
+                                     #   boot stream leaves free below WIPE_START
+                                     #   (f_finale.asm checks), untouched by the
+                                     #   ESC menu -- so ESC needs no save
+TXT_OFF0 = 0x300                     # fin.bin: the texts, behind the list
+
 FONT_FIRST, FONT_LAST = 33, 95       # hu_stuff.h HU_FONTSTART..HU_FONTEND
 FONT_H = 8                           # every STCFN glyph is 8 rows
 TEXTSPEED = 3                        # f_finale.c:56, tics per character
 TEXTWAIT = 250                       # f_finale.c:57, tics to hold the full page
-CX0, CY0, LINEH, SPACEW = 10, 10, 11, 4       # F_TextWrite's own numbers (x
-                                              #   halved on the way out)
+CX0, CY0, LINEH, SPACEW = 10, 10, 11, 4       # F_TextWrite's own numbers
 
 # --- F_BunnyScroll's clock (f_finale.c:644-693), all in DOOM tics ------------
 BUNNY_START = 230                    # scrolled = 320 - (finalecount-230)/2
@@ -71,6 +84,8 @@ BUNNY_END0 = 1130                    # ...before this, no letters at all
 BUNNY_STAGE0 = 1180                  # END0 holds from 1130 to here
 BUNNY_STEP = 5                       # then one more letter every 5 tics
 BUNNY_LAST = 6                       # END0..END6
+END_X = (320 - 13 * 8) // 2          # V_DrawPatch((SCREENWIDTH-13*8)/2,
+END_Y = (200 - 8 * 8) // 2           #   (SCREENHEIGHT-8*8)/2) -- DOOM's own
 
 E1TEXT = (
     "Once you beat the big badasses and\n"
@@ -137,38 +152,39 @@ EPISODES = ((1, 'FLOOR4_8', E1TEXT),
 END_LUMPS = tuple('END%d' % i for i in range(BUNNY_LAST + 1))
 
 
-def halve_patch(wt, nm, pad_h=0):
-    """A patch -> (bytes, w in bytes, h), halved horizontally like every other
-       graphic in this port, with the patch's own top offset folded in so the
-       image sits where V_DrawPatch puts it. Column-major source, row-major out.
-       Byte 0 is transparent (the port has no mask): every patch here is either
-       full-screen or drawn over one, and DOOM's own art has no holes in it."""
+def halve_patch(wt, nm, pad_h=0, step=2):
+    """A patch -> (bytes, w in bytes, h), halved horizontally (step 2, the
+       160-wide text stage) or not (step 1, the SR stage 1), with the patch's
+       own top offset folded in so the image sits where V_DrawPatch puts it.
+       Column-major source, row-major out. Byte 0 is transparent (the port has
+       no mask): every patch here is either full-screen or drawn over one, and
+       DOOM's own art has no holes in it."""
     pat = wt.get_patch(nm)
     if pat is None:
         return None
     w, h, cols = pat
     _left, top = wt.patch_offset(nm)
-    hw = (w + 1) // 2
+    hw = (w + step - 1) // step
     rows = max(pad_h, h)
     img = bytearray(hw * rows)
-    for cx in range(0, w, 2):
+    for cx in range(0, w, step):
         for (td, pix) in cols[cx]:
             for k, c in enumerate(pix):
                 y = td + k - top
                 if 0 <= y < rows:
-                    img[y * hw + cx // 2] = c
+                    img[y * hw + cx // step] = c
     return bytes(img), hw, rows
 
 
 def full_page(wt, nm):
-    """A 320x200 lump -> the port's 160x200 page, exactly TITLEPIC's shape."""
-    g = halve_patch(wt, nm)
+    """A 320x200 lump at full width, row-major."""
+    g = halve_patch(wt, nm, step=1)
     if g is None:
         sys.exit('  ERROR: %s is not in the WAD' % nm)
-    img, hw, rows = g
-    if hw != SCREEN_W or rows != SCREEN_H:
-        sys.exit('  ERROR: %s is %dx%d halved, expected %dx%d'
-                 % (nm, hw, rows, SCREEN_W, SCREEN_H))
+    img, w, rows = g
+    if w != SR_W or rows != SR_H:
+        sys.exit('  ERROR: %s is %dx%d, expected %dx%d'
+                 % (nm, w, rows, SR_W, SR_H))
     return img
 
 
@@ -182,44 +198,35 @@ def _pad(blob):
 def emit():
     wt = WadTextures(Wad(DEFAULT_WAD))
 
-    # ---- the font: measure first, so the cell is as tight as it can be -----
+    # ---- the font, FULL width: one fixed-stride cell per glyph -------------
     glyphs = []
     for code in range(FONT_FIRST, FONT_LAST + 1):
-        g = halve_patch(wt, 'STCFN%.3d' % code, pad_h=FONT_H)
+        g = halve_patch(wt, 'STCFN%.3d' % code, pad_h=FONT_H, step=1)
         if g is None:                              # not every code is in the WAD
             glyphs.append((b'', 0))                #   ('!'..'_' all are, but a
             continue                               #    converted WAD may differ)
-        img, hw, rows = g
+        img, gw, rows = g
         if rows > FONT_H:
             sys.exit('  ERROR: STCFN%.3d is %d rows, the cell is %d'
                      % (code, rows, FONT_H))
-        glyphs.append((img, hw))
-    # A POWER-OF-TWO cell, not the measured maximum. The widest halved glyph is
-    # 5 bytes, so 8 wastes 3 per row -- and buys the engine a glyph address of
-    # `(c - '!') * 64`, which is three shifts instead of a multiply by 40.
+        glyphs.append((img, gw))
+    # A POWER-OF-TWO cell, not the measured maximum: the widest glyph ('@') is
+    # 9 bytes, so 16 -- and a glyph's address is `(c - '!') * 128`, a shift.
     cell = 1
     while cell < max(w for _i, w in glyphs):
         cell *= 2
     font = bytearray()
-    for img, hw in glyphs:                         # one fixed-stride cell each,
-        for y in range(FONT_H):                    #   so the address is a shift
-            row = img[y * hw:(y + 1) * hw] if hw else b''
+    for img, gw in glyphs:
+        for y in range(FONT_H):
+            row = img[y * gw:(y + 1) * gw] if gw else b''
             font += row + bytes(cell - len(row))
 
-    # ---- SECTION 1: the small stuff -- font, the three flats, the three -----
-    #      texts. All of it together is under one chunk pair, and the engine
-    #      keeps it resident for the whole finale.
-    blob = bytearray(font)
-    font_off = 0
-    flat_off, text_off, textlen = [], [], []
-    for _ep, flatname, _txt in EPISODES:
-        flat = wt.get_flat(flatname)
-        if flat is None:
-            sys.exit('  ERROR: %s is not in the WAD' % flatname)
-        flat_off.append(len(blob))
-        for y in range(64):                        # halved: 32 bytes x 64 rows
-            for x in range(0, 64, 2):
-                blob.append(flat[y * 64 + x])
+    # ---- fin.bin, the boot stream's part: the TEXT stage's SR list (page 0,
+    #      so xdl_to_r can blit it) and the three texts, read a byte at a time
+    #      through the MEMAC window. Everything with pixels is in finpic.bin.
+    blob = bytearray(pack_menu._sr_xdl(TXT_SR))
+    blob += bytes(TXT_OFF0 - len(blob))
+    text_off, textlen = [], []
     for _ep, _flatname, txt in EPISODES:
         t = txt.upper().encode('latin-1') + b'\0'
         text_off.append(len(blob))
@@ -229,137 +236,189 @@ def emit():
     _pad(blob)
     data_chunks = len(blob) // CHUNK
 
-    # ---- fin.bin ends here. THE PAGES GO IN A FILE OF THEIR OWN -------------
-    # fin.bin rides menu.bin's boot stream (pack_menu.py appends it inside the
-    # intermission's consecutive bank run), and that stream is written to VRAM
-    # the moment the game boots. The four 32 KB pages must NOT be in it: 41
-    # chunks of boot stream would walk straight through FRAME_C. They go to
-    # finpic.bin, a stream of their own on the ATR, which the finale pulls into
-    # the SPRITE ARENA on demand -- the same trick mn_readthis plays with the
-    # HELP pages, and legal for the same reason: the arena holds the level's
-    # sprites, and by the time a finale runs the level is over.
+    # ---- finpic.bin: one section per EPISODE, each streamed whole into
+    # FIN_ARENA by fin_load: its stage-1 art, then its text kit -- the font
+    # and the episode's flat at full width, page-aligned behind the art (the
+    # font is repeated per section: disk bytes, not VRAM). Sections start on a
+    # chunk; inside one, nothing has to.
     pics = bytearray()
-    pic_ch = {}
-    for nm in ('HELP2', 'VICTORY2', 'PFUB1', 'PFUB2'):
-        pic_ch[nm] = len(pics) // CHUNK
-        pics += full_page(wt, nm)
-        _pad(pics)
+    secs = []                                     # (chunk, n, font_off, flat_off)
+    end_info = None
 
-    # ---- the END letters: seven small patches, one chunk-aligned section ----
-    end_ch = len(pics) // CHUNK
-    ends = []
-    base = len(pics)
-    for nm in END_LUMPS:
-        g = halve_patch(wt, nm)
-        if g is None:
-            sys.exit('  ERROR: %s is not in the WAD' % nm)
-        img, hw, rows = g
-        ends.append((len(pics) - base, hw, rows))
-        pics += img
-    _pad(pics)
+    def kit(sec, flatname):
+        flat = wt.get_flat(flatname)
+        if flat is None:
+            sys.exit('  ERROR: %s is not in the WAD' % flatname)
+        sec += bytes(-len(sec) % 256)
+        fo = len(sec)
+        sec += font
+        sec += bytes(-len(sec) % 256)
+        lo = len(sec)
+        sec += bytes(flat[:64 * 64])
+        return fo, lo
+
+    for ep, flatname, _txt in EPISODES:
+        if ep < 3:                                # HELP2 / VICTORY2: a page
+            sec = bytearray(full_page(wt, ('HELP2', 'VICTORY2')[ep - 1]))
+            sec += pack_menu._sr_xdl(FIN_ARENA_VRAM)
+        else:
+            # THE BUNNY PAIR as one 640-wide surface: screen column x of
+            # F_BunnyScroll is surface column x + scrolled, so the whole scroll
+            # is the list's address plus `scrolled` (f_finale.asm fin_pan).
+            p2, p1 = full_page(wt, 'PFUB2'), full_page(wt, 'PFUB1')
+            sec = bytearray()
+            for y in range(SR_H):
+                sec += p2[y * SR_W:(y + 1) * SR_W] + p1[y * SR_W:(y + 1) * SR_W]
+            sec += pack_menu._sr_xdl(FIN_ARENA_VRAM + SR_W, stride=BUN_W)
+            sec += bytes(-len(sec) % 256)
+            end_info = _ends(wt, sec)             # THE END, behind the list
+        fo, lo = kit(sec, flatname)
+        n = (len(sec) + CHUNK - 1) // CHUNK
+        if FIN_ARENA_VRAM + n * CHUNK > ARENA_TOP:
+            sys.exit('  ERROR: episode %d\'s finale is %d chunks and ends at '
+                     '$%06X, past ARENA_SPR_TOP $%06X'
+                     % (ep, n, FIN_ARENA_VRAM + n * CHUNK, ARENA_TOP))
+        secs.append((len(pics) // CHUNK, n, fo, lo))
+        pics += sec
+        _pad(pics)
 
     out = os.path.join(ROOT, 'build', 'assets', 'fin')
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, 'fin.bin'), 'wb').write(blob)
     open(os.path.join(out, 'finpic.bin'), 'wb').write(pics)
-    emit_syms(cell, [w for _i, w in glyphs], font_off, flat_off, text_off,
-              textlen, pic_ch, end_ch, ends, data_chunks,
-              len(pics) // CHUNK, data_len)
-    print('fin.bin %d B (%d chunks, boot stream): font %d + 3 flats + 3 texts'
-          % (len(blob), data_chunks, len(font)))
-    print('finpic.bin %d B (%d chunks, on demand): 4 pages x %d B + %d END '
-          'patches -> %s'
-          % (len(pics), len(pics) // CHUNK, SCREEN_W * SCREEN_H, len(ends), out))
+    emit_syms(cell, [w for _i, w in glyphs], text_off, textlen, secs, end_info,
+              data_chunks, len(pics) // CHUNK, data_len)
+    print('fin.bin %d B (%d chunks, boot stream): the text list + 3 texts'
+          % (len(blob), data_chunks))
+    print('finpic.bin %d B (%d chunks, on demand): per episode its stage-1 art'
+          ' + a full-width font and flat -> %s' % (len(pics), len(pics) // CHUNK, out))
 
 
-def emit_syms(cell, widths, font_off, flat_off, text_off, textlen, pic_ch,
-              end_ch, ends, chunks, pic_chunks, data_len):
+def _ends(wt, sec):
+    """THE END letters into the bunny section, from its current end. END0..END6
+    are the same "THE END" with one more bullet hole each, so END0 ships whole
+    and every later one only as the RECTANGLE where it differs from the one
+    before (~8.5 KB instead of 43): fin_endblit puts that rectangle's pristine
+    PFUB2 back and stencils the crop over it. -> (arena offset, ends, box)"""
+    grids = []
+    for nm in END_LUMPS:
+        g = halve_patch(wt, nm, step=1)
+        if g is None:
+            sys.exit('  ERROR: %s is not in the WAD' % nm)
+        grids.append(g)
+    rw = max(w for _i, w, _h in grids)
+    rh = max(h for _i, _w, h in grids)
+    if END_X + rw > SR_W or END_Y + rh > SR_H:
+        sys.exit('  ERROR: an END patch runs off the 320x200 screen')
+    full = []
+    for img, w, h in grids:                       # all on one rw x rh grid
+        f = bytearray(rw * rh)
+        for y in range(h):
+            f[y * rw:y * rw + w] = img[y * w:(y + 1) * w]
+        full.append(f)
+    base = len(sec)
+    ends = []                                     # (data off, w, h, dx, dy)
+    for n, f in enumerate(full):
+        if n == 0:
+            x0, y0, x1, y1 = 0, 0, grids[0][1], grids[0][2]
+        else:
+            diff = [(i % rw, i // rw) for i in range(rw * rh)
+                    if f[i] != full[n - 1][i]]
+            if not diff:
+                sys.exit('  ERROR: %s is the same picture as the one before'
+                         % END_LUMPS[n])
+            x0, y0 = min(x for x, _y in diff), min(y for _x, y in diff)
+            x1, y1 = max(x for x, _y in diff) + 1, max(y for _x, y in diff) + 1
+        ends.append((len(sec) - base, x1 - x0, y1 - y0, x0, y0))
+        for y in range(y0, y1):
+            sec += f[y * rw + x0:y * rw + x1]
+    return base, ends, (rw, rh)
+
+
+def emit_syms(cell, widths, text_off, textlen, secs, end_info, chunks,
+              pic_chunks, data_len):
+    end_off, ends, ebox = end_info
     p = os.path.join(ROOT, 'fin_syms.inc')
     with open(p, 'w') as f:
         w = f.write
         w('; AUTO-GENERATED by tools/pack_fin.py -- DO NOT EDIT.\n')
-        w('; f_finale.c geometry. x values are HALVED (the port draws 160\n')
-        w('; wide where DOOM draws 320); y values are DOOM\'s own.\n')
-        w('; Every FIN_*_OFF is a byte offset INSIDE fin.bin; the page and END\n')
-        w('; sections start on a 4 KB chunk so each streams on its own.\n')
+        w('; f_finale.c geometry at DOOM\'s own 320x200: the text stage and\n')
+        w('; stage 1 are both VBXE SR screens (f_finale.asm).\n')
         w('FIN_CHUNKS   equ %d      ; fin.bin: rides menu.bin\'s boot stream\n'
           % chunks)
         w('FIN_PICCHUNKS equ %d    ; finpic.bin: its own ATR stream (FIN_SEC1),\n'
           % pic_chunks)
-        w('                        ;   pulled into the sprite arena on demand\n')
-        w('FIN_DATA_LEN equ %d   ; font + flats + texts, the resident section\n'
-          % data_len)
-        w('FIN_FONT_OFF equ %d\n' % font_off)
-        w('FIN_CELL     equ %d      ; bytes per glyph ROW\n' % cell)
-        w('FIN_GLYPH    equ %d     ; ...and per glyph (FIN_CELL * %d rows)\n'
+        w('                        ;   one section per episode, into FIN_ARENA\n')
+        w('FIN_DATA_LEN equ %d   ; the text list + the texts, resident\n' % data_len)
+        w('FIN_TXSR     equ $%06X  ; the TEXT stage\'s SR surface (64000 B)\n' % TXT_SR)
+        w('FIN_TXL_OFF  equ 0       ; ...its list, at fin.bin +0 (page-aligned)\n')
+        w('FIN_CELL     equ %d     ; bytes per glyph ROW\n' % cell)
+        w('FIN_GLYPH    equ %d    ; ...and per glyph (FIN_CELL * %d rows)\n'
           % (cell * FONT_H, FONT_H))
         w('FIN_FONT_H   equ %d\n' % FONT_H)
         w('FIN_FIRST    equ %d      ; HU_FONTSTART, \'!\'\n' % FONT_FIRST)
         w('FIN_LAST     equ %d      ; HU_FONTEND, \'_\'\n' % FONT_LAST)
-        w('FIN_TILE_W   equ 32     ; the flats, halved from 64x64\n')
+        w('FIN_TILE_W   equ 64     ; the flats, 64x64 at full width\n')
         w('FIN_TILE_H   equ 64\n')
-        w('FIN_TILE_X   equ %d      ; tiles across a %d-byte row\n'
-          % (SCREEN_W // 32, SCREEN_W))
-        w(';   --- per EPISODE (1-3): flat, text, text length ---\n')
+        w(';   --- per EPISODE (1-3): its finpic.bin section (first chunk,\n')
+        w(';       chunks), and where the section puts the font and the flat\n')
+        w(';       (offsets from FIN_ARENA); its text in fin.bin ---\n')
         for i, (ep, flatname, _t) in enumerate(EPISODES):
-            w('FIN_FLAT%d    equ %-6d ; %s\n' % (ep, flat_off[i], flatname))
+            ch, n, fo, lo = secs[i]
+            w('FIN_SCH%d     equ %-5d  ; chunk in finpic.bin\n' % (ep, ch))
+            w('FIN_NCH%d     equ %-5d  ; chunks\n' % (ep, n))
+            w('FIN_FONTA%d   equ $%05X ; the font\n' % (ep, fo))
+            w('FIN_FLATA%d   equ $%05X ; %s\n' % (ep, lo, flatname))
         for i, (ep, _f, _t) in enumerate(EPISODES):
             w('FIN_TEXT%d    equ %-6d ; %d B incl. the NUL\n'
               % (ep, text_off[i], textlen[i]))
         for i, (ep, _f, _t) in enumerate(EPISODES):
             w('FIN_TLEN%d    equ %d\n' % (ep, textlen[i] - 1))
-        w(';   --- the stage-1 pages: %d x %d = %d B = %d chunks each. The\n'
-          % (SCREEN_W, SCREEN_H, SCREEN_W * SCREEN_H,
-             (SCREEN_W * SCREEN_H + CHUNK - 1) // CHUNK))
-        w(';       numbers are CHUNK indices inside finpic.bin, so a page\'s\n')
-        w(';       first sector is FIN_SEC1 + index*32 (atr_layout.inc).\n')
-        w('FIN_PAGE_LEN equ %d\n' % (SCREEN_W * SCREEN_H))
-        w('FIN_PAGE_CH  equ %d      ; chunks one page takes\n'
-          % ((SCREEN_W * SCREEN_H + CHUNK - 1) // CHUNK))
-        w('FIN_HELP2    equ %-6d ; episode 1 (registered; retail uses CREDIT)\n'
-          % pic_ch['HELP2'])
-        w('FIN_VICTORY2 equ %-6d ; episode 2\n' % pic_ch['VICTORY2'])
-        w('FIN_PFUB1    equ %-6d ; episode 3, the page the scroll STARTS on\n'
-          % pic_ch['PFUB1'])
-        w('FIN_PFUB2    equ %-6d ; ...and the one it scrolls onto\n'
-          % pic_ch['PFUB2'])
-        w(';   --- F_BunnyScroll (f_finale.c:644), tics and PORT pixels ---\n')
-        w('FIN_BUN_T0   equ %d    ; scroll starts; x = %d - (t-%d)/4 halved\n'
-          % (BUNNY_START, SCREEN_W, BUNNY_START))
+        w(';   --- stage 1, 320x200 SR (f_finale.asm fin_show) ---\n')
+        w('FIN_ARENA_P  equ $%06X  ; = FIN_ARENA, where every section lands\n'
+          % FIN_ARENA_VRAM)
+        w('FIN_SR_W     equ %d     ; a screen row, in bytes\n' % SR_W)
+        w('FIN_PAGE_XDL equ $%04X  ; a page\'s list, from FIN_ARENA\n' % PAGE_XDL)
+        w('FIN_BUN_W    equ %d    ; the PFUB2|PFUB1 surface\'s row pitch\n' % BUN_W)
+        w('FIN_BUN_XDL  equ $%05X ; ...its list (scrolled = %d)\n' % (BUN_XDL, SR_W))
+        w('FIN_XDL_N    equ %d     ; entries in an SR list\n'
+          % len(pack_menu._sr_entries()))
+        w(';   --- F_BunnyScroll (f_finale.c:644), tics and 320 pixels ---\n')
+        w('FIN_BUN_T0   equ %d    ; scroll starts; scrolled = 320 - (t-%d)/2\n'
+          % (BUNNY_START, BUNNY_START))
         w('FIN_BUN_END0 equ %d   ; END0 appears\n' % BUNNY_END0)
         w('FIN_BUN_ST0  equ %d   ; ...and the letters start marching\n'
           % BUNNY_STAGE0)
         w('FIN_BUN_STEP equ %d      ; one more letter every this many tics\n'
           % BUNNY_STEP)
         w('FIN_BUN_LAST equ %d      ; END0..END6\n' % BUNNY_LAST)
-        w('FIN_END_CH   equ %-6d ; the END section, chunk index in finpic.bin\n'
-          % end_ch)
+        w('FIN_END_OFF  equ $%05X ; the END letters, from FIN_ARENA (episode 3)\n'
+          % end_off)
         w('FIN_END_N    equ %d\n' % len(ends))
-        w('; END patch table: offset INSIDE the END section, width B, height\n')
-        w('fin_end_lo\n        dta %s\n'
-          % ','.join('<%d' % o for o, _w, _h in ends))
-        w('fin_end_hi\n        dta %s\n'
-          % ','.join('>%d' % o for o, _w, _h in ends))
-        w('fin_end_w\n        dta %s\n'
-          % ','.join(str(x) for _o, x, _h in ends))
-        w('fin_end_h\n        dta %s\n'
-          % ','.join(str(x) for _o, _w, x in ends))
-        # V_DrawPatch((SCREENWIDTH-13*8)/2, (SCREENHEIGHT-8*8)/2) -- DOOM's own
-        # centring for the END letters, x halved with the rest of the port.
-        w('FIN_END_X    equ %d     ; (320-13*8)/2 halved\n'
-          % (((320 - 13 * 8) // 2) // 2))
-        w('FIN_END_Y    equ %d     ; (200-8*8)/2\n' % ((200 - 8 * 8) // 2))
-        w(';   --- F_TextWrite (f_finale.c:261) ---\n')
-        w('FIN_CX0      equ %d      ; F_TextWrite cx = %d, halved\n'
-          % (CX0 // 2, CX0))
+        w('; END table: END0 whole, END1..6 only the rectangle that changed.\n')
+        w('; s = data offset from FIN_END_OFF, d = the rectangle\'s offset on\n')
+        w('; the 640 surface from the END origin (dy*640+dx), then w/h bytes.\n')
+        w('fin_end_s\n        dta %s\n'
+          % ','.join('a(%d)' % e[0] for e in ends))
+        w('fin_end_d\n        dta %s\n'
+          % ','.join('a(%d)' % (e[4] * BUN_W + e[3]) for e in ends))
+        w('fin_end_w\n        dta %s\n' % ','.join(str(e[1]) for e in ends))
+        w('fin_end_h\n        dta %s\n' % ','.join(str(e[2]) for e in ends))
+        w('FIN_END_X    equ %d    ; (320-13*8)/2\n' % END_X)
+        w('FIN_END_Y    equ %d     ; (200-8*8)/2\n' % END_Y)
+        w('FIN_END_RW   equ %d    ; the box every END patch fits in: what\n'
+          % ebox[0])
+        w('FIN_END_RH   equ %d     ;   END0 saves before the first letter\n'
+          % ebox[1])
+        w(';   --- F_TextWrite (f_finale.c:261), DOOM\'s own numbers ---\n')
+        w('FIN_CX0      equ %d\n' % CX0)
         w('FIN_CY0      equ %d\n' % CY0)
         w('FIN_LINEH    equ %d\n' % LINEH)
-        w('FIN_SPACEW   equ %d      ; the "not a glyph" advance, halved\n'
-          % (SPACEW // 2))
+        w('FIN_SPACEW   equ %d      ; the "not a glyph" advance\n' % SPACEW)
         w('FIN_SPEED    equ %d      ; TEXTSPEED, tics per character\n' % TEXTSPEED)
         w('FIN_WAIT     equ %d    ; TEXTWAIT, tics to hold the finished page\n'
           % TEXTWAIT)
-        w(';   --- hu_font advance widths, \'!\'..\'_\' (halved) ---\n')
+        w(';   --- hu_font advance widths, \'!\'..\'_\' ---\n')
         w('fin_fw\n')
         for i in range(0, len(widths), 16):
             w('        dta %s\n' % ','.join(str(v) for v in widths[i:i + 16]))

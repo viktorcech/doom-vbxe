@@ -3,5 +3,5 @@
 ; these equs are their Rapidus SDRAM homes. The per-level
 ; loader tables are gone: arena_init loads the constants
 ; immediate, load_sprites is a no-op.
-LVL_TEXSD_C  equ $271D00    ; pool.tex home (27 level(s))
-LVL_SPRSD_C  equ $342100    ; sprpool.bin home
+LVL_TEXSD_C  equ $28A480    ; pool.tex home (27 level(s))
+LVL_SPRSD_C  equ $364080    ; sprpool.bin home

@@ -261,7 +261,6 @@ class WadTextures:
         noisy rock or metal flat the two agree, but on a STRUCTURED one they do
         not, and every structured flat in DOOM is structured the same way --
         something bright inside a dark frame. TLITE6_1, the ceiling light panel
-        E1M1 hangs over its two glowing alcoves, is 3616 dark border pixels and
         180 white ones: the mode is $05, RGB (27,27,27), so the port painted a
         LIGHT dark grey and the sector's glow ran between two shades of black.
         The mean puts it at (47,47,47) and the glow is visible again. 29 of

@@ -13,11 +13,9 @@ Geometry, straight out of m_menu.c so the engine can hardcode it:
     skull y      = MainDef.y - 5 + itemOn*LINEHEIGHT   (m_menu.c:1802)
     M_DOOM at    (94, 2)       (m_menu.c:858)
     skull blinks every 8 tics  (m_menu.c:1836-1839)
-All of those are DOOM's 320-wide pixels; the port draws 160 wide, so the engine
-halves x exactly the way this file halves the pixels.
-
-Same encoding as pack_hud.py -- row-major, halved horizontally (one byte = two
-DOOM pixels, every second column kept), palette index 0 = transparent.
+All of those are DOOM's 320-wide pixels, and so are the patches (2026-09-24):
+the menu is drawn 1:1 onto an SR screen -- the title at boot, melt.asm's MT_SR
+in game (menu.asm mn_sdraw). Palette index 0 = transparent.
 
 THE BLOB IS THREE STREAMS, not one, because the menu is on ESC now as well as at
 boot (menu.asm) and only the TITLE may live in RAM the game reuses:
@@ -25,10 +23,12 @@ boot (menu.asm) and only the TITLE may live in RAM the game reuses:
   chunk 0..7   TITLEPIC -> $018000, the SPRITE ARENA. Empty until the first
                load_level and re-initialised by arena_init on every load after
                that -- fine for a picture that is only ever shown at boot.
-  chunk 8..10  M_DOOM + MainMenu[] + the two skulls -> $00B000, one of the fixed
-               4 KB holes the weapon regions freed (memory_map.inc). Nothing a
-               level load touches, which is what lets ESC draw the menu at any
-               point in the game without re-reading the drive.
+  chunk 8..10  MainMenu[] + the two skulls -> $00B000, one of the fixed 4 KB
+               holes the weapon regions freed (memory_map.inc). Nothing a level
+               load touches, which is what lets ESC draw the menu at any point
+               in the game without re-reading the drive. M_DOOM rides the
+               episode run ($03E000) and M_EPI* the intermission's (EPI_VRAM):
+               at full width the three would not fit one hole.
   chunk 11     the menu CODE overlay -> $00E000. Written here as zeros;
                tools/split_menu_ovl.py lifts the block out of the XEX after mads
                and patches it in. Reserving the chunk at pack time is what keeps
@@ -54,9 +54,10 @@ from wadtex import WadTextures                                   # noqa: E402
 # there until load_sprites runs, and nothing streams into VRAM in between
 # (load_sounds/load_weapons/load_music all read_ext into Rapidus SRAM).
 #
-#   $018000  the READ THIS! pages, one at a time. 160 wide: they are blitted
-#            into FRAME_A and shown on xdl.asm's list A, the way every 160-wide
-#            thing in this port is (menu.asm rd_tab).
+#   $010000  the READ THIS! pages, one at a time, at DOOM's OWN 320x200 like
+#            the title: FRAME_B + the pool's first 32 KB, both dead while the
+#            reader is up, are one 64 KB run. The page's list rides its padding
+#            and menu.asm rd_pages blits it to VRAM_XDL_R in bank 0.
 #   $020000  TITLEPIC at DOOM's OWN 320x200, 256 colours, and the XDL that
 #            shows it. THIS IS THE BOOT MENU'S SCREEN: the M_* patches are
 #            blitted straight into it, so the picture behind the menu keeps its
@@ -64,13 +65,16 @@ from wadtex import WadTextures                                   # noqa: E402
 #   $030000  ...and a PRISTINE copy of its top SRBG_H rows, which is what the
 #            cursor's box and M_ClearMenu restore out of (mn_box). 13 chunks,
 #            ending exactly where EPIOVL_VRAM_BASE begins.
-MENU_VRAM_BASE = 0x018000
+MENU_VRAM_BASE = 0x010000
+RD_XDL_COPY = 800                # rd_pages' blit: 5 rows of 160 (the HUD BCB's
+                                 #   own strides) from the page's list to VRAM_XDL_R
 MENU_SR_VRAM = 0x020000
 MENU_SR_BG = 0x030000
 # ...and the PERMANENT half: the M_* patches and the menu code overlay, in the
 # fixed 4 KB holes at $00B000 / $00E000 (memory_map.inc's VRAM map). A level load
 # never writes there, so the ESC menu needs no SIO at all.
 PATCH_VRAM_BASE = 0x00B000
+PATCH_CHUNKS = 3                                 # $00B000-$00DFFF, then the overlays
 OVL_VRAM_BASE = 0x00E000
 CHUNK = 4096                                     # load_vram's unit (32 sectors)
 # Two overlay chunks, one VBXE bank each: $00E000 = menu.asm's, $00F000 =
@@ -83,45 +87,21 @@ OVL_PAIR = 2
 # ($17, FRAME_B's dead status-bar rows -- memory_map.inc says why that is free).
 OVL_CHUNKS = OVL_PAIR + 1
 
-# ---- the HU STRIPS: every line of text the ENGINE shows (hu_stuff.c) --------
-# Two widgets, one array. DOOM's HU_Drawer draws exactly two things:
-#   w_title    the level name in the bottom-left of the automap, `if
-#              (automapactive)` (hu_stuff.c:491) -- text from mapnames[];
-#   w_message  the one-line message across the TOP of the view, whatever
-#              P_TouchSpecialThing last parked in player->message, for
-#              HU_MSGTIMEOUT (4*TICRATE = 4 s).
-# Both use hu_font, i.e. the STCFN* lumps -- the same font _text_line already
-# burns the credits page with.
-#
-# The port has no font at RUNTIME (menu.asm's header: "every line is a patch, so
-# no font is needed"), and giving it one would cost a glyph table, a string
-# table and a per-character draw loop. So every line is rasterised HERE, one
-# strip each, and the engine blits ONE rectangle -- which is the same trade the
-# whole menu already makes. The set of lines is closed: nine level names and one
-# message per bonus id, so nothing has to be composed at runtime.
-#
-# NO STRIDE ANY MORE (2026-09-16). Strips used to sit TITLE_STRIDE = 1024 apart,
-# each padded to the widest line of all of them, so strip_blit found strip N with
-# two `asl` and needed no table; 63 strips then cost 64,512 B of VRAM to hold
-# 38,624 B of ink. That 25,699 B of padding is what the SR status bar is made of
-# (xdl.asm), so the strips are packed end to end now and HU_TAB says where each
-# one is. See _hu_strips.
-TITLE_VRAM_BASE = 0x040000       # 64 KB-aligned ON PURPOSE: the strip offset is
-                                 #   a u16, so the VRAM address needs no add
-# ...and what the packing freed, spelled out in one place because three packers
-# have to agree on it. The strips end by HUD_VRAM_BASE, the 320-wide status bar
-# graphics fill the six chunks from there (tools/pack_hud.py), and the
-# intermission is PINNED at WI_VRAM_BASE -- it used to be computed as
-# "wherever the strips end", which would have walked straight back down into the
-# space the bar was just given.
+# ---- the HU LINES: every line of text the ENGINE shows (hu_stuff.c) ---------
+# DOOM's HU_Drawer draws two things: w_title, the level name in the bottom-left
+# of the automap (hu_stuff.c:491), and w_message, the one-line message across
+# the top of the view. Both use hu_font (STCFN*). The port has no font at
+# runtime: every line is rasterised here at DOOM's own width (_hu_line) and
+# rides SDRAM (tools/pack_wi.py's HU line bank, indexed like the old strips:
+# the level names first, then one line per bonus id at id + MSG_IDX0); the
+# engine copies the one it shows into VRAM (strip.asm st_hufetch).
+# The status bar graphics start at HUD_VRAM_BASE (tools/pack_hud.py) and the
+# intermission is PINNED at WI_VRAM_BASE.
 HUD_VRAM_BASE = 0x04A000
 WI_VRAM_BASE = 0x050000
-HU_MAXSTRIPS = 64                # HU_TAB's per-array stride, so the engine's
-                                 #   three bases are build constants
-                                 #   (memory_map.inc HU_OLO_EXT/HU_OHI/HU_W)
 TITLE_H = 8                      # STCFN glyph height, and DOOM's own row count
 # hu_stuff.c mapnames, all three episodes; the BUILD's level list picks which
-# get a strip (strip index = level index -- automap w_title + the WI screens).
+# get a line (line index = level index -- automap w_title + the save slots).
 NAMES = {
     'E1M1': 'E1M1: Hangar', 'E1M2': 'E1M2: Nuclear Plant',
     'E1M3': 'E1M3: Toxin Refinery', 'E1M4': 'E1M4: Command Control',
@@ -221,32 +201,27 @@ MESSAGES = (
                                           # never shows; msg_set implements the
                                           # intent (post-add <50 == pre-add
                                           # <25). SHORTENED from d_englsh.h's
-                                          # 41 chars: a strip is TITLE_W=128 B
-                                          # wide and the full sentence needs
-                                          # 143 -- widening the stride doubles
-                                          # every strip's VRAM for one line.
+                                          # 41 chars (the 160 strips' limit).
     # ---- NOT a bonus id: the locked-door refusal (door_keymsg, doors.asm) ----
     # EV_VerticalDoor's PD_BLUEK/YELLOWK/REDK (d_englsh.h:128-130), as ONE
-    # colour-blind line: the WI+FIN VRAM run ends FLUSH against WIPE_START
-    # (f_finale.asm's guard), so the strip array can grow to 64 rows and no
-    # further -- three colour lines are one row over. The door's own trim
-    # carries the colour on screen; a colour-correct set needs a chunk of
-    # the run evicted to a Rapidus bank first (AMOVL's precedent).
+    # colour-blind line: the HU line directory holds 64 (pack_wi.py
+    # MSG_STRIDE) and three colour lines are one over. The door's own trim
+    # carries the colour on screen.
     'You need a key for this door',       # 36 PD_*K, colour-blind
 )
 LEVEL_NAMES = ()                 # set_levels fills it; EPI_FIRST needs it
-MSG_IDX0 = len(TITLES) - 1       # strip index of bonus id 1 is MSG_IDX0+1, so
+MSG_IDX0 = len(TITLES) - 1       # line index of bonus id 1 is MSG_IDX0+1, so
                                  #   the engine's index is (id + MSG_IDX0) and
-                                 #   MESSAGES[0] never gets a strip of its own
+                                 #   MESSAGES[0] never gets a line of its own
 
 
 def set_levels(names):
-    """Size the strip array for the BUILD's level list (build_atr.ps1 passes
+    """Size the HU lines for the BUILD's level list (build_atr.ps1 passes
     --levels). MSG_IDX0 moves with the name count and reaches the engine as a
     menu_syms.inc equ, so hud.asm's `adc #MSG_IDX0` re-numbers itself."""
     global TITLES, MSG_IDX0, LEVEL_NAMES
     # .get, not [] -- a converted WAD may call its maps anything at all, and a
-    # map with no entry in hu_stuff.c's tables gets its own name on the strip
+    # map with no entry in hu_stuff.c's tables gets its own name on the line
     # instead of taking the whole build down (2026-08-30).
     TITLES = tuple(NAMES.get(nm, nm) for nm in names)
     MSG_IDX0 = len(TITLES) - 1
@@ -254,9 +229,8 @@ def set_levels(names):
 
 
 def _hu_line(wt, text):
-    """One line of hu_font text -> (halved bytes, width in bytes). Halved
-       horizontally like every other graphic in the port (our byte = 2 DOOM px);
-       index 0 is transparent under BLT_BSTENCIL."""
+    """One line of hu_font text at DOOM's own width -> (bytes, width), TITLE_H
+       rows. Index 0 is transparent under BLT_BSTENCIL."""
     glyphs = []
     for c in text.upper():                        # HUlib_drawTextLine uppercases
         if c == ' ':
@@ -283,85 +257,7 @@ def _hu_line(wt, text):
                         if 0 <= ry < TITLE_H and 0 <= rx < lw:
                             line[ry * lw + rx] = c
         x += adv
-    # Halved like every other graphic in the port, but the PHASE is chosen,
-    # not assumed. This font has one-pixel stems and one-pixel gaps at 320,
-    # so which of the two columns in a pair survives decides whether a
-    # letter keeps its stem or its counter -- and the answer is not the same
-    # for every line. Keeping the phase with more ink left is a two-line
-    # test and visibly better on the short names.
-    # (Merging the pair instead -- keep whichever is lit -- was tried and is
-    # worse: it fills the one-pixel gaps and the letters run together.)
-    hw = (lw + 1) // 2
-    best, bestn = bytearray(), -1
-    for phase in (0, 1):
-        cand = bytearray(hw * TITLE_H)
-        for ry in range(TITLE_H):
-            for cx in range(hw):
-                sx = 2 * cx + phase
-                if sx < lw:
-                    cand[ry * hw + cx] = line[ry * lw + sx]
-        n = sum(1 for b in cand if b)
-        if n > bestn:
-            best, bestn = cand, n
-    return best, hw
-
-
-def _hu_strips(wt):
-    """The whole strip array: the level names first (strip index = level), then
-       one per bonus id (strip index = id + MSG_IDX0).
-
-       PACKED, one strip after another at its OWN width (2026-09-16). It used to
-       pad every strip twice -- to the widest line of all of them (TITLE_W, 121 B)
-       and then to TITLE_STRIDE (1024) -- so that strip_blit could find strip N
-       with two `asl` and no table at all. For 63 strips that is 64,512 B of VRAM
-       holding 38,624 B of ink: 25,699 B of padding, a third of what the whole
-       intermission costs. The SR status bar needed exactly that much
-       (xdl.asm/hud.asm), so the padding is gone and the engine reads a table --
-       HU_TAB, 3 x HU_NSTRIPS bytes in Rapidus bank $01 (bank01.asm), as
-       lo[]/hi[]/w[] so strip_blit is three `lda.l tab,x` and no arithmetic.
-
-       The offset is a u16 and TITLE_VRAM is 64 KB-aligned, so a strip's VRAM
-       address IS (TITLE_VRAM>>16):offset -- there is nothing to add.
-       -> (blob, widest width in bytes, strip count, HU_TAB)"""
-    strips, widest = [], 0
-    for text in TITLES + MESSAGES[1:]:
-        half, hw = _hu_line(wt, text)
-        widest = max(widest, hw)
-        strips.append((half, hw))
-    if widest > 160:                              # SCREEN_WIDTH: a wider line
-        sys.exit(f'  ERROR: an HU strip is {widest} B, the screen is 160 -- '
-                 f'shorten the line in tools/pack_menu.py')
-    blob = bytearray()
-    offs, wids = [], []
-    for half, hw in strips:                       # _hu_line returns exactly
-        offs.append(len(blob))                    #   hw * TITLE_H bytes, so the
-        wids.append(hw)                           #   strip needs no reshaping
-        blob += half
-    if len(blob) > 0x10000:
-        sys.exit(f'  ERROR: the strip array is {len(blob)} B -- strip_blit holds '
-                 f'the offset in 16 bits and TITLE_VRAM is 64 KB-aligned, so the '
-                 f'array may not cross the bank')
-    if TITLE_VRAM_BASE + len(blob) > HUD_VRAM_BASE:
-        sys.exit(f'  ERROR: the strip array is {len(blob)} B and runs from '
-                 f'${TITLE_VRAM_BASE:06X} into the status bar graphics at '
-                 f'${HUD_VRAM_BASE:06X} (tools/pack_hud.py)')
-    # THREE ARRAYS, EACH PADDED TO HU_MAXSTRIPS -- not 3-byte records. The
-    # stride is then a build CONSTANT, so memory_map.inc can name HU_OHI_EXT and
-    # HU_W_EXT without knowing the strip count, and strip_blit indexes all three
-    # with the same X and no multiply. 192 B either way, and the page HU_TAB
-    # rides in holds 256 (bank01.asm).
-    if len(strips) > HU_MAXSTRIPS:
-        sys.exit(f'  ERROR: {len(strips)} HU strips, HU_MAXSTRIPS is '
-                 f'{HU_MAXSTRIPS} -- raise it here AND in memory_map.inc')
-    pad = bytes(HU_MAXSTRIPS - len(strips))
-    tab = (bytes(o & 0xFF for o in offs) + pad
-           + bytes(o >> 8 for o in offs) + pad
-           + bytes(wids) + pad)
-    return blob, widest, len(strips), tab
-
-
-def _chunks(n):
-    return (n + CHUNK - 1) // CHUNK
+    return line, lw
 
 
 # ---- TITLEPIC AT FULL WIDTH, and the display list that shows it -------------
@@ -383,6 +279,14 @@ SR_XDL_OFF = SR_W * SR_H                # the list rides the picture's padding:
                                         #   64000 B of picture in 16 chunks
                                         #   (65536) leaves 1536 spare and the
                                         #   list is 650
+# THE LOADING SCREEN (menu.asm mn_togame): the level load's arena_prefetch
+# fills the pool the title lives in, so the title is blitted out of it -- rows
+# 0..99 to FRAME_A, 100..199 to WIPE_START (memory_map.inc; both 32000 B and
+# untouched until the game's first flip) -- and shown through list T, which
+# rides the title's padding behind its own list and is blitted to bank 0.
+LD_SPLIT = 100
+LD_LO_VRAM = 0x068000                   # = WIPE_START (menu.asm checks it)
+LD_XDL_OFF = 0xFD00
 # The PRISTINE copy is only as tall as the menu reaches: mn_box never restores
 # below the last MainMenu[] line, and 13 chunks is exactly what fits between
 # MENU_SR_BG and the episode picker's chunks at EPIOVL_VRAM_BASE. _sr_bg_rows
@@ -418,10 +322,14 @@ def _sr_entries():
     return e
 
 
-def _sr_xdl(base):
+def _sr_xdl(base, base2=None, stride=SR_W):
     """...as bytes. Entry = ctrl1, ctrl2, repeat, OVADR (3), OVSTEP (2); the
-    first carries ATT (+2) and the last carries END."""
+    first carries ATT (+2) and the last carries END. With base2, rows from
+    LD_SPLIT on read base2 instead (the loading screen's list T). stride is
+    the surface's row pitch (the finale's 640-wide bunny pair)."""
     e = _sr_entries()
+    if base2 is not None and LD_SPLIT not in [y for _r, y, _s in e]:
+        sys.exit(f'  ERROR: row {LD_SPLIT} does not start an SR list entry')
     lines = sum(r + 1 for r, _y, _s in e)
     if lines != 240:
         sys.exit(f'  ERROR: the SR title list covers {lines} scanlines, not 240')
@@ -434,7 +342,11 @@ def _sr_xdl(base):
             c2 |= X_ATT
         if i == len(e) - 1:
             c2 |= X_END
-        a = base + row * SR_W
+        a = base + row * stride
+        if base2 is not None and row >= LD_SPLIT:
+            a = base2 + (row - LD_SPLIT) * stride
+        if step:
+            step = stride
         out += bytes((X_C1, c2, rpt, a & 0xFF, (a >> 8) & 0xFF, (a >> 16) & 0xFF,
                       step & 0xFF, step >> 8))
         if i == 0:
@@ -467,6 +379,8 @@ def _sr_title(wt):
     blob = bytearray(img)
     blob += bytes(SR_XDL_OFF - len(blob))
     blob += _sr_xdl(MENU_SR_VRAM)
+    blob += bytes(LD_XDL_OFF - len(blob))
+    blob += _sr_xdl(0, LD_LO_VRAM)                # list T: FRAME_A = VRAM 0
     if len(blob) > 16 * CHUNK:
         sys.exit(f'  ERROR: the SR title is {len(blob)} B, the reserve is '
                  f'{16 * CHUNK}')
@@ -487,11 +401,9 @@ def _sr_title(wt):
     return blob, bg, need
 
 
-# READ THIS! -- m_menu.c M_ReadThis. They are streamed ON DEMAND into
-# TITLEPIC's own arena slot (same 320x200 -> same 32000 B), so they cost no
-# VRAM of their own; menu.asm re-streams TITLEPIC when the reader leaves. No
-# menu.tab rows: the engine blits them through the title's fixed geometry
-# (rd_tab in menu.asm).
+# READ THIS! -- m_menu.c M_ReadThis. Streamed ON DEMAND into MENU_VRAM_BASE,
+# one page at a time, in the title's own format: 320x200 SR, the list in the
+# padding (_rd_page). They cost no VRAM of their own.
 #
 # WHICH lumps depends on the IWAD, exactly as it does in m_menu.c -- the
 # registered flow is HELP1 then HELP2, the commercial one a single HELP. So ask
@@ -499,6 +411,7 @@ def _sr_title(wt):
 # is actually in there. `HELP_LUMPS` was ('HELP1', 'HELP2') flat, and a WAD
 # without them stopped the build dead ("HELP1 is not in the WAD").
 HELP_SETS = (('HELP1', 'HELP2'), ('HELP',), ('CREDIT',))
+RD_PAGES = 0                     # emit sets it: this WAD's pages + the credits
 
 
 def help_lumps(wt):
@@ -511,13 +424,13 @@ def help_lumps(wt):
 
 
 def _read_version():
-    """VERSION (repo root) holds the minor number; build_atr.ps1 bumps it
-    before this runs. The screen shows V0.<n>."""
+    """VERSION (repo root) holds the build number in HUNDREDTHS; build_atr.ps1 bumps it
+    before this runs. The screen shows V<n/100>.<n%100 as 2 digits>: 100 = V1.00."""
     path = os.path.join(os.path.dirname(_HERE), 'VERSION')
     try:
-        return int(open(path).read().strip())
+        return '%d.%02d' % divmod(int(open(path).read().strip()), 100)
     except (OSError, ValueError):
-        return 1
+        return '0.01'
 
 
 def _raster_full(pat):
@@ -556,7 +469,7 @@ def _epx2(img, w, h):
 
 
 def _text_line(wt, img, w, h, text, y, scale):
-    """burn `text` onto the 160x200 grid with DOOM's own menu font (STCFN*,
+    """burn `text` onto the 320x200 grid with DOOM's own menu font (STCFN*,
     hu_font semantics: V_DrawPatch honours each glyph's left/top offsets --
     that is what keeps '.' and ':' on the BASELINE). The line is rasterised
     1:1 first and blown up with EPX (scale 1, 2 or 4), so the big sizes get
@@ -593,16 +506,8 @@ def _text_line(wt, img, w, h, text, y, scale):
         line = _epx2(line, lw, lh)
         lw, lh = 2 * lw, 2 * lh
         scale //= 2
-    # HALVE HORIZONTALLY, the way pack_hud halves every HUD glyph (keep every
-    # second column): our byte is two DOOM pixels, so a 1:1 STCFN line on this
-    # grid was twice as wide as the same font in the in-game messages. Scale 1
-    # is now exactly the "picked up a ..." look (2026-09-09).
-    hw = (lw + 1) // 2
-    half = bytearray(hw * lh)
-    for ry in range(lh):
-        for rx in range(0, lw, 2):
-            half[ry * hw + rx // 2] = line[ry * lw + rx]
-    line, lw = half, hw
+    # NOT halved: the page is 320 wide (SR), so one STCFN pixel is one byte --
+    # the same size the old halved line had on the 160 grid, at full detail.
     x0 = (w - lw) // 2
     for ry in range(lh):
         for rx in range(lw):
@@ -643,45 +548,76 @@ CREDITS = (('DOOM VBXE',               56, 2),     # the port, one size up
            ('CODE: OPUS 4.7, 4.8, 5, FABLE 5', 96, 1),   # in-game message font
            ('SPECIAL THANKS: DRAC030', 108, 1),    # (the 65816 review, 2026-09)
            ('2026',                   120, 1),
-           ('V0.%s',                  132, 1),      # %s = VERSION
+           ('V%s',                  132, 1),      # %s = VERSION
            ('%s',                     144, 1))      # %s = the build stamp
 
 
 def _credits_page(wt, ver):
     """the third READ THIS! page: black, DOOM's red menu font, the port's
     credit, the build version (VERSION, bumped by build_atr.ps1) and the
-    moment this build was packed."""
+    moment this build was packed. 320x200 (the column counts in the CREDITS
+    notes above are on the old 160 grid: double them)."""
     import datetime
-    w, h = 160, 200
+    w, h = SR_W, SR_H
     img = bytearray(w * h)                        # palette 0 = black
     stamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
-    fill = {'V0.%s': f'V0.{ver}', '%s': stamp}
+    fill = {'V%s': f'V{ver}', '%s': stamp}
     for text, y, scale in CREDITS:
         _text_line(wt, img, w, h, fill.get(text, text), y, scale)
     return img, stamp
 
 
-def _preview(img, path, w=160, h=200):
-    """the credits page as a PNG at the display's 2:1 pixel aspect, so the
-    layout can be judged without booting three pages deep into the menu."""
+def _console_version(ver, stamp):
+    """(2026-09-26) console_ver.inc: the startup console's top BAR (console.asm) -- DOS
+    DOOM v1.9's red-on-grey "DOOM System Startup v1.9", carrying the port's
+    name, VERSION and author (the CREDITS table's first two lines) and
+    nothing else. The SAME version the READ THIS! credits page shows, so
+    the two can never disagree. Padded to the full 80 columns: the whole
+    row is the inverted bar, as on the PC."""
+    port = CREDITS[0][0]                          # 'DOOM VBXE'
+    author = CREDITS[1][0].split(':')[-1].strip() # 'AUTHOR: W1K' -> 'W1K'
+    # 2026-09-27: + the build stamp, the one the READ THIS! credits page prints
+    text = f'{port} System Startup v{ver} by {author}  ({stamp})'
+    bar = text.center(80)
+    if len(bar) != 80:
+        sys.exit(f'  ERROR: console bar is {len(bar)} columns: {bar!r}')
+    path = os.path.join(os.path.dirname(_HERE), 'console_ver.inc')
+    with open(path, 'w', encoding='latin-1', newline='\n') as f:
+        f.write('; AUTO-GENERATED by tools/pack_menu.py -- do not edit.\n')
+        f.write(f'; The startup console bar, from pack_menu.CREDITS + VERSION'
+                f' ({stamp}).\n')
+        f.write("        dta c'%s'\n" % bar.replace("'", "''"))
+    print(f'  wrote console_ver.inc  ({text})')
+
+
+def _preview(img, path, w=SR_W, h=SR_H):
+    """the credits page as a PNG, doubled, so the layout can be judged
+    without booting three pages deep into the menu."""
     from PIL import Image
     pp = os.path.join(os.path.dirname(_HERE), 'build', 'assets', 'textures',
                       'playpal.bin')
     pal = open(pp, 'rb').read()
     im = Image.new('RGB', (w, h))
     im.putdata([tuple(pal[c * 3:c * 3 + 3]) for c in img])
-    im.resize((w * 4, h * 2), Image.NEAREST).save(path)
+    im.resize((w * 2, h * 2), Image.NEAREST).save(path)
     print(f'  credits preview -> {path}')
 
 
-def _halve(img, w, h):
-    """keep every second column, like the emit loop does"""
-    hw = (w + 1) // 2
-    out = bytearray(hw * h)
+def _rd_page(img, w, h):
+    """one READ THIS! page in the title's format: 320x200 SR at MENU_VRAM_BASE
+    with its list in the padding, 16 chunks. A smaller lump sits top-left on
+    black; the list is copied to VRAM_XDL_R whole (RD_XDL_COPY bytes)."""
+    if w > SR_W or h > SR_H:
+        sys.exit(f'  ERROR: a READ THIS! page is {w}x{h}, the reader shows '
+                 f'{SR_W}x{SR_H}')
+    page = bytearray(SR_W * SR_H)
     for ry in range(h):
-        row = img[ry * w:(ry + 1) * w:2]
-        out[ry * hw:ry * hw + len(row)] = row
-    return out
+        page[ry * SR_W:ry * SR_W + w] = img[ry * w:(ry + 1) * w]
+    page += _sr_xdl(MENU_VRAM_BASE)
+    if len(page) > SR_XDL_OFF + RD_XDL_COPY:
+        sys.exit('  ERROR: the reader list is longer than rd_pages copies')
+    page += bytes(16 * CHUNK - len(page))
+    return page
 
 # Order IS the engine's index. 0 = the M_DOOM banner, 1..6 = MainMenu[] in
 # m_menu.c's own order (m_menu.c:252-258), 7/8 = the skull. TITLEPIC is NOT a
@@ -708,7 +644,7 @@ EPI_LUMPS = ('M_EPISOD', 'M_EPI1', 'M_EPI2', 'M_EPI3')
 # mn_ld_tab row by sitting directly in front of it (mn_ld_tab is 3 bytes from
 # full, so a row of their own was never on offer).
 EPIOVL_VRAM_BASE = 0x03D000      # the picker's CODE overlay, 1 chunk
-EPI_VRAM_BASE = 0x03E000         # ...and the four patches, 2 chunks
+DOOM_VRAM_BASE = 0x03E000        # ...and M_DOOM at full width, 2 chunks
 EPI_CHUNKS = 3
 # EpiDef = { ep_end, &MainDef, EpisodeMenu, M_DrawEpisode, 48, 63, ep1 }
 EPI_X, EPI_Y = 48, 63
@@ -727,6 +663,27 @@ SKULL_TICS = 8
 SLOT_Y, SAVE_SLOTS = 54, 6
 
 
+ROW_W9, ROW_HALF = 0x80, 0x40      # a row's bank byte: the width's ninth bit,
+                                   #   and "halved, drawn zoomed 2x" (mn_sdraw)
+
+
+def _patch(wt, nm, addr):
+    """one M_* patch at DOOM's own width -> (pixels, its 7-byte row at addr).
+    The row is hud.tab's layout; widths past 255 (M_EPI1 is 263) carry their
+    ninth bit in the bank byte, which is <= 7 on a 512 KB VBXE."""
+    pat = wt.get_patch(nm)
+    if pat is None:
+        sys.exit(f'  ERROR: {nm} is not in the WAD')
+    img, w, h = _raster_full(pat)
+    left, top = wt.patch_offset(nm)
+    if w > 511 or (addr >> 16) > 7:
+        sys.exit(f'  ERROR: {nm} is {w} wide at ${addr:06X} -- the row cannot say so')
+    row = struct.pack('<HBBBbb', addr & 0xFFFF,
+                      (addr >> 16) | (ROW_W9 if w > 255 else 0),
+                      w & 0xFF, h, left, top)
+    return img, row
+
+
 def emit(wt):
     """menu.bin = the pixels; menu.tab = per lump u24 vram, u8 w, u8 h, i8 left,
     i8 top -- byte for byte the layout hud.tab uses, so the same reader works."""
@@ -742,102 +699,61 @@ def emit(wt):
     tchunks = len(blob) // CHUNK
     sizes.append(('TITLEPIC', SR_W, SR_H, len(sr)))
     sizes.append((f'  pristine', SR_W, SR_BG_H, len(bg)))
-    addr = PATCH_VRAM_BASE                        # ...then the PERMANENT stream
-    for i, nm in enumerate(MENU_LUMPS):
-        pat = wt.get_patch(nm)
-        if pat is None:
-            sys.exit(f'  ERROR: {nm} is not in the WAD')
-        w, h, cols = pat
-        left, top = wt.patch_offset(nm)
-        hw = (w + 1) // 2
-        img = bytearray(hw * h)                       # 0 = transparent
-        for cx in range(0, w, 2):
-            for (td, pix) in cols[cx]:
-                for k, c in enumerate(pix):
-                    if 0 <= td + k < h:
-                        img[(td + k) * hw + cx // 2] = c
+    addr = PATCH_VRAM_BASE                        # ...then the PERMANENT stream:
+    rowl = [None] * len(MENU_LUMPS)               #   MainMenu[] and the skulls at
+    for i, nm in enumerate(MENU_LUMPS):           #   DOOM's own width. M_DOOM does
+        if nm == 'M_DOOM':                        #   not fit beside them: it rides
+            continue                              #   the episode run (below)
+        img, row = _patch(wt, nm, addr)
         blob += img
-        row = struct.pack('<HBBBbb', addr & 0xFFFF, (addr >> 16) & 0xFF,
-                          hw, h, left // 2, top)
-        tab += row
+        rowl[i] = row
         rows[nm] = row                            # ...and keep it: the episode
-        sizes.append((nm, hw, h, len(img)))       #   picker has no menu.tab
+        sizes.append((nm, row[3], row[4], len(img)))   # picker has no menu.tab
         addr += len(img)
-    blob += bytes(-len(blob) % CHUNK)             # patches -> whole chunks too
+    if addr > PATCH_VRAM_BASE + PATCH_CHUNKS * CHUNK:
+        sys.exit('  ERROR: the menu patches are %d B, the permanent stream %d'
+                 % (addr - PATCH_VRAM_BASE, PATCH_CHUNKS * CHUNK))
+    blob += bytes(PATCH_VRAM_BASE + PATCH_CHUNKS * CHUNK - addr)
     pchunks = len(blob) // CHUNK - tchunks
     blob += bytes(CHUNK * OVL_CHUNKS)             # ...and the overlay's placeholder
 
-    # --- the READ THIS! pages, one 8-chunk page each, after the overlay ------
+    # --- the READ THIS! pages, one 16-chunk page each, after the overlay -----
     helps = help_lumps(wt)
     if not helps:
         print('  note: no READ THIS! pages in this WAD (looked for '
               + ', '.join('/'.join(s) for s in HELP_SETS) + ')')
     for nm in helps:
-        pat = wt.get_patch(nm)
-        img, w, h = _raster_full(pat)
-        half = _halve(img, w, h)
-        blob += half
-        blob += bytes(-len(blob) % CHUNK)
-        sizes.append((nm, (w + 1) // 2, h, len(half)))
+        img, w, h = _raster_full(wt.get_patch(nm))
+        blob += _rd_page(img, w, h)
+        sizes.append((nm, w, h, w * h))
     ver = _read_version()
     page3, stamp = _credits_page(wt, ver)         # ...and the credits page
-    blob += page3
-    blob += bytes(-len(blob) % CHUNK)
-    shown = ' / '.join(t.replace('V0.%s', f'V0.{ver}').replace('%s', stamp)
+    _console_version(ver, stamp)                  # ...and the SAME text for
+    blob += _rd_page(page3, SR_W, SR_H)           #   the startup console
+    shown = ' / '.join(t.replace('V%s', f'V{ver}').replace('%s', stamp)
                        for t, _y, _s in CREDITS)   # from the table, so the log
     sizes.append((f'CREDITS "{shown}"',            #   cannot drift off the page
-                  160, 200, len(page3)))
-    # --- the EPISODE menu, then the HU strips: ONE consecutive bank run and
-    #     therefore one mn_ld_tab row (menu.asm's table is 3 bytes from full).
-    #     The run starts at EPIOVL_VRAM_BASE and the strips still land on
-    #     TITLE_VRAM_BASE, because the episode chunks are exactly the gap.
+                  SR_W, SR_H, len(page3)))
+    global RD_PAGES
+    RD_PAGES = len(helps) + 1
+    # --- the EPISODE picker's overlay, then M_DOOM: ONE consecutive bank run
+    #     and therefore one mn_ld_tab row (menu.asm's table is 3 bytes from
+    #     full), at the top of the sprite arena.
     lvch = len(blob) // CHUNK
     blob += bytes(CHUNK)                          # the picker's overlay chunk,
                                                   #   filled by split_menu_ovl.py
-    etab = bytearray()
-    eaddr = EPI_VRAM_BASE
-    for nm in EPI_LUMPS + ('M_SKULL1', 'M_SKULL2'):
-        pat = wt.get_patch(nm)
-        if pat is None:
-            sys.exit(f'  ERROR: {nm} is not in the WAD')
-        w, h, cols = pat
-        left, top = wt.patch_offset(nm)
-        hw = (w + 1) // 2
-        if nm in EPI_LUMPS:                       # the skulls are already in the
-            img = bytearray(hw * h)               #   patch stream -- only their
-            for cx in range(0, w, 2):             #   ROWS are copied here, so the
-                for (td, pix) in cols[cx]:        #   picker can point hud_blit at
-                    for k, c in enumerate(pix):   #   them without menu.tab
-                        if 0 <= td + k < h:
-                            img[(td + k) * hw + cx // 2] = c
-            blob += img
-            sizes.append((nm, hw, h, len(img)))
-            a = eaddr
-            eaddr += len(img)
-            etab += struct.pack('<HBBBbb', a & 0xFFFF, (a >> 16) & 0xFF,
-                                hw, h, left // 2, top)
-        else:
-            etab += rows[nm]                      # the skull is already packed
-    if eaddr > EPI_VRAM_BASE + (EPI_CHUNKS - 1) * CHUNK:
-        sys.exit('  ERROR: the episode patches are %d B, the reserve is %d'
-                 % (eaddr - EPI_VRAM_BASE, (EPI_CHUNKS - 1) * CHUNK))
+    img, row = _patch(wt, 'M_DOOM', DOOM_VRAM_BASE)    # M_DOOM: the two chunks
+    blob += img                                   #   behind the overlay
+    rowl[MI_DOOM] = row
+    sizes.append(('M_DOOM', row[3], row[4], len(img)))
+    tab += b''.join(rowl)
     blob += bytes(-len(blob) % CHUNK)
     if len(blob) // CHUNK - lvch != EPI_CHUNKS:
         sys.exit('  ERROR: the episode run is %d chunks, EPI_CHUNKS says %d'
                  % (len(blob) // CHUNK - lvch, EPI_CHUNKS))
-    hu, tw, nstrips, hutab = _hu_strips(wt)
-    blob += hu
-    blob += bytes(-len(blob) % CHUNK)
     lvchunks = len(blob) // CHUNK - lvch
-    sizes.append((f'HU x{nstrips}', tw, TITLE_H, len(hu)))
-    # HU_TAB rides the XEX, not menu.bin: it is 3 x nstrips bytes of lo/hi/width
-    # that b1_to_ext copies into Rapidus bank $01 beside HUD_TAB (bank01.asm),
-    # where strip_blit reaches it with `lda.l`. In VRAM it would cost a chunk and
-    # a read through the MEMAC window for every message.
-    ht = os.path.join(os.path.dirname(_HERE), 'build', 'assets', 'menu')
-    open(os.path.join(ht, 'hu.tab'), 'wb').write(hutab)
-    # --- the INTERMISSION screen (tools/pack_wi.py), same deal as the strips:
-    #     map-independent, so it rides the boot stream into free VRAM. Its CODE
+    # --- the INTERMISSION screen (tools/pack_wi.py): map-independent, so it
+    #     rides the boot stream into free VRAM. Its CODE
     #     overlay is the chunk right behind the pixels -- one consecutive bank
     #     run, hence one mn_ld_tab row, which is all menu.asm has room for.
     wich = len(blob) // CHUNK
@@ -863,11 +779,25 @@ def emit(wt):
     fin_ch = len(blob) // CHUNK
     blob += fin
     blob += bytes(-len(blob) % CHUNK)
+    # ...and the EPISODE picker's patches at full width, same run: M_EPISOD and
+    # M_EPI1..3, then the skull rows the permanent stream already holds.
+    eaddr = (_wi_bank() + len(blob) // CHUNK - wich) << 12
+    global EPI_VRAM
+    EPI_VRAM = eaddr
+    etab = bytearray()
+    for nm in EPI_LUMPS:
+        img, row = _patch(wt, nm, eaddr)
+        blob += img
+        etab += row
+        sizes.append((nm, row[3] | (256 if row[2] & ROW_W9 else 0), row[4], len(img)))
+        eaddr += len(img)
+    etab += rows['M_SKULL1'] + rows['M_SKULL2']
+    blob += bytes(-len(blob) % CHUNK)
     wichunks = len(blob) // CHUNK - wich
     sizes.append(('WI intermission (+4 ovl chunks)', 160, 200, len(wi)))
     sizes.append(('finale assets (flats+font+texts)', 0, 0, len(fin)))
-    return (blob, tab, addr, sizes, tchunks, srch, bgrows, pchunks, lvch,
-            lvchunks, tw, nstrips, wich, wichunks, wi_ovl_ch, fin_ch, etab)
+    return (blob, bytes(tab), addr, sizes, tchunks, srch, bgrows, pchunks, lvch,
+            lvchunks, wich, wichunks, wi_ovl_ch, fin_ch, etab)
 
 
 def _wi_bank():
@@ -881,24 +811,24 @@ def _wi_bank():
     return int(m.group(1), 16)
 
 
-def emit_inc(path, tchunks, srch, bgrows, pchunks, lvch, lvchunks, tw, nstrips,
+def emit_inc(path, tchunks, srch, bgrows, pchunks, lvch, lvchunks,
              wich, wichunks, wi_ovl_ch, fin_ch):
-    """menu_syms.inc -- m_menu.c's geometry, halved where the port is halved."""
+    """menu_syms.inc -- m_menu.c's geometry, in DOOM's own pixels."""
     with open(path, 'w') as f:
         f.write('; AUTO-GENERATED by tools/pack_menu.py -- DO NOT EDIT.\n'
-                '; m_menu.c geometry. x values are HALVED (the port draws 160\n'
-                '; wide where DOOM draws 320); y values are DOOM\'s own.\n')
-        f.write(f'MENU_VRAM    equ ${MENU_VRAM_BASE:06X}   ; the READ THIS! page slot\n')
+                '; m_menu.c geometry in DOOM\'s own 320x200 pixels: the menu\n'
+                '; is drawn 1:1 onto an SR screen (menu.asm mn_sdraw).\n')
+        f.write(f'MENU_VRAM    equ ${MENU_VRAM_BASE:06X}   ; the READ THIS! page (320x200 SR)\n')
         f.write(f'MI_DOOM      equ {MI_DOOM}\n')
         f.write(f'MI_ITEM0     equ {MI_FIRST_ITEM}    ; MainMenu[] (m_menu.c:252)\n')
         f.write(f'MI_SKULL     equ {MI_SKULL}    ; +1 = the second blink frame\n')
         f.write(f'MENU_NITEMS  equ {N_ITEMS}\n')
-        f.write(f'MENU_X       equ {MAIN_X // 2}   ; MainDef.x {MAIN_X} halved\n')
+        f.write(f'MENU_X       equ {MAIN_X}   ; MainDef.x\n')
         f.write(f'MENU_Y       equ {MAIN_Y}\n')
         f.write(f'MENU_LINEH   equ {LINEHEIGHT}\n')
-        f.write(f'MENU_SKULLX  equ {(MAIN_X + SKULLXOFF) // 2}   ; x+SKULLXOFF, halved\n')
+        f.write(f'MENU_SKULLX  equ {MAIN_X + SKULLXOFF}   ; x + SKULLXOFF\n')
         f.write(f'MENU_SKULLY  equ {MAIN_Y - 5}   ; MainDef.y - 5 (m_menu.c:1802)\n')
-        f.write(f'MENU_DOOMX   equ {DOOM_X // 2}\n')
+        f.write(f'MENU_DOOMX   equ {DOOM_X}\n')
         f.write(f'MENU_DOOMY   equ {DOOM_Y}\n')
         f.write(f'MENU_SKTICS  equ {SKULL_TICS}   ; skullAnimCounter (m_menu.c:1839)\n')
         f.write('; --- the three streams inside menu.bin (load_menu drives them) ---\n')
@@ -918,6 +848,9 @@ def emit_inc(path, tchunks, srch, bgrows, pchunks, lvch, lvchunks, tw, nstrips,
         f.write(f'MENU_SRXDL   equ ${MENU_SR_VRAM + SR_XDL_OFF:06X}   ; its display list, in the\n'
                 '                        ; picture\'s own chunk padding\n')
         f.write(f'MENU_SRCH    equ {srch}   ; chunks of it (the pristine copy is the rest)\n')
+        f.write(f'MENU_LDXDL   equ ${MENU_SR_VRAM + LD_XDL_OFF:06X}   ; list T, the loading screen\n'
+                f'MENU_LDSPLIT equ {LD_SPLIT}   ; ...rows from here on read MENU_LDLO\n'
+                f'MENU_LDLO    equ ${LD_LO_VRAM:06X}   ; (= WIPE_START; rows before it FRAME_A)\n')
         f.write(f'MENU_SRBG    equ ${MENU_SR_BG:06X}   ; the PRISTINE copy: what mn_box puts\n'
                 '                        ; back under the cursor and what M_ClearMenu\n'
                 '                        ; restores. Same coordinates, same 320 stride.\n')
@@ -931,44 +864,41 @@ def emit_inc(path, tchunks, srch, bgrows, pchunks, lvch, lvchunks, tw, nstrips,
                 '                        ; stream of its own, into AMOVL_BANK\n')
         f.write(f'MENU_OVL_N   equ {OVL_CHUNKS}    ; overlay chunks RESERVED here in total\n'
                 '                        ; (split_menu_ovl.py checks its list against this)\n')
-        f.write('; --- READ THIS! (mn_readthis): HELP1/HELP2/credits, streamed ONE AT A\n'
-                ';     TIME into $018000 and blitted into FRAME_A like every other\n'
-                ';     160-wide thing in this port -- the reader runs on xdl.asm\'s\n'
-                ';     list A, not on the title\'s. Nothing it does touches the\n'
-                ';     picture at $020000, so coming back costs no re-read.\n')
-        f.write(f'MENU_HCHUNKS equ {_chunks(160 * SR_H)}    ; one 160x200 page\n')
+        f.write('; --- READ THIS! (menu.asm rd_pages): HELP1/HELP2/credits, streamed\n'
+                ';     ONE AT A TIME into MENU_VRAM at 320x200 SR, like the title.\n'
+                ';     The page\'s list rides its padding at MENU_HXDL and is\n'
+                ';     blitted to VRAM_XDL_R (bank 0), so showing it is XDLA1\n'
+                ';     alone. Nothing touches $020000: coming back costs no re-read.\n')
+        f.write('MENU_HCHUNKS equ 16   ; one 320x200 page + its list\n')
         f.write(f'MENU_HBANK   equ ${MENU_VRAM_BASE >> 12:02X}\n')
+        f.write(f'MENU_HXDL    equ ${MENU_VRAM_BASE + SR_XDL_OFF:06X}\n')
+        f.write(f'MENU_HXDLN   equ {RD_XDL_COPY}   ; bytes rd_pages copies (>= the list)\n')
+        f.write(f'MENU_HPAGES  equ {RD_PAGES}    ; this WAD\'s pages + the credits\n')
         f.write(f'MENU_HELP_CH equ {tchunks + pchunks + OVL_CHUNKS}   ; HELP1\'s chunk offset in menu.bin\n')
-        f.write('; --- the HU STRIPS (hu_stuff.c HU_Drawer): the nine automap\n'
-                ';     level names first, then one message per BONUS ID. One\n'
-                ';     strip each, PACKED end to end into the free VRAM at\n'
-                ';     $040000 (memory_map.inc). HU_TAB (bank01.asm) gives\n'
-                ';     the offset and width; strip_blit draws one rectangle.\n')
-        f.write(f'MENU_LVCH    equ {lvch}   ; their chunk offset in menu.bin\n')
+        f.write(f'MENU_LVCH    equ {lvch}   ; the episode run\'s chunk offset in menu.bin\n')
         f.write(f'MENU_LVCHUNKS equ {lvchunks}\n')
         w = f.write
         w('; --- the EPISODE menu (m_menu.c EpiDef / M_DrawEpisode): THREE\n')
-        w(';     chunks in FRONT of the strips, same run and so the same\n')
-        w(';     mn_ld_tab row (that table is 3 bytes from full). The picker\n')
-        w(';     CODE overlay, then the four M_EPI* patches. Both come off\n')
+        w(';     chunks, one mn_ld_tab row (that table is 3 bytes from full):\n')
+        w(';     the picker CODE overlay, then M_DOOM. Both come off\n')
         w(';     the TOP of the sprite arena (ARENA_SPR_TOP): that arena is a\n')
         w(';     bump cache with a flush-when-full, so 12 KB less of it costs\n')
         w(';     a few more flushes and nothing else -- every other region in\n')
         w(';     the VRAM map is a hard reservation.\n')
         w(f'MENU_LVBANK  equ ${EPIOVL_VRAM_BASE >> 12:02X}   ; the RUN first bank\n')
         w(f'EPIOVL_BANK  equ ${EPIOVL_VRAM_BASE >> 12:02X}   ; ...which IS the picker overlay\n')
-        w(f'EPI_VRAM     equ ${EPI_VRAM_BASE:06X}\n')
+        w(f'EPI_VRAM     equ ${EPI_VRAM:06X}   ; the M_EPI* patches, behind the finale\'s\n')
         w(f'EPI_CHUNKS   equ {EPI_CHUNKS}\n')
         w(f'EPI_N        equ {len(EPI_LUMPS) - 1}    ; items M_EPI1..3 -- M_Init drops the\n')
         w('                        ;   fourth one on `registered`\n')
         w('EPI_I_TITLE  equ 0    ; epi.tab rows: M_EPISOD, M_EPI1..3, then\n')
         w('EPI_I_ITEM0  equ 1    ;   the two skull frames\n')
         w(f'EPI_I_SKULL  equ {len(EPI_LUMPS)}\n')
-        w(f'EPI_X        equ {EPI_X // 2}   ; EpiDef.x {EPI_X} halved\n')
+        w(f'EPI_X        equ {EPI_X}   ; EpiDef.x\n')
         w(f'EPI_Y        equ {EPI_Y}\n')
-        w(f'EPI_SKULLX   equ {(EPI_X + SKULLXOFF) // 2}    ; x + SKULLXOFF, halved\n')
+        w(f'EPI_SKULLX   equ {EPI_X + SKULLXOFF}    ; x + SKULLXOFF\n')
         w(f'EPI_SKULLY   equ {EPI_Y - 5}   ; m_menu.c:1802\n')
-        w(f'EPI_TITLEX   equ {EPISOD_X // 2}   ; M_EPISOD at ({EPISOD_X},{EPISOD_Y})\n')
+        w(f'EPI_TITLEX   equ {EPISOD_X}   ; M_EPISOD at ({EPISOD_X},{EPISOD_Y})\n')
         w(f'EPI_TITLEY   equ {EPISOD_Y}\n')
         w('; the LEVEL INDEX each episode starts on, out of the build own disk\n')
         w('; order -- G_InitNew(skill, epi+1, 1).\n')
@@ -976,19 +906,9 @@ def emit_inc(path, tchunks, srch, bgrows, pchunks, lvch, lvchunks, tw, nstrips,
             _nm = 'E%dM1' % _e
             w('EPI_FIRST%d   equ %d    ; %s\n'
               % (_e, LEVEL_NAMES.index(_nm) if _nm in LEVEL_NAMES else 0, _nm))
-        f.write(f'TITLE_VRAM   equ ${TITLE_VRAM_BASE:06X}\n')
-        f.write(f'TITLE_BANK   equ ${TITLE_VRAM_BASE >> 12:02X}\n')
-        f.write(f'TITLE_W      equ {tw}   ; bytes, the WIDEST line -- a bound\n')
-        f.write('                        ;   for the callers, not a stride:\n')
-        f.write('                        ;   every strip is stored at its own\n')
-        f.write('                        ;   width -- HU_TAB (bank01.asm) says\n')
-        f.write('                        ;   where each one starts and how wide\n')
-        f.write('                        ;   it is, and strip_blit reads it\n')
-        f.write('                        ;   with lda.l\n')
         f.write(f'TITLE_H      equ {TITLE_H}\n')
         f.write('TITLE_Y      equ 159   ; hu_stuff.c HU_TITLEY = 167 - font height\n')
-        f.write(f'HU_NSTRIPS   equ {nstrips}   ; level names + messages\n')
-        f.write(f'MSG_IDX0     equ {MSG_IDX0}    ; strip index of a message = bonus id + this\n')
+        f.write(f'MSG_IDX0     equ {MSG_IDX0}    ; HU line index of a message = bonus id + this\n')
         f.write(f'MSG_N        equ {len(MESSAGES) - 1}   ; bonus ids 1..N have one\n')
         f.write('MSG_Y        equ 0    ; hu_stuff.c HU_MSGY: the top of the view\n')
         f.write('; --- the INTERMISSION (wi_stuff.c, tools/pack_wi.py): the WI\n'
@@ -1016,6 +936,7 @@ def emit_inc(path, tchunks, srch, bgrows, pchunks, lvch, lvchunks, tw, nstrips,
         f.write(f'FIN2_BANK    equ ${fin_bank - 1:02X}   ; ...stage 2\n')
         f.write(f'FIN_BANK     equ ${fin_bank:02X}   ; ...and of the resident assets\n')
         f.write(f'FIN_VRAM     equ ${fin_bank << 12:06X}\n')
+        f.write(f'MENU_RUNEND  equ ${(_wi_bank() + wichunks) << 12:06X}   ; the run ends here (strip.asm)\n')
 
 
 def main():
@@ -1034,15 +955,15 @@ def main():
         page, _ = _credits_page(wt, _read_version())
         _preview(page, os.path.join(out, 'credits.png'))
         return
-    (blob, tab, end, sizes, tchunks, srch, bgrows, pchunks, lvch, lvchunks, tw,
-     nstrips, wich, wichunks, wi_ovl_ch, fin_ch, etab) = emit(wt)
+    (blob, tab, end, sizes, tchunks, srch, bgrows, pchunks, lvch, lvchunks,
+     wich, wichunks, wi_ovl_ch, fin_ch, etab) = emit(wt)
     out = os.path.join(os.path.dirname(_HERE), 'build', 'assets', 'menu')
     os.makedirs(out, exist_ok=True)
     open(os.path.join(out, 'menu.bin'), 'wb').write(blob)
     open(os.path.join(out, 'menu.tab'), 'wb').write(tab)
     open(os.path.join(out, 'epi.tab'), 'wb').write(etab)
     emit_inc(os.path.join(os.path.dirname(_HERE), 'menu_syms.inc'), tchunks,
-             srch, bgrows, pchunks, lvch, lvchunks, tw, nstrips, wich, wichunks,
+             srch, bgrows, pchunks, lvch, lvchunks, wich, wichunks,
              wi_ovl_ch, fin_ch)
     for nm, w, h, n in sizes:
         print(f'  {nm:11} {w:3}x{h:3} = {n:6} B')

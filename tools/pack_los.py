@@ -34,7 +34,6 @@ RESOLUTION. The cell CENTRE decides the whole cell, so the sight edge can be off
 by up to 8 units against a 143-unit blast radius. A bit per world unit would be
 287x287 per barrel.
 
-Usage:  python pack_los.py [E1M1 ...]      # stats + an ASCII dump per barrel
 """
 import os
 import struct

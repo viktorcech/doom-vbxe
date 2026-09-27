@@ -2,7 +2,6 @@
 #   Boots from the ATR so the OS cold-starts cleanly (valid VIMIRQ) and the
 #   engine's SIO level streaming works. Mount the result as D1: and boot it.
 # Usage:  .\build_atr.ps1               # every level, INCREMENTAL (~3 s)
-#         .\build_atr.ps1 E1M1 E1M8     # an explicit level set
 #         .\build_atr.ps1 -Full         # re-pack every asset from the WAD
 #         .\build_atr.ps1 -Check        # + the slow gates (boot sim, _verify_*)
 #         .\build_atr.ps1 -Time         # + seconds per step
@@ -11,8 +10,10 @@
 # WHY THE SWITCHES (2026-08-11). A full run is ~42 s and 35 of them are three
 # packers that only ever read DOOM1.WAD:
 #       pack_map      18.5 s     mads (engine)      1.4 s
-#       pack_textures 16.7 s     everything else    1.7 s
+#       pack_textures  3.5 s     everything else    1.7 s
 #       check_boot     3.1 s
+# (pack_textures rides tools/cache/texruns.*.cache since 2026-09-21: ~3.5 s
+#  warm; a texruns.py or palette edit re-pays ~40 s cold, once.)
 # Editing an .asm file cannot change one byte of what those three emit, so the
 # default build reuses build/assets and rebuilds the ATR in ~3 s. They still run
 # whenever anything they READ moved -- any tools\*.py, the WAD, a missing output
@@ -54,7 +55,6 @@ $lvls = if ($Levels -and $Levels.Count) { @($Levels) } else {
 # NOTE the calls below pass $lvls, NOT @lvls. Splatting a one-element list splats
 # the STRING one CHARACTER per argument -- with a single level the packers got
 # E, 1, M, 9 and died with "map E not in WAD", so the documented
-# `.\build_atr.ps1 E1M1` never worked. Passing the array to a native command
 # unrolls it correctly for one, many or none.
 
 # THE GATES ARE SIM RUNS AND THE SIM HAS NO ANTONIA. tools/sim6502 models a
@@ -136,7 +136,7 @@ $v = 0
 if (Test-Path $vf) { try { $v = [int](Get-Content $vf -TotalCount 1) } catch { $v = 0 } }
 $v += 1
 Set-Content $vf $v -Encoding ascii
-Write-Host "build version 0.$v"
+Write-Host ("build version {0}.{1:d2}" -f [math]::Floor($v / 100), ($v % 100))
 
 # 1c-bis. the title + main menu graphics (DOOM's own M_* patches, halved like
 #         the HUD). Must run BEFORE make_atr_doom.py, which sizes MENU_SEC1 from
@@ -170,7 +170,6 @@ Lap 'menu + version'
 #  side is the two tail calls named in music.asm's header.)
 
 # 1d. the per-level blobs -- THE 35 SECONDS. These used to be run by hand and it
-#     bit: pack_things defaults to E1M1 ALONE, so a change to the things/sprite
 #     format silently left E1M2..E1M9 on the previous build's bytes. Both packers
 #     take the level list, so pass it and there is nothing to forget.
 #     ORDER MATTERS since the tex+spr pool split: pack_things derives each
@@ -225,7 +224,6 @@ if (-not $repack) {
 # (2026-08-16). The mtime test above only watches tools\*.py and tools\DOOM.WAD,
 # so a wadconv.py conversion run right after a normal build found every output
 # present and newer, skipped all three packers, and shipped THE PROJECT'S
-# E1M1 -- DOOM's geometry and DOOM's textures -- inside an ATR whose palette,
 # colormap and menu had just been rebuilt from heretic.wad. It looked like a
 # palette bug and it was a staleness bug. DOOMWAD/DOOMPWAD are what wadconv
 # sets, so putting them in the stamp makes any change of WAD a repack.
@@ -281,7 +279,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'bank $01 split failed'; exit 1 }
 # ...and the guard that replaces ert for that code: no jsr/jmp/branch into the
 # other bank, no jsl to non-code, no 16-bit operand naming a bank-$01 label.
 & $py tools\b1_check.py | Select-Object -First 6
-if ($LASTEXITCODE -ne 0) { Write-Error 'b1_check: cross-bank reference (build/b1_check.txt)'; exit 1 }
+if ($LASTEXITCODE -ne 0) { Write-Error 'b1_check: cross-bank reference (tools/tests/out/b1_check.txt)'; exit 1 }
 # 3a''. no two XEX blocks may load over each other (2026-09-14: setup_chains
 #       grew into the block at $4B9E and nothing noticed -- check_xex is off
 #       while ram_map.py is missing). B1STAGE chunks are the only allowed case.
@@ -338,12 +336,6 @@ if ($Check) {
   #   2026-08-15: the LIGHTS section had grown past TH_HPL into the AI's health
   #   table, en_init wiped E1M2's last eight thinkers, and NOTHING in the build
   #   noticed -- because every link measured correct on its own.
-  # title/msg: the HU strips (the automap's level names AND the pickup
-  #   messages) are ONE packed array behind ONE blitter, and the engine finds a
-  #   message in it by adding MSG_IDX0 to the bonus id. Nothing in the build
-  #   fails if the packer and the engine disagree about that offset -- the
-  #   wrong strip simply appears. _verify_title reads the array back out of
-  #   menu.bin, _verify_msg runs the widget on the shipped bytes (2026-08-16).
   # spectre: MF_SHADOW's three BCB bytes, and -- the reason it is a gate at all
   #   -- that spr_shadow still FITS. It sat in a block whose declared END was
   #   inside BLKTAB, so it silently overwrote en_solid's 3x3 neighbourhood and
@@ -388,7 +380,7 @@ if ($Check) {
   #   nothing in the build could say so. The test runs the shipped sw_swap on the
   #   real textab + seg bytes of every USE switch line in the set, S1 vs SR
   #   button included (2026-08-20).
-                 'title', 'msg', 'spectre', 'flinch', 'deathsnd', 'pjz',
+                 'msg', 'spectre', 'flinch', 'deathsnd', 'pjz',
   # caco: the CACODEMON's attack (2026-08-20). mk_atk was 0 for MT_HEAD, so it
   #   chased the player through thirteen levels and could never touch him --
   #   and nothing in the build says so, because a monster that does not fight
@@ -403,12 +395,16 @@ if ($Check) {
   #   `sta [zp_ptr],y` walk that never set zp_ptr+2, and the coltab run moved to
   #   bank $08 on 2026-08-21. From then on the clear wiped dead space at
   #   $08:FC00, FARENA kept the LAST level's table, and every frame id the new
-  #   level reused answered "already resident": E1M2's barrel drew E1M1's imp
   #   fireball and health potion (ids 20/109 in both), swapping on its 6-tic
   #   idle ring. arena_prefetch had the mirror of it and read its FTAB rows out
   #   of bank $01 from the second id on. Nothing in the build fails on either:
   #   both blobs are correct, both guards pass, the wrong picture just appears.
-                 'spidfire', 'missile', 'switch', 'caco', 'arena') {
+                 'spidfire', 'missile', 'switch', 'caco', 'arena',
+  # newdir: ai_newdir's order of tried directions against P_NewChaseDir.
+  # hudlt: hud_entry/bar_blit BCB bytes, lt_seg rows, update_lights rules.
+  # sr320: every 320 SR screen's list walked as VBXE walks it -- READ THIS!,
+  #   the loading screen, the finale pages, the bunny scroll and THE END.
+                 'newdir', 'hudlt', 'sr320') {
     # a missing test file is an ENVIRONMENT failure, not a test failure -- the
     # same treatment _verify_save gets below (2026-08-10: most of tools/tests
     # went missing and the E1M6 build died here instead of building)
@@ -476,4 +472,14 @@ if ($Antonia2) {
   Write-Host ('OK -> build/doom_bsp_ant2.atr  ANTONIA II ONLY, not Rapidus  ({0:N1}s)' -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
 } else {
   Write-Host ("OK -> build/doom.atr  ({0:N1}s)" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
+}
+
+# build/ holds the BUILD and nothing else -- name whatever does not belong there.
+$buildOk = '.build.lock', '.packed.stamp', 'assets', 'exe', 'b1code.bin', 'b1code.map',
+           'boot.bin', 'boot.xex', 'doom.atr', 'doom_bsp.xex', 'doom_bsp.lst', 'doom_bsp.lab',
+           'doom_bsp_ant2.atr', 'doom_bsp_ant2.xex', 'doom_test.atr', 'doom-test-level.atr'
+$stray = @(Get-ChildItem build -Force | Where-Object { $buildOk -notcontains $_.Name })
+if ($stray.Count) {
+  Write-Host ('build/ has files that do not belong there: ' +
+              (($stray | ForEach-Object { $_.Name }) -join ', ')) -ForegroundColor Yellow
 }

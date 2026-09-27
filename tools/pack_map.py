@@ -40,7 +40,6 @@ level can exist at all:
      level in the build, so MAP_VERTS/MAP_SEGS/... are the same addresses for
      every level (wolf3d does the same). What DOES vary per level -- counts, root
      node, spawn point, door/yoff/texture counts -- now comes from the header at
-     runtime instead of being an assembly-time equ baked from E1M1.
   The texture TABLE moved into the blob too (it used to be an icl'd .inc, i.e.
   one level's table hard-wired into the XEX).
 
@@ -53,10 +52,16 @@ Binary layout (little-endian). c* = the build's capacity for that section.
   --- SEG region, streamed to Rapidus bank $03 offset 0 (2026-07-31) ---
   SEGS      cg  x (u16 v1,v2, u8 front_sec, u8 back_sec($FF=one-sided),
                    u8 wall_tex, u8 low_tex)                              [8B]
-                         wall_tex: bit7=impassable, bit6=ML_DONTPEGTOP,
-                                   bits0-5=texid (0x3F=none)
-                         low_tex : bit7=EXIT line, bit6=ML_DONTPEGBOTTOM,
-                                   bits0-5=portal-lower texid (0x3F=none)
+                         wall_tex: bit7=impassable, bits0-6=texid (0x7F=none)
+                         low_tex : bit7=EXIT line,
+                                   bits0-6=portal-lower texid (0x7F=none)
+                         v1 bit15 = ML_DONTPEGTOP, v2 bit15 = ML_DONTPEGBOTTOM
+                         (2026-09-21: the texid was 6 bits, 63 textures a level,
+                         and E2M2 uses 98 -- 35 walls were drawn as SOME OTHER
+                         texture. The peg bits left the tex bytes for the one
+                         bit of a vertex index every reader already throws away:
+                         idx*4 is two 16-bit `asl`, bit 15 goes out on the first
+                         and the carry left behind is bit 14, which is 0.)
                          The two peg bits are DOOM's per-linedef texture
                          anchoring (r_segs.c R_StoreWallRange): without
                          ML_DONTPEGTOP an upper texture hangs from the BACK
@@ -105,7 +110,6 @@ to $4000, HIGH staged under the ROM, EXT and SEG staged into their Rapidus banks
 map_syms.inc is emitted from HERE (the capacities live here), not derived from a
 .bin by bin_syms.py.
 
-Usage: python pack_map.py [E1M1 ...] | --all
 """
 import collections
 import math
@@ -134,8 +138,16 @@ SECRET_EXITS = {51, 124}              # S1/W1 SECRET exit (g_game.c
                                      # bit, so _secret_sector keys them on
                                      # SEG_FRONT instead.
 
-NO_TEX = 0x3F                        # seg texid sentinel; bit6 = peg flag, bit7 = the
+NO_TEX = 0x7F                        # seg texid sentinel (7 bits); bit7 = the
                                      # per-slot flag (impassable / EXIT line)
+SEG_PEG = 0x8000                     # v1: ML_DONTPEGTOP, v2: ML_DONTPEGBOTTOM
+TEX_FLOOR = 63                       # caps.tex never goes BELOW the old 6-bit cap
+TEXTAB_LOW = 6                       # rows 0-5 (addr lo/mid/hi, wmask, h, dom) stay
+                                     # in the LOW region, read abs,x by the wall
+                                     # setup; rows 6-8 (swmate, column-index lo/hi)
+                                     # ride at the end of the EXT bank and are read
+                                     # `lda.l` -- LOW has 183 spare bytes and 98
+                                     # textures x 9 rows wanted 315
 NO_SECTOR = 0xFF                     # seg back_sec: one-sided wall
 
 # ---- the automap's side tables (bank $03; see _automap) ---------------------
@@ -318,6 +330,103 @@ def _secret_level(names, i, md):
         if f'E{e}M9' in names:
             return names.index(f'E{e}M9')
     return _next_level(names, i, md)
+
+
+# ---- P_NoiseAlert's graph (enemy_ai_look.asm snd_flood) -----------------------
+# Per node: its edges across ordinary lines, $FF, its edges across ML_SOUNDBLOCK
+# lines only, $FF. An edge = (neighbour node, my MAP_SECTORS row, its row): the
+# opening is read at runtime from those two rows, so an open door passes sound.
+# A node is a WAD sector (md.side_rawsec), NOT a merged MAP_SECTORS row; sectors
+# that can never move and touch across an open non-block line are unioned.
+SND_NODES = 255                      # node ids are bytes, $FF ends a list
+SNDADJ_MAX = 1280                    # 3 B an edge, worst level 1084 B; _sndgraph
+                                     #   asserts the fit. Every byte here is x27 in
+                                     #   the SDRAM level cache (PRE_END vs VCACHE_BANK)
+SND_THNODE = 256                     # [256] each thing's spawn node, engine-filled
+
+
+def _snd_layout(caps, base):
+    """EXT-bank offsets -> (ixl, ixh, adj, heard, q, ss, thnode, end).
+    The list addresses are lo/hi HALVES: a node id indexes both with one byte."""
+    ixl = base
+    ixh = ixl + SND_NODES
+    adj = ixh + SND_NODES
+    heard = adj + SNDADJ_MAX
+    q = heard + SND_NODES                        # the flood's work queue
+    ss = q + SND_NODES
+    thnode = ss + caps.ssect
+    return ixl, ixh, adj, heard, q, ss, thnode, thnode + SND_THNODE
+
+
+def _snd_nodes(md):
+    """-> ({raw sector: node}, [node -> MAP_SECTORS row])"""
+    raw = md.side_rawsec
+    par = {r: r for r in raw}
+
+    def find(a):
+        while par[a] != a:
+            par[a] = par[par[a]]
+            a = par[a]
+        return a
+    moves = {raw[ld.left] for ld in md.linedefs
+             if ld.special in doomspecs.MANUAL_DOOR and ld.left != NO_SIDEDEF}
+    for ld in md.linedefs:
+        if not ld.two_sided or ld.flags & 64:
+            continue
+        ra, rb = raw[ld.right], raw[ld.left]
+        A = md.sectors[md.sidedefs[ld.right].sector]
+        B = md.sectors[md.sidedefs[ld.left].sector]
+        if A.tag or B.tag or ra in moves or rb in moves:
+            continue
+        if min(A.ceil_h, B.ceil_h) > max(A.floor_h, B.floor_h):
+            par[find(ra)] = find(rb)
+    node_of, nsec, ids = {}, [], {}
+    for si, r in enumerate(raw):
+        root = find(r)
+        if root not in ids:
+            ids[root] = len(nsec)
+            nsec.append(md.sidedefs[si].sector)
+        node_of[r] = ids[root]
+    return node_of, nsec
+
+
+def _sndgraph(md, caps, base):
+    """-> the SND* tables' bytes (the engine-owned ones as zeros)."""
+    ixl_o, ixh_o, adj_o, heard_o, q_o, ss_o, th_o, end = _snd_layout(caps, base)
+    node_of, nsec = _snd_nodes(md)
+    n = len(nsec)
+    assert n < SND_NODES, f'{md.name}: {n} sound nodes do not fit a byte'
+    raw = md.side_rawsec
+    nrm = [set() for _ in range(n)]
+    blk = [set() for _ in range(n)]
+    for ld in md.linedefs:
+        if not ld.two_sided:
+            continue
+        a, b = node_of[raw[ld.right]], node_of[raw[ld.left]]
+        if a == b:
+            continue
+        ra, rb = md.sidedefs[ld.right].sector, md.sidedefs[ld.left].sector
+        t = blk if ld.flags & 64 else nrm            # ML_SOUNDBLOCK
+        t[a].add((b, ra, rb))                        # (neighbour, my row, its row)
+        t[b].add((a, rb, ra))
+    ixl, ixh, adj = bytearray(SND_NODES), bytearray(SND_NODES), bytearray()
+    for i in range(n):
+        ixl[i] = (adj_o + len(adj)) & 0xFF           # the list's own EXT offset
+        ixh[i] = (adj_o + len(adj)) >> 8
+        for lst in (nrm[i], blk[i] - nrm[i]):
+            for e in sorted(lst):
+                adj += bytes(e)
+            adj.append(0xFF)
+    assert len(adj) <= SNDADJ_MAX, f'{md.name}: sound graph {len(adj)} B > SNDADJ_MAX'
+    adj += bytes(SNDADJ_MAX - len(adj))
+    ss = bytearray()
+    for sub in md.ssectors:                          # subsector -> node, through
+        sg = md.segs[sub.first]                      #   its first seg's own side
+        ld = md.linedefs[sg.linedef]
+        ss.append(node_of[raw[ld.right if sg.side == 0 else ld.left]])
+    ss += bytes(caps.ssect - len(ss))
+    return (bytes(ixl) + bytes(ixh) + bytes(adj) + bytes(2 * SND_NODES)
+            + bytes(ss) + bytes(SND_THNODE))
 
 
 def _seg_layout(caps):
@@ -630,18 +739,20 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
         two = (bsd != NO_SIDEDEF) and (ld.flags & ML_TWOSIDED)
         back_sec = md.sidedefs[bsd].sector if two else NO_SECTOR
         wall = texid(segtex[2 * i])
+        v1, v2 = sg.v1, sg.v2
+        assert v1 < 0x4000 and v2 < 0x4000, 'vertex index runs into the peg bits'
         if ld.flags & ML_DONTPEGTOP:         # DOOM: top texture anchored at the TOP
-            wall |= 0x40                     # (else it hangs from the back ceiling)
+            v1 |= SEG_PEG                    # (else it hangs from the back ceiling)
         if ld.flags & ML_BLOCKING:
             wall |= 0x80
         low = texid(segtex[2 * i + 1])
         if ld.flags & ML_DONTPEGBOTTOM:      # DOOM: middle/lower anchored at the
-            low |= 0x40                      # BOTTOM (door tracks, step fronts)
+            v2 |= SEG_PEG                    # BOTTOM (door tracks, step fronts)
         if ld.special in EXIT_SPECIALS:      # bit7 of low_tex marks an EXIT line.
             low |= 0x80                      # Free bit: the lower step is only ever
                                              # drawn on two-sided segs and the
                                              # renderer masks it off (and #$3F).
-        seg_bytes += struct.pack('<HHBBBB', sg.v1, sg.v2, front_sec, back_sec,
+        seg_bytes += struct.pack('<HHBBBB', v1, v2, front_sec, back_sec,
                                  wall, low)
 
     vert_bytes = bytearray()
@@ -675,7 +786,6 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
     sx, sy, ang = _start(md)
     eye = _eye(md, sx, sy)
     # scroll_tex: the texid of this level's special-48 wall ($FF = none).
-    # Only one per map in episode 1 (E1M1 TEKWALL1, E1M7 BROWN96), and the
     # engine's update_scroll walks exactly one.
     # n_secret: p_spec.c:1305 counts sector special 9 at P_SpawnSpecials and
     # keeps it in totalsecret, because P_PlayerInSpecialSector CLEARS the
@@ -730,7 +840,7 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
     low = (header
            + pad(sec_bytes, SECT_SIZE, caps.sectors)
            + b''.join(pad(_textab_row(table, k), 1, caps.tex)
-                      for k in range(TEXTAB_ROWS))
+                      for k in range(TEXTAB_LOW))
            + pad(ybits, 1, (caps.segs + 7) // 8)
            + pad(yidx_lo, 1, caps.yoff)
            + pad(yidx_hi, 1, caps.yoff)
@@ -774,7 +884,10 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
         for sg in md.segs)
     ext = (pad(vert_bytes, 4, caps.verts)
            + pad(segoff_bytes, 2, caps.segs)
-           + pad(ss_bytes, SSECT_SIZE, caps.ssect))        # from HIGH, 2026-08-18
+           + pad(ss_bytes, SSECT_SIZE, caps.ssect)         # from HIGH, 2026-08-18
+           + b''.join(pad(_textab_row(table, k), 1, caps.tex)   # the COLD textab
+                      for k in range(TEXTAB_LOW, TEXTAB_ROWS)))  # rows (TEXTAB_LOW)
+    ext += _sndgraph(md, caps, 0x0100 + len(ext))   # P_NoiseAlert's graph (_snd_layout)
     # SEG region (2026-07-31): the seg records left the LOW slot for a Rapidus
     # bank of their own. They were 14,896 of the LOW region's 17,644 B and they
     # sat across $47F0-$821F -- the last big block of ordinary RAM the port had
@@ -841,7 +954,7 @@ Caps = collections.namedtuple(
 # that will not fit. Off unless DOOM_CAPS_FLOOR is set, so the project's own
 # build is bit-for-bit what it always was.
 CAPS_FLOOR = Caps(verts=1626, sectors=226, segs=2438, ssect=818, nodes=817,
-                  tex=NO_TEX, doors=44, yoff=59, lights=21, lines=1764, mtx=8)
+                  tex=TEX_FLOOR, doors=44, yoff=59, lights=21, lines=1764, mtx=8)
 
 
 def _floor_caps(caps):
@@ -868,7 +981,7 @@ def emit_map_syms(caps):
     hdr = MAP_LOAD
     sectors = hdr + HDR_SIZE
     texrow = sectors + caps.sectors * SECT_SIZE
-    ybits = texrow + caps.tex * TEXTAB_ROWS
+    ybits = texrow + caps.tex * TEXTAB_LOW
     yidxlo = ybits + (caps.segs + 7) // 8
     yidxhi = yidxlo + caps.yoff
     yval = yidxhi + caps.yoff
@@ -890,7 +1003,9 @@ def emit_map_syms(caps):
     verts = 0x0100                              # EXT: offsets INSIDE bank MAP_EXT_BANK
     segoff = verts + caps.verts * 4             # (NODES joined the SEG bank
     ssect = segoff + caps.segs * 2              #  2026-08-18 -- see _seg_layout)
-    ext_end = ssect + caps.ssect * SSECT_SIZE
+    texrow_x = ssect + caps.ssect * SSECT_SIZE  # textab rows 6-8 (TEXTAB_LOW)
+    (sndixl, sndixh, sndadj, sndheard, sndq, sndss, thnode, ext_end) = _snd_layout(
+        caps, texrow_x + caps.tex * (TEXTAB_ROWS - TEXTAB_LOW))
     # update_lights indexes the records with a BYTE (lda.l MAP_LIGHTS,x), so the
     # whole section has to stay inside one 256-byte reach.
     if caps.lights * LIGHT_SIZE > 255:
@@ -1000,9 +1115,20 @@ def emit_map_syms(caps):
          f'MAP_TEXWMASK   equ ${texrow + 3 * caps.tex:04X}',
          f'MAP_TEXH       equ ${texrow + 4 * caps.tex:04X}',
          f'MAP_TEXDOM     equ ${texrow + 5 * caps.tex:04X}',
-         f'MAP_TEXSWMATE  equ ${texrow + 6 * caps.tex:04X}',
-         f'MAP_TEXIXLO    equ ${texrow + 7 * caps.tex:04X}',
-         f'MAP_TEXIXHI    equ ${texrow + 8 * caps.tex:04X}',
+         f'MAP_TEXSWMATE  equ ${(MAP_EXT_BANK << 16) + texrow_x + 0 * caps.tex:06X}'
+         f'   ; rows 6-8: EXT bank, lda.l',
+         f'MAP_TEXIXLO    equ ${(MAP_EXT_BANK << 16) + texrow_x + 1 * caps.tex:06X}',
+         f'MAP_TEXIXHI    equ ${(MAP_EXT_BANK << 16) + texrow_x + 2 * caps.tex:06X}',
+         f'MAP_SNDIXL   equ ${(MAP_EXT_BANK << 16) + sndixl:06X}    ; [SND_NODES] P_NoiseAlert graph (enemy_ai.asm'
+         f' snd_flood): a node edge list EXT offset, lo',
+         f'MAP_SNDIXH   equ ${(MAP_EXT_BANK << 16) + sndixh:06X}    ;   ... hi. List = edges (node, my row,'
+         f' its row), $FF, block-line edges, $FF',
+         f'MAP_SNDHEARD equ ${(MAP_EXT_BANK << 16) + sndheard:06X}    ; [SND_NODES] b7 = soundtarget set,'
+         f' b0 = reached this flood; ships 0',
+         f'MAP_SNDQ     equ ${(MAP_EXT_BANK << 16) + sndq:06X}    ; [SND_NODES] the flood work queue',
+         f'MAP_SNDSS    equ ${(MAP_EXT_BANK << 16) + sndss:06X}    ; [ssect] subsector -> node',
+         f'MAP_THNODE   equ ${(MAP_EXT_BANK << 16) + thnode:06X}    ; [256] thing -> spawn node (snd_thnode)',
+         f'SND_NODES    equ {SND_NODES}',
          f'MAP_HSCRTEX    equ ${hdr + 26:04X}',
          f'MAP_DOORS    equ ${doors:04X}',
          f'MAP_DSND     equ ${dsnd:04X}      ; soundorg pairs, 4 B a door',
@@ -1125,7 +1251,6 @@ def _yoffs(md, segtex, table):
     height; a seg whose rowoffset is a whole number of tiles for every slot it
     draws is therefore invisible and is left out.
 
-    Cost on E1M1: 43 of 732 segs -> 92 B bitmap + 2 + 43*3 = 223 B, against the
     ~460 B still free in the $4000..$85FF map slot. A byte per seg (732 B) does
     not fit -- and the seg record has no spare bit left (texid needs 6 with the
     0x3F sentinel, plus impassable/EXIT and the two peg bits).
@@ -1429,6 +1554,19 @@ def _doors(md):
             sys.exit(f'pack_map: door sector {ds} does not fit a byte')
         out += struct.pack('<BBh', ds, deny[ds], oc)      # MAP_DOORS
         snd += struct.pack('<hh', sox, soy)               # MAP_DSND
+    # p_plats.c perpetualRaise (special 87): ONE more soundorg, right after the
+    # last door's -- index MAP_HNDOOR, which no door uses. movers.asm mv_psnd
+    # hands it to snd_q_door_at, so the plats thunk with the doors' distance cut
+    # and stereo instead of level-wide (SFX_PSTART/PSTOP carry no position of
+    # their own). It is the bbox centre of the whole GROUP, not one per sector:
+    # a mover slot has nowhere to keep an index, and on E2M2/E2M3 the group is
+    # one room. The count in `out` stays the DOOR count.
+    ptags = {l.tag for l in md.linedefs if l.special == 87 and l.tag}
+    pxy = [_soundorg(si) for si, sc in enumerate(md.sectors) if sc.tag in ptags]
+    if pxy:
+        xs, ys = [x for x, _ in pxy], [y for _, y in pxy]
+        snd += struct.pack('<hh', (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2)
+        assert len(snd) // 4 <= 64, 'the plat soundorg index * 4 must fit a byte'
     return out, bytes(snd), bytes(locks[ds] for ds in door_sectors)
 
 

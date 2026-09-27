@@ -1,30 +1,7 @@
-; m_episode.asm -- WHICH EPISODE? (m_menu.c EpiDef / M_Episode).
-;   NEW GAME does not start a game in DOOM: `M_NewGame` runs
-;   `M_SetupNextMenu(&EpiDef)` for every non-commercial gamemode, and the
-;   episode the player picks becomes `G_DeferedInitNew(skill, epi+1, 1)` -- map
-;   1 of that episode. This IWAD is `registered`, so `M_Init` drops the fourth
-;   entry (`EpiDef.numitems--`) and there are three.
-;
-;   WHY IT IS AN OVERLAY OF ITS OWN, and not a third mode of mn_run: the menu
-;   overlay is 1272 bytes of a 1280-byte window. Everything the picker would
-;   want to borrow -- mn_draw, mn_box, mn_press, and menu.tab itself -- lives
-;   INSIDE that window and is gone the moment another overlay is copied down.
-;   So this is a second, smaller copy of the same four helpers plus its own
-;   6-row table (tools/pack_menu.py writes epi.tab: M_EPISOD, M_EPI1..3, and
-;   the two skull frames, whose rows point back into the patch stream).
-;
-;   WHERE THE PIXELS ARE: the top 12 KB of the sprite arena (memory_map.inc
-;   ARENA_SPR_TOP). That arena is a bump cache with a flush-when-full, so it is
-;   the ONE region in the VRAM map that can give space up for a few more
-;   flushes instead of breaking something. The three chunks sit directly in
-;   front of the HU strips so the two share one mn_ld_tab row -- menu.asm's
-;   table is three bytes from full and had no room for a row of its own.
-;
-;   THE SKILL MENU IS NOT HERE. DOOM goes EpiDef -> NewDef -> M_ChooseSkill;
-;   this port ships one skill (tools/pack_things.py SKILL), so there is nothing
-;   to choose and the pick starts the game, exactly as NEW GAME did before the
-;   episode screen existed.
-
+;--------------------------------------------------------------
+; m_episode.asm -- the episode picker (m_menu.c EpiDef / M_Episode): an overlay of
+;   its own, the menu overlay's window is full.
+;--------------------------------------------------------------
         org MENU_RUN, EPIOVL_STAGE
 
 ;--------------------------------------------------------------
@@ -34,8 +11,8 @@
 ;--------------------------------------------------------------
 EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window: the picker's chunk
 .proc ep_head
- .if 1
-        ldx #1
+                                      ; 2026-09-23: pages EP_PAGES-1..1 downwards (no
+        ldx #EP_PAGES-1              ;   overlap between the window and MENU_RUN):
 ?pg     txa                          ; page X of the chunk -> page X of the run
         clc
         adc #>EPOVL_WIN
@@ -45,28 +22,16 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
     .if [>EPOVL_WIN] + [EPIOVL_MAX/256] > 255
         ert 'ep_head: >EPOVL_WIN + page carries -- put the txa/clc back'
     .endif
- .else
-        ldx #1
-?pg     txa                          ; page X of the chunk -> page X of the run
-        clc
-        adc #>EPOVL_WIN
-        sta ?src+2
-        txa
-        clc
-        adc #>MENU_RUN
-        sta ?dst+2
- .endif
         ldy #0
 ?src    lda EPOVL_WIN,y
 ?dst    sta MENU_RUN,y
         iny
         bne ?src
-        inx
-        cpx #EP_PAGES
+        dex
         bne ?pg
         lda #BANK_EN | BANK_OVERHEAD ; the BCBs live there, and every blit from
         sta VBXE_BANK_SEL            ;   here on writes one
-        ; fall through
+        ert *<>ep_main               ; fall through
 .endp
 
 ;--------------------------------------------------------------
@@ -75,7 +40,6 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
 ;   DOOM's EpiDef.lastOn is a fixed initialiser and M_SetupNextMenu copies it in.
 ;--------------------------------------------------------------
 .proc ep_main
- .if 1
         stz ep_sel
         stz ep_sk
         jsr ep_paint
@@ -84,18 +48,6 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         stz ep_arm                   ; the key that picked NEW GAME is still
                                      ;   down: it must come up before this menu
                                      ;   takes a press of its own
- .else
-        lda #0
-        sta ep_sel
-        sta ep_sk
-        jsr ep_paint
-        lda #MENU_SKTICS
-        sta ep_tic
-        lda #0
-        sta ep_arm                   ; the key that picked NEW GAME is still
-                                     ;   down: it must come up before this menu
-                                     ;   takes a press of its own
- .endif
 ?loop   jsr ep_vsync
         dec ep_tic                   ; skullAnimCounter (m_menu.c:1836-1839)
         bne ?nb
@@ -113,12 +65,7 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         bne ?loop                    ; (always)
 ?act    lda ep_arm
         beq ?loop                    ; still held: one press = one action
- .if 1
         stz ep_arm
- .else
-        lda #0
-        sta ep_arm
- .endif
         lda TRIG0
         lsr
         bcc ?sel                     ; fire = select
@@ -137,7 +84,6 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         beq ?up
         cmp #KEY_EQUALS              ; ... and its down arrow
         bne ?loop
- .if 1
 ?down   lda ep_sel
         inc @                        ; (C dies at ?mv's sta: inc, not clc/adc #1)
         cmp #EPI_N
@@ -156,28 +102,6 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         jsr snd_play_t
         jsr ep_skull
         bra ?loop
- .else
-?down   lda ep_sel
-        clc
-        adc #1
-        cmp #EPI_N
-        bcc ?mv
-        lda #0
-        beq ?mv                      ; (always) -- m_menu.c wraps both ways
-?up     lda ep_sel
-        bne ?dec
-        lda #EPI_N
-?dec    sec
-        sbc #1
-?mv     sta ep_move                  ; the cursor moved: erase, then redraw it
-        jsr ep_erase                 ;   where it now is
-        lda ep_move
-        sta ep_sel
-        ldx #SFX_PSTOP               ; m_menu.c:1651 -- the cursor's own sound
-        jsr snd_play
-        jsr ep_skull
-        jmp ?loop
- .endif
 ?back   ldx #SFX_SWTCHX              ; M_ClearMenu, and the panel closing is the
         jsr snd_play_t ;   switch coming back (m_menu.c:1681) --
                                      ;   the same sound and the same "pop ONE
@@ -198,29 +122,18 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         sta current_level
         lda mn_ing
         beq ?boot
+        jsl B1CODE_BASE+mn_tmpl_w1   ; the BCB template back to the game's
         jmp pl_restart_t ; G_InitNew in game. A TAIL jump: pl_restart
                                      ;   reloads the level THROUGH TEX_STAGE,
                                      ;   i.e. over this very code
- .if 1
 ?boot   rts                          ; ...and at BOOT the loading is menu_boot's,
                                      ;   whose `jsr mn_open` frame is what this
                                      ;   returns to (menu.asm ?ng drops mn_run's).
-                                     ;   No return value: load_level_c starts
-                                     ;   with stz/ldx and never reads A
- .else
-?boot   lda #0                       ; ...and at BOOT the loading is menu_boot's,
-        rts                          ;   whose `jsr mn_open` frame is what this
- .endif
 .endp                                ;   returns to (menu.asm ?ng drops mn_run's)
 
 ;--------------------------------------------------------------
 ; ep_paint -- M_DrawEpisode: the M_EPISOD banner and the three names, then the
 ;   cursor. Once per open; after that only the skull's box changes.
-;   THE BACKGROUND GOES DOWN FIRST. DOOM redraws the whole screen every frame,
-;   so M_SetupNextMenu(&EpiDef) wipes MainMenu[] by simply not drawing it again;
-;   this port paints a menu ONCE over the background and leaves it there, so
-;   without this the six main-menu lines stay on screen underneath the episode
-;   names (menu.png, 2026-08-18).
 ;--------------------------------------------------------------
 .proc ep_paint
         jsr ep_wipe
@@ -230,7 +143,6 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         ldx #EPI_TITLEX
         ldy #EPI_TITLEY
         jsr ep_draw
- .if 1
         stz ep_it
 ?it     lda ep_it
         asl
@@ -250,63 +162,31 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
     .if [EPI_N-1]*16 + EPI_Y > 255
         ert 'ep_paint: i*16 + EPI_Y carries -- put the clc back'
     .endif
- .else
-        lda #0
-        sta ep_it
-?it     lda ep_it
-        asl
-        asl
-        asl
-        asl                          ; i * LINEHEIGHT (16)
-        clc
-        adc #EPI_Y
-        tay
-        lda ep_it
-        clc
-        adc #EPI_I_ITEM0
-        ldx #EPI_X
-        jsr ep_draw
-        inc ep_it
-        lda ep_it
-        cmp #EPI_N
-        bcc ?it
- .endif
-        ; fall through -- the cursor goes on last
+        ert *<>ep_skull              ; fall through -- the cursor goes on last
 .endp
 
 ;--------------------------------------------------------------
 ; ep_skull -- the blinking cursor at (EPI_SKULLX, EPI_SKULLY + sel*16).
 ;--------------------------------------------------------------
 .proc ep_skull
- .if 1
         jsr ep_srow                  ; (C=0 on return: ert in ep_srow)
         tay
         lda ep_sk
         adc #EPI_I_SKULL
         ldx #EPI_SKULLX
- .else
-        jsr ep_srow
-        tay
-        lda ep_sk
-        clc
-        adc #EPI_I_SKULL
-        ldx #EPI_SKULLX
- .endif
-        ; fall through
+        ert *<>ep_draw               ; fall through
 .endp
 
 ;--------------------------------------------------------------
 ; ep_draw -- A = epi.tab row, X = column, Y = row. The 7-byte row IS hud.tab's
-;   layout, so the resident hud_blit does all of it.
+;   layout, so menu.asm's mn_sdraw does all of it: 1:1 onto the menu's SR
+;   screen, at boot and in game alike.
 ;--------------------------------------------------------------
 .proc ep_draw
-        stx ep_x
-        sty ep_y
         sta ep_i                     ; row * 7
         asl
         asl
         asl                          ; *8
- .if 1
         sec
         sbc ep_i                     ; ...-1 = *7, and 8i >= i leaves C=1: that
         adc #<[epi_tab-1]            ;   is the +1 of a 16-bit add of epi_tab-1
@@ -314,29 +194,13 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         lda #>[epi_tab-1]
         adc #0
         sta zp_ptr+1
- .else
-        sec
-        sbc ep_i                     ; ...-1 = *7
-        clc
-        adc #<epi_tab
-        sta zp_ptr
-        lda #>epi_tab
-        adc #0
-        sta zp_ptr+1
- .endif
-        ldx ep_x
-        ldy ep_y
-        lda mn_ing                   ; same split as menu.asm's mn_draw: at boot
-        bne ?lr                      ;   the picker goes into the 320-wide TITLE
-        jmp mn_sdraw_t ;   itself, in game over the frozen frame
-?lr     jmp hud_blit
+        jmp mn_sdraw_t               ; X and Y still hold the column and row
 .endp
 
 ;--------------------------------------------------------------
 ; ep_srow -- A = the cursor's screen row for the current selection.
 ;--------------------------------------------------------------
 .proc ep_srow
- .if 1
         lda ep_sel
         asl
         asl
@@ -349,142 +213,44 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         ert 'ep_srow: sel*16 + EPI_SKULLY carries -- put the clc back in ep_skull/ep_erase'
     .endif
         rts
- .else
-        lda ep_sel
-        asl
-        asl
-        asl
-        asl
-        clc
-        adc #EPI_SKULLY
-        rts
- .endif
 .endp
 
 ;--------------------------------------------------------------
-; ep_erase -- put the skull's 10x19 box back to what the BACKGROUND has there,
-;   so the cursor can blink and move without repainting the screen. Same
-;   arithmetic as menu.asm's mn_box, and the same mn_bgh: $80 sources it out of
-;   TITLEPIC at boot, 0 out of FRAME_B in game, and both are VRAM bank $01.
-;   The row is +1 because M_SKULL1/2 carry topoffset -1 and hud_blit applies it
-;   to the DRAW, so the erase has to apply it too.
+; ep_erase -- put the skull's box back to what the BACKGROUND has there, so
+;   the cursor can blink and move without repainting the screen: menu.asm's
+;   mn_sbox, 160 units across (the skull's 20 px are 11 of them at most).
 ;--------------------------------------------------------------
 .proc ep_erase
- .if 1
-        jsr ep_srow                  ; ... which leaves C=0 (its adc cannot
-        tax                          ;   carry: ert in ep_srow), and tax/inx/lda
-        inx                          ;   do not touch C -- no clc
-        ldy mn_ing                   ; BOOT: the background is the pristine
-        bne ?lr                      ;   320-wide picture, and mn_sbox takes the
-        stx mb_y                     ;   same rectangle in the same 160-wide
-        lda #EPI_SKULLX              ;   units (menu.asm PART 2b)
-        sta mb_x
-        lda #9
-        sta mb_w
-        lda #18
-        sta mb_h
-        jmp mn_sbox_t
-?lr     lda row_lo,x
-        adc #EPI_SKULLX
- .else
         jsr ep_srow
         tax
         inx
-        lda row_lo,x
-        clc
-        adc #EPI_SKULLX
- .endif
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        lda row_hi,x
-        adc #0                       ; row*160+x <= $7CA0, so this never carries
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        adc mn_bgh                   ; ... and neither does + $8000
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
- .if 1
-    .if BLT_COPY != 0
-        ert 'BLT_COPY is not 0: the stz below (and ep_wipe) store the wrong ctrl'
-    .endif
-        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY = 0, and so are the other
-        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ;   two: opaque, the destination is
-        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1   ;   bank 0 and the source pitch fits
-                                               ;   in one byte
- .else
-        lda #BLT_COPY                ; = 0, and so are the other two: opaque, the
-        sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; destination is bank 0 and the
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2    ; source pitch fits in one byte
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
- .endif
-        lda #[MENU_VRAM>>16]         ; = FRAME_B>>16: bank $01 either way
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
-        lda #SCREEN_WIDTH            ; the source is a screen-wide picture, so a
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY     ; sub-rectangle of it steps by
-        lda #1                                 ; 160, not by its own width
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda #9                       ; 10 bytes wide - 1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
+        stx mb_y
+        lda #EPI_SKULLX/2
+        sta mb_x
+        lda #10
+        sta mb_w
         lda #18                      ; 19 rows - 1
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        jmp hud_blit.hud_fire        ; hud_blit's own "wait, then start" tail
+        sta mb_h
+        jmp mn_sbox_t
 .endp
 
 ;--------------------------------------------------------------
 ; ep_wipe -- the whole background back onto the screen, so the episode screen
-;   leaves nothing behind. menu.asm's mn_wipe with the box fixed at 160x200;
-;   the source is mn_bgh's picture at the same coordinates, exactly as ep_erase.
+;   leaves nothing behind: MENU_SRBGH rows, all the picker ever draws on
+;   (pack_menu.py _sr_bg_rows checks that) and above the status bar in game.
 ;--------------------------------------------------------------
 .proc ep_wipe
- .if 1
-        lda mn_ing                   ; BOOT: the whole picture back out of the
-        bne ?lr                      ;   pristine copy. It is MENU_SRBGH rows,
-        stz mb_x                     ;   not VIEW_HEIGHT -- the copy stops where
-        stz mb_y                     ;   the episode picker's chunks start, and
-        lda #SCREEN_WIDTH-1          ;   the picker draws nothing below it
-        sta mb_w                     ;   (pack_menu.py _sr_bg_rows checks that).
+        stz mb_x
+        stz mb_y
+        lda #SCREEN_WIDTH-1
+        sta mb_w
         lda #MENU_SRBGH-1
         sta mb_h
         jmp mn_sbox_t
-?lr     stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        stz MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY (= 0: ert in ep_erase)
-        stz MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
-        stz MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
- .else
-        lda #0
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        sta MEMW+MEMW_HD_OFF+BCB_CTRL          ; BLT_COPY
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
- .endif
-        lda mn_bgh
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
-        lda #[MENU_VRAM>>16]
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
-        lda #SCREEN_WIDTH
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
-        lda #1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda #SCREEN_WIDTH-1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
- .if 1
-        lda #VIEW_HEIGHT-1           ; rows 0..167 ONLY (dracobug.txt, 2026-09-09):
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT        ;   in game the source is FRAME_B, and
-        jmp hud_blit.hud_fire                  ;   mn_freeze copies just the view into
-.endp                                          ;   it -- its rows 168-199 are whatever
-                                               ;   VRAM held, and this blit put them
-                                               ;   over the SHARED status bar (the
-                                               ;   "kaszka"). The picker never draws
-                                               ;   below row 168, so nothing is lost
-                                               ;   at the title either.
- .else
-        lda #SCREEN_HEIGHT-1
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        jmp hud_blit.hud_fire
 .endp
- .endif
+    .if MENU_SRBGH > VIEW_HEIGHT
+        ert 'ep_wipe: in game the background above VIEW_HEIGHT is the frozen view'
+    .endif
 
 ;--------------------------------------------------------------
 ; ep_press / ep_vsync / ep_quiet -- menu.asm's mn_press, mn_vsync and mn_quiet,
@@ -493,17 +259,10 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
 ;   cannot do.
 ;--------------------------------------------------------------
 .proc ep_press
- .if 1
         lda STICK0
         ora #$F0                     ; stick 1 is not ours
         inc @                        ; $FF = centred -> 0: inc IS the cmp #$FF,
         bne ?yes                     ;   and A is dead past the branch
- .else
-        lda STICK0
-        ora #$F0                     ; stick 1 is not ours
-        cmp #$FF                     ; $FF = centred
-        bne ?yes
- .endif
         lda TRIG0
         lsr                          ; bit0 = 0 while fire is held
         bcc ?yes
@@ -545,18 +304,17 @@ ep_sel  dta 0                        ; itemOn
 ep_sk   dta 0                        ; which skull frame
 ep_tic  dta 0                        ; skullAnimCounter
 ep_arm  dta 0                        ; 0 = a key is down and must come up first
- .if 1
                                      ; (ep_move: the cursor's new row rides the
                                      ;  stack across ep_erase now -- see ?mv)
- .else
-ep_move dta 0
- .endif
 ep_it   dta 0
 ep_i    dta 0
 ep_x    dta 0
 ep_y    dta 0
 
 EP_PAGES equ [* - MENU_RUN + 255] / 256
+    .if EP_PAGES < 2
+        ert 'ep_head copies pages EP_PAGES-1..1 downwards: it needs EP_PAGES >= 2'
+    .endif
     .if * > MENU_RUN + EPIOVL_MAX
         ert 'm_episode.asm outgrew EPIOVL_MAX (memory_map.inc)'
     .endif

@@ -454,7 +454,7 @@ if __name__ == '__main__':
     mp = load()
     txt = report(mp, '--procs' in sys.argv)
     print(txt)
-    out = os.path.join(ROOT, 'bench', 'code_map.txt')
+    out = os.path.join(ROOT, 'tools', 'tests', 'out', 'code_map.txt')
     with open(out, 'w', encoding='utf-8') as f:
         f.write(txt + '\n')
     print(f'\n-> {out}')

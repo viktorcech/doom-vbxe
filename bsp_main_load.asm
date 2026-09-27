@@ -1,24 +1,14 @@
-; Part of bsp_main.asm -- AUTO-SPLIT out of it 2026-08-09, assembled in place via
-; icl at the exact point the text was cut from, so every org and every block
-; guard below is unchanged (verified: build/doom_bsp.xex is byte-identical).
-;   the $8600 staging segment: the BCB templates, load_sprites/arena_init/arena_prefetch and load_things
-;==============================================================
-; BCB templates
-;   2026-08-11 pm: STAGED in TEX_STAGE (BCBT_STAGE $1302), behind the XDL list --
-;   setup_bcbs + setup_chains consume them at boot, BEFORE the first SIO stream
-;   reclaims the page (exactly xdl.asm's deal; ram_map.py STAGED carries the
-;   claim). Their old $8600 home is hud_pain's now (HUDPAIN_BASE): win2 is the
-;   right price for a per-damage-event routine, a boot-dead table was wasting it.
-;==============================================================
+;--------------------------------------------------------------
+; Part of bsp_main.asm (icl in place): the BCB templates, load_sprites,
+;   arena_init/arena_prefetch and load_things.
+;--------------------------------------------------------------
 bcbt_resume = *
         org BCBT_STAGE
 ; vline: 1 px wide, height patched, colour via XOR (AND=0)
 bcb_vline_tmpl
         dta <VRAM_BCB_FF,>VRAM_BCB_FF,[VRAM_BCB_FF>>16]   ; src addr: ONE $FF byte,
                                      ;   steps 0 -> every pixel = ($FF AND and_mask)
-                                     ;   XOR 0 = and_mask. The painter's colour is
-                                     ;   the AND byte since 2026-09-14: it sits next
-                                     ;   to HEIGHT, so one 16-bit store writes both
+                                     ;   XOR 0 = and_mask.
         dta a($0000)                 ; src stepY
         dta $00                      ; src stepX
         dta <VRAM_SCREEN             ; dst addr (patched)
@@ -77,51 +67,26 @@ bcb_spr_tmpl
 
 ; The two one-shot THINGS loaders live up here rather than in the packed $2000
 ; segment (which butts against the streamed map at $4000): they run once at boot.
- .if 1                                ; DRAC_PLAN 3a: nothing lives here any more (the
- .else                                ;   loaders are bank $01, their data segment D0)
-        org $8640
- .endif
+                                      ; DRAC_PLAN 3a: nothing lives here any more (the
 
 ;--------------------------------------------------------------
 ; load_sprites -- B1 (docs/VRAM-PLAN.md par.5): the .spr never lands in VRAM.
-;   The FIRST visit reads the slot's sectors into the staging buffer purely
-;   so read_sectors' TEE parks them in SDRAM -- the arena (spr_fget) fetches
-;   frames from there. A REVISIT skips even that: the tee already holds the
-;   file (ld_src, set by load_level_c from lvl_res).
-;   Parked at SPRLD2_BASE, below $C000 like every SIOV driver. 2026-08-17
-;   that is a win2 hole (read_sectors' old one): this is a per-PASS driver,
-;   the per-byte work is read_sectors' -- which took this proc's fast run.
 ;--------------------------------------------------------------
 sprld2_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org SPRLD2_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_sprites
         rts                          ; B2 (2026-08-18): the sprite pool rides
 .endp                                ;   the POOL region -- load_textures'
         .endseg
-                                     ;   drain streams it with the textures,
-                                     ;   so nothing per-level is sprite-shaped
-                                     ;   any more (LVL_SPRCH died with the
-                                     ;   atr_levels.inc tables). The hole this
-                                     ;   frees (SPRLD2_BASE..END) is free RAM.
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > SPRLD2_END+1
-        ert 'load_sprites outgrew SPRLD2_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                     ;   drain streams it with the textures, ...
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; arena_init -- the per-level B1 reset, chained off load_sprcol: FARENA
 ;   cleared, the arena bounds set from the level's texture chunks, the SDRAM
 ;   base of its .spr from LVL_SPRSD. zp_ptr+2 is still MAP_EXT_BANK here
 ;   (read_ext parked it).
-;   Kept in the fast run when load_sprites left it (ARINIT, 2026-08-17): the
-;   768-iteration FARENA clear is the one loader loop that did NOT move to
-;   win2.
 ;--------------------------------------------------------------
         org ARINIT_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
@@ -130,37 +95,25 @@ sprld2_resume = *
         sta ll_bank                  ;   left ll_bank there; its own block is
                                      ;   47 B and had no room to put it back
         sta zp_ptr+2                 ; ...AND THE SAME FOR zp_ptr+2 (2026-08-25).
-                                     ;   read_ext parks ll_bank in zp_ptr+2 on
-                                     ;   every pass, so the .sprcol stream leaves
-                                     ;   it on SPRCOL_BANK ($08) -- it was $01
-                                     ;   until the coltab run left bank $01
-                                     ;   (2026-08-21). The FARENA clear below is
-                                     ;   an [zp_ptr],y walk: with the stale bank
-                                     ;   it wiped 768 B of dead space at
-                                     ;   $08:FC00 and FARENA at $01:FC00 KEPT THE
-                                     ;   PREVIOUS LEVEL'S RESIDENCY. Every frame
-                                     ;   id the last level had cached then read
-                                     ;   "already in the arena" here, so
-                                     ;   arena_prefetch copied nothing and the
-                                     ;   new level drew the OLD level's pixels
-                                     ;   for that id: E1M2's barrel (frame 20/109)
-                                     ;   came out as E1M1's imp fireball and
-                                     ;   health potion (frame 20/109 THERE),
-                                     ;   flickering between the two on the
-                                     ;   barrel's own 6-tic idle ring.
         lda #<FARENA_EXT             ; FARENA is 765 B ($01:FC00-$FEFC), so three
         sta zp_ptr                   ;   pages cover it. The fourth ($FF00, the
         lda #>FARENA_EXT             ;   old TEXAR) went with the texture arena
         sta zp_ptr+1                 ;   (2026-08-14) and is free bank-$01 RAM.
-        ldx #3
-        lda #0
-        tay
+                                      ; 2026-09-22 (65816-style: a byte sweep read as words):
+        ldx #3                       ;   two bytes a store, the page step 8-bit
+        ldy #0                       ;   (a 16-bit inc would touch zp_ptr+2)
+?clp    rep #$20
+        .LONGA ON
+        lda #$0000
 ?clb    sta [zp_ptr],y
         iny
+        iny
         bne ?clb
+        sep #$20
+        .LONGA OFF
         inc zp_ptr+1
         dex
-        bne ?clb
+        bne ?clp                     ; A = 0 on the way out, as before
         sta ar_base                  ; the ONE arena: sprites at $018000, ceiling
         sta ar_bump                  ;   ARENA_SPR_TOP $03D000 (A = 0 here)
         lda #[[ARENA_SPR_BASE>>8]&$FF]
@@ -181,34 +134,20 @@ sprld2_resume = *
         sta tex_sdram+1
         lda #[LVL_TEXSD_C>>16]
         sta tex_sdram+2
-        jmp arena_prefetch           ; warm both arenas NOW (load time), so
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>arena_prefetch       ;   next byte of this segment -- fall through
 .endp                                ;   play has no first-look copy hitches
         .endseg
 
 ;--------------------------------------------------------------
 ; arena_prefetch -- fetch every sprite frame into the arena at LEVEL LOAD, in
-;   id order, until one would not fit. That is the whole difference between
-;   "smooth like the preload builds" and a copy hitch at every first sight:
-;   E1M1 and E1M2 (141/145 KB) fit the 148 KB arena, so on those two sprites
-;   never fetch in play at all. The other 25 maps do NOT -- with all three
-;   episodes packed a set is 166-537 KB (E3M9), so the warmup fills what it can
-;   and the tail stays lazy; that is by design, wadconv.py reports it as ok
-;   ("the game runs, a full bestiary tour flushes the arena"). The loop
-;   room-checks itself so it never triggers a flush. (It warmed the TEXTURE arena too until 2026-08-14; with TEX_RUNS=1
-;   painted walls read their runs straight out of SDRAM, so there has been
-;   nothing to warm there since -- see the deleted B2 arena in spr_draw.asm.)
-;   LOAD-time cost: ~150 KB through the window, ~0.1-0.3 s -- invisible next
-;   to the SIO. Parked at APREF_BASE (the slow $8000+ window: fine here).
+;   id order, until one would not fit.
 ;--------------------------------------------------------------
 apref_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org APREF_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc arena_prefetch
         stz apf_i                    ; (stz/the ora loop below buy the 4 B the
- .if 1
 ?spr    lda apf_i                    ; FTAB[id]: zp_ptr = FTAB_EXT + id*8, in A:
         asl                          ;   lo = (id<<3) & $FF, hi = >FTAB_EXT | (id>>5)
         asl                          ;   (<FTAB_EXT = 0 and id>>5 <= 7 sits in the
@@ -225,35 +164,9 @@ apref_resume = *
     .if [FTAB_EXT & $FF] != 0 || [[>FTAB_EXT] & 7] != 0
         ert 'arena_prefetch: FTAB_EXT is not $xx00 with >FTAB_EXT bits 0-2 clear -- put the adds back'
     .endif
- .else
-?spr    stz zp_ptr+1                 ;  bank store costs: $80F5 is mtx_pegf's)
-        lda apf_i                    ; FTAB[id]: zp_ptr = FTAB_EXT + id*8
-        sta zp_ptr
-        asl zp_ptr
-        rol zp_ptr+1
-        asl zp_ptr
-        rol zp_ptr+1
-        asl zp_ptr
-        rol zp_ptr+1
-        clc
-        lda zp_ptr
-        adc #<FTAB_EXT
-        sta zp_ptr
-        lda zp_ptr+1
-        adc #>FTAB_EXT
-        sta zp_ptr+1
- .endif
         lda #SPRCOL_BANK             ; 2026-08-25: the FTAB is in bank $08 and
         sta zp_ptr+2                 ;   THIS loop never said so -- it rode the
                                      ;   bank read_ext happened to leave behind.
-                                     ;   spr_fget parks zp_ptr+2 on MAP_EXT_BANK
-                                     ;   (the FARENA half), so from the SECOND
-                                     ;   id on the row was read out of bank $01
-                                     ;   at $E000 -- free SRAM. Zeros there ended
-                                     ;   the walk after one frame (the prefetch
-                                     ;   did nothing and every frame fetched
-                                     ;   lazily in play); non-zero junk would
-                                     ;   have handed spr_fcopy a junk size.
         ldy #6                       ; an all-zero entry ends the frame list
         lda #0                       ;   (bytes 0..6 -- byte 7 is the pad).
 ?z      ora [zp_ptr],y               ;   Rolled up from seven straight-line
@@ -293,12 +206,7 @@ apref_resume = *
 apf_i   dta 0
 apf_t   dta 0,0
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > APREF_END+1
-        ert 'arena_prefetch outgrew APREF_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org apref_resume
     .if * > ARINIT_END+1
         ert 'arena_init outgrew ARINIT_BASE..END (memory_map.inc)'
@@ -331,9 +239,7 @@ apf_t   dta 0,0
         lda #>THINGS_BASE
         sta ll_dst+1
         jsr read_urom
-                                     ; (the blob's header -> th_ss/th_things/th_sprtab
-                                     ;  is copied by init_level, which runs with the
-                                     ;  ROM already banked out)
+                                     ; (the blob's header -> th_ss/th_things/th_sprtab ...
         ldx #31                      ; every thing starts un-collected (bitmap,
         lda #$FF                     ;   1 bit per thing: 256 things in 32 B)
 ?al     sta THING_ALIVE,x
@@ -345,11 +251,6 @@ apf_t   dta 0,0
         ldx #8                       ;   pistol and no shells. DOOM keeps all of
         lda #0                       ;   that: G_PlayerFinishLevel drops the
 ?ps     sta PSTATE-1,x               ;   POWERS and the CARDS and nothing else.
-                                     ;   PSTATE-1 is pl_armt, the armortype: it
-                                     ;   was put there so this loop clears it for
-                                     ;   free ($0FDF..$0FE7 -- boot RAM is random
-                                     ;   and a stale type would make the first
-                                     ;   armour bonus the wrong colour)
         dex
         bpl ?ps
         sta PW_FLAGS                 ; G_PlayerReborn memsets the whole player, so
@@ -363,32 +264,34 @@ apf_t   dta 0,0
         sta PSTATE+PS_WEAPONS        ;   bit number IS the wp_* id (weapon.asm)
         lda #WP_PISTOL               ; ...and the pistol is the one in your HANDS.
         sta wp_cur                   ;   Boot ONLY: from here on wp_init keeps
-        jmp ?psdone                  ;   whatever wp_cur holds, so the weapon you
+        bra ?psdone                  ;   whatever wp_cur holds, so the weapon you
                                      ;   finish a level with carries into the next
                                      ;   one -- P_SetupPsprites, not a re-arm.
-?keysonly lda #0                     ; a new level: the keys do NOT travel
-        sta PSTATE+PS_KEYS
+                                      ; 2026-09-22 idiom: stz -- A is dead at ?psdone
+?keysonly stz PSTATE+PS_KEYS         ;   (the other way in arrives with A = WP_PISTOL,
 ?psdone jsr pw_level                 ; ...and neither do the POWERS (the backpack
                                      ;   is not one -- powerups.asm)
         lda #1                       ; a fresh level: put his FEET on the spawn
         sta pl_snap                  ;   floor instead of dropping him into it
                                      ;   from wherever the last one left pl_z
-        lda #0                       ; no mover running (RAM is random at boot --
-        sta pl_dead                  ; ...and the player is alive, with a normal
-        sta pl_keyw                  ; eye height. All three are read every frame,
-        ldx #EYE_H                   ; so random RAM at boot would sink the view
-        stx pl_vh                    ; or eat the first restart press
-        sta mv_i                     ; a stale non-zero here would either freeze
-        ldx #MV_TABEND-MV_TAB-1      ; every trigger or animate a random sector)
-?mv     sta MV_TAB,x
+                                      ; 2026-09-22 (drac030 stz): A is dead --
+        stz pl_dead                  ;   load_things2 starts with a load
+        stz pl_keyw
+        ldx #EYE_H
+        stx pl_vh
+        stz mv_i
+                                      ; 2026-09-23 BUG FIX: MV_TABEND-MV_TAB-1 = $C7 has bit 7
+        ldx #MV_TABEND-MV_TAB        ;   set, so dex/bpl stopped after ONE byte. X = n..1
+?mv     stz MV_TAB-1,x               ;   -> bytes n-1..0, dex/bne (n <= 255: ert below)
         dex
-        bpl ?mv
+        bne ?mv
+    .if MV_TABEND-MV_TAB > 255
+        ert 'load_things clears MV_TAB with an 8-bit X: it must be <= 255 bytes'
+    .endif
         jmp load_things2             ; the blob's PIECE 2 -> THINGS2_BASE, then on
 .endp                                ;   into load_dtab: still inside the SIO
         .endseg
-                                     ;   window, ROM in. Nothing between the read
-                                     ;   above and here touches ll_sec, so the
-                                     ;   second read simply continues (diskio.asm)
+                                     ;   window, ROM in.
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ps_started dta 0                     ; 0 until the boot-time PSTATE init has run
         .endseg

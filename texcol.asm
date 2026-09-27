@@ -1,41 +1,7 @@
-;==============================================================
-; texcol.asm -- TEXTURE COLUMN DE-DUPLICATION (2026-08-01).
-;   tools/pack_textures.py dedup_columns stores each DISTINCT column of a
-;   texture once and emits one byte per column saying which stored column it
-;   is. That is 14-34 % of a level's texture pixels (tools/_tex_dedup.py);
-;   E1M3, the level the 212 KB VRAM slot is cut to, goes 214,784 -> 175,312 B.
-;
-;   Nothing about the BLIT changes: a column is still exactly h bytes at
-;   base + index*h, so the tiling mask, the 8x expander and the BCB are
-;   untouched. The only new work is turning tex_x into that index, which
-;   tw_setup's wall_src/low_src do with one `lda abs,y` whose operand this
-;   file patches once per SEG.
-;
-;   WHERE THE TABLE COMES FROM. It has to be in ordinary RAM -- the 6502 reads
-;   it per column -- but giving it an ATR region of its own would mean a new
-;   per-level stride in make_atr_doom.py, a loader, and a sector budget. It
-;   rides at the FRONT of the .tex blob instead (TEXIX_MAX bytes, ahead of the
-;   pixels), and tex_getix reads those first 16 sectors a SECOND time, straight
-;   into base RAM, before load_vram streams the whole blob to VRAM.
-;
-;   NOT by reading VRAM back through the MEMAC window, which is what this did
-;   first and why the doors came out flat: writes through $9000 are what the
-;   loader has always done, but a READ back through it is a different thing on
-;   a Rapidus -- its fast-RAM shadow of $9000-$9FFF can answer instead of VBXE
-;   (Altirra's own battlescape loader re-reads defensively for exactly this,
-;   _pomocne/alt-src ... loadmap.asm:424-439). The table came back as zeros, so
-;   every column resolved to index 0 and every door drew as its first column
-;   repeated. Re-reading 2 KB off the disk per level load costs nothing
-;   measurable and cannot be wrong.
-;
-;   Blob layout (pack_textures.pack_map_textures):
-;       +0        u8  texture count
-;       +1        u8  pad
-;       +2        u16 byte offset of texid n's array, from the blob start
-;       ...       the arrays, one byte per column
-;   A flat row (h = 0) has no pixels and no array; its offset is 0 and no seg
-;   ever reaches it, because rs_wtexid/rs_ltexid are $FF for those.
-;==============================================================
+;--------------------------------------------------------------
+; texcol.asm -- texture column de-duplication: each distinct column is stored
+;   once, one index byte per column says which.
+;--------------------------------------------------------------
         org TEXIX_CODE
 
 ;--------------------------------------------------------------
@@ -77,46 +43,18 @@
     .if TEX_RUNS
         ; PAINTED walls (paint.asm): the index is NOT copied into base RAM at
         ; all -- the .tex blob it rides at the front of stays in SDRAM and the
-        ; CPU reads both the index and the runs from there. That drops
-        ; tex_getix's second disk read, frees TEXIX_MAX bytes of the scarcest
-        ; RAM in the machine, and removes the ceiling the run encoding had just
-        ; broken (E1M2's arrays 1488 -> 1904 B: the runs dedup MORE columns, so
-        ; the index VALUES change and their substring aliasing changes with
-        ; them). The answer is a 24-bit address; wall_src reads it with
-        ; absolute long, which is X-indexed on the 65816.
-        ; 2026-08-14, the EPISODE POOL: the blob is shared by all nine levels
-        ; now, so it can no longer carry a per-level offset header at its front.
-        ; The offsets moved into the map's own texture table (MAP_TEXIXLO/HI,
-        ; pack_map.py _textab_row rows 7-8), which is already streamed per level
-        ; and already indexed by texid -- so this is two absolute,x reads
-        ; instead of building a 24-bit pointer and taking an indirect read
-        ; through it, and zp_ptr is not touched at all any more (no bank byte to
-        ; hand back either).
- .if 1
+        ; CPU reads both the index and the runs from there.
         clc
-        lda MAP_TEXIXLO,x
+        lda.l MAP_TEXIXLO,x
         adc #<LVL_TEXSD_C            ; tex_sdram is arena_init's copy of THIS
         sta wt_ixl                   ;   constant (atr_levels.inc) and nothing
-        lda MAP_TEXIXHI,x            ;   else ever writes it: immediates, not
+        lda.l MAP_TEXIXHI,x            ;   else ever writes it: immediates, not
         adc #>LVL_TEXSD_C            ;   three cell reads (-6 per call)
         sta wt_ixh
         lda #[LVL_TEXSD_C>>16]
         adc #0
         sta wt_ixb
         rts
- .else
-        clc
-        lda MAP_TEXIXLO,x
-        adc tex_sdram
-        sta wt_ixl
-        lda MAP_TEXIXHI,x
-        adc tex_sdram+1
-        sta wt_ixh
-        lda tex_sdram+2
-        adc #0
-        sta wt_ixb
-        rts
- .endif
     .else
         txa
         asl                          ; the offset table is u16 per texid, and a

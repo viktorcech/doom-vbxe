@@ -4,7 +4,6 @@
 Why: a blitted texture cannot be shaded (the VBXE blitter has no lookup in its
 path -- lights.asm), so textured walls ignore the sector light. Painted spans go
 through the colormap, so they blink. And they are FASTER: measured in the
-shipped code on a real E1M1 frame (tools/_bench_spans.py), one painted span
 costs 105 cycles against 3948 for a textured wall span, so 16 painted runs per
 column is 0.43x the CPU of today's path and 79 % of the blitter budget instead
 of 203 %.
@@ -104,6 +103,19 @@ def exact_idx(pal32, rgb, a, b):
     return int(np.argmin(e))
 
 
+def exact_idx_cuts(pal32, rgb, cuts):
+    """exact_idx for EVERY [cuts[i], cuts[i+1]) segment in one numpy pass.
+    Bit-identical to calling exact_idx per segment (same dtype, same op
+    order, same first-minimum argmin tie-break) -- the per-call numpy
+    dispatch was a third of a cold pack (2026-09-26)."""
+    means = np.stack([rgb[cuts[i]:cuts[i + 1]].mean(0)
+                      for i in range(len(cuts) - 1)])
+    d = pal32.astype(np.float64)[None, :, :] - means[:, None, :]
+    e = (d * d * W).sum(-1)
+    e[:, 0] = np.inf
+    return e.argmin(1)
+
+
 def col_matrix(rgb, pal32, cube):
     """cost[a][b] for painting rows a..b-1 of one column in one colour."""
     h = len(rgb)
@@ -199,26 +211,73 @@ def _masked_runs(col_idx, pal32, cube, k):
             continue
         sub = rgb[a:b]
         _err, cuts = dp_cuts(col_matrix(sub, pal32, cube), share[(a, b, False)])
-        runs += [(cuts[i + 1] - cuts[i],
-                  exact_idx(pal32, sub, cuts[i], cuts[i + 1]))
+        idxs = exact_idx_cuts(pal32, sub, cuts)
+        runs += [(cuts[i + 1] - cuts[i], int(idxs[i]))
                  for i in range(len(cuts) - 1)]
     return runs
+
+
+# ---- the run cache SURVIVES THE PROCESS (2026-09-21) -------------------------
+# ~12,000 distinct columns over the 27 levels cost ~55 s of DP, and the build
+# paid that twice -- pack_map, then pack_textures, each in a process of its own
+# -- and again on every repack, although a column's runs depend on nothing but
+# the column, K, the masked flag, the palette and the code in THIS file. Those
+# last two are the file's signature (another WAD's palette gets a file of its
+# own); the first three are the key. So a repack recomputes what CHANGED and
+# nothing else. Delete tools/cache/texruns.*.cache to start over; a stale file cannot
+# lie, because editing this module changes the signature.
+_DISK = {}                           # {'path':..., 'dirty':...} once loaded
+
+
+def _disk_load(pal32):
+    import atexit, hashlib, os, pickle
+    here = os.path.abspath(__file__)
+    sig = hashlib.md5(open(here, 'rb').read()
+                      + np.ascontiguousarray(pal32).tobytes()).hexdigest()[:12]
+    bdir = os.path.join(os.path.dirname(here), 'cache')     # tools/cache: build/
+    os.makedirs(bdir, exist_ok=True)                        #   holds the build only
+    _DISK.update(path=os.path.join(bdir, f'texruns.{sig}.cache'), dirty=False)
+    for old in os.listdir(bdir):         # stale signatures never load again:
+        p = os.path.join(bdir, old)      #   drop them instead of hoarding
+        if (old.startswith('texruns.') and old.endswith('.cache')
+                and p != _DISK['path']):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    try:
+        with open(_DISK['path'], 'rb') as f:
+            _RUN_CACHE.update(pickle.load(f))
+    except (OSError, EOFError, pickle.UnpicklingError):
+        pass
+
+    def save():
+        if not _DISK['dirty'] or not os.path.isdir(bdir):
+            return
+        tmp = _DISK['path'] + '.tmp'
+        with open(tmp, 'wb') as f:
+            pickle.dump(_RUN_CACHE, f, protocol=pickle.HIGHEST_PROTOCOL)
+        os.replace(tmp, _DISK['path'])
+    atexit.register(save)
 
 
 def column_runs(col_idx, pal32, cube, k=DEFAULT_K, masked=False):
     """One column of palette indices -> [(rows, colour)] * k (padded with
     zero-length runs if the column is shorter than k texels)."""
     key = (bytes(bytearray(col_idx)), k, masked)
+    if not _DISK:
+        _disk_load(pal32)
     hit = _RUN_CACHE.get(key)
     if hit is not None:
         return hit
+    _DISK['dirty'] = True
     if masked:
         runs = _masked_runs(col_idx, pal32, cube, k)
     else:
         rgb = pal32[np.asarray(col_idx, dtype=np.uint8)]
         _err, cuts = dp_cuts(col_matrix(rgb, pal32, cube), k)
-        runs = [(cuts[i + 1] - cuts[i],
-                 exact_idx(pal32, rgb, cuts[i], cuts[i + 1]))
+        idxs = exact_idx_cuts(pal32, rgb, cuts)
+        runs = [(cuts[i + 1] - cuts[i], int(idxs[i]))
                 for i in range(len(cuts) - 1)]
     while len(runs) < k:
         runs.append((0, runs[-1][1] if runs else 1))
@@ -231,7 +290,10 @@ def texture_runs(cols, pal, k=DEFAULT_K, masked=False):
     """cols = [[palette index]*h] per STORED column -> (blob, painted grid).
 
     The grid is what the engine would show; callers use it to measure the error
-    against the real pixels (tools/_cmp_texflat.py draws both)."""
+    against the real pixels (tools/_cmp_texflat.py draws both).
+    (2026-09-26: a want_grid=False fast path lived here for an afternoon and
+    measurably CHANGED pool.tex although the blob writes read identical --
+    reverted whole; content stability beats two seconds of build.)"""
     pal32 = np.asarray(pal, dtype=np.int32)
     cube = nearest_cube(pal32)
     blob = bytearray()
@@ -256,7 +318,6 @@ def texture_runs(cols, pal, k=DEFAULT_K, masked=False):
 # instead of h bytes of pixels. That is what keeps the switch reversible: the
 # renderer's texture handle (base, wmask, h) means the same thing either way.
 #
-#   python tools/texruns.py [E1M1 ...] [--k 16]
 # ---------------------------------------------------------------------------
 def _main():
     import os

@@ -1,62 +1,12 @@
 ;--------------------------------------------------------------
-;
-; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
-; NOT. It carries no XEX segment, so the assembler places code there happily --
-; and then something overwrites it at runtime, before the first frame:
-;     $1000-$13FF  TEX_STAGE   -- the SIO staging buffer, every loader streams here
-;     $4000-$4BFF  map slot    -- load_level streams the level here
-;                              ($4C00-$85FF was the seg table until
-;                               2026-07-31; it is ordinary RAM now)
-;     $9000-$9FFF  MEMAC window-- writes go to VBXE, not to RAM
-;     $1400-$14FF  bsp_stack   -- rebuilt every frame ($1500+ is CODE now)
-;     $0700-$08FF  ATR boot loader, alive WHILE the XEX loads
-; There is no error message. The symptom is a flat pink screen at boot. It has
-; already cost one debugging session ($A800 blit segment crept past $B000).
-;
-; When a segment runs out of room, move a whole .proc out with `org` + absolute
-; jsr -- that is why collision sits at $0900, check_bbox at $1B00 and tw_setup at
-; $8D00 -- instead of letting the segment creep into the next thing.
-;
-; Guards, all three wired into build.ps1 / build_atr.ps1:
-;   * the RESERVED list in tools/ram_map.py (check_xex.py enforces it)
-;   * tools/check_xex.py                    (fails the build on any overlap)
-;   * tools/ram_map.py --update             (regenerates these figures)
+; doors.asm -- part of renderer.asm (icl in place): DR doors, USE and switches.
+;   MAP_DOORS = 4 B {u8 sector, u8 deny, i16 open_ceil}; MAP_DSND, MAP_DOORLOCK parallel.
 ;--------------------------------------------------------------
-; AUTO-SPLIT from renderer.asm -- assembled in place via icl (org wrap stays in renderer.asm).
-
-;==============================================================
-; DOORS (M6) -- DR open/wait/close. Static config in MAP_DOORS (.bin); runtime
-; state in DOOR_* RAM. The engine animates MAP_SECTORS[door_sec].ceil between
-; closed (=sector floor) and open (=MAP_DOORS open_ceil); the renderer + collision
-; pick up the changing ceiling automatically. (In the $1B00 relocation block.)
-;   MAP_DOORS layout: n in the header (MAP_HNDOOR); records are 4 B each:
-;   u8 sector_id, u8 deny_sector ($FF = none), i16 open_ceil.
-;   MAP_DSND: a parallel 4 B record -- i16 soundorg_x, i16 soundorg_y (the sector
-;   bbox centre, P_GroupLines-style; snd_q_door_at attenuates by distance to it).
-;   It is a SEPARATE table and not bytes +4..+7 of the door record because both
-;   readers index with `txa / asl.. / tay`: at 8 B a stride, door 32 and up sends
-;   Y past 255 and the record read wraps to the wrong door. Four bytes reaches 63.
-;   MAP_DOORLOCK: a parallel byte per record -- bits0-2 = the PS_KEYS bit the
-;   door needs (0 = unlocked), bit7 = D1 opens-once-stays-open (use_door_go).
-;
-; SPEED: every derived quantity (the &MAP_SECTORS[sec] pointer, open_ceil, the
-; sector id) used to be recomputed from the .bin on every frame -- a x8 multiply
-; by shifts, twice per moving door, plus a x4 record index. They are constants
-; for the whole level, so init_doors hoists them into DOOR_SECL/OPNL/SIDL once
-; and the per-frame path is pure table reads. DOOR_NACT then lets update_doors
-; return on a single load in the (overwhelmingly common) all-doors-closed case.
-;--------------------------------------------------------------
-; m_x4 / m_x8 -- m_prod = m_a * 4 (or * 8), the index-to-byte-offset scale in
-;   front of every MAP_* table lookup. It was written out seven times (three
-;   times *4, four times *8) in collision.asm and doors.asm: 114 B of the same
-;   six shifts. Exact substitution -- `rts` leaves A and the flags alone, so a
-;   caller still gets m_prod's high byte in A and the last `rol`'s flags.
-;   Homed HERE and not in collision.asm because collision's two blocks are the
-;   ones that needed the bytes back.
+; m_x4 / m_x8 -- m_prod = m_a * 4 (* 8): the index scale in front of the MAP_*
+;   table lookups. A and the flags come back as the last shift left them.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc m_x4
- .if 1
 	rep #$20
 	.LONGA ON
 	lda m_a
@@ -65,23 +15,12 @@
 	sta m_prod
 	sep #$20
 	.LONGA OFF
- .else
-        lda m_a
-        asl
-        sta m_prod
-        lda m_a+1
-        rol
-        sta m_prod+1
-        asl m_prod
-        rol m_prod+1
- .endif
         rts
 .endp
         .endseg
 
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc m_x8
- .if 1
 	rep #$20
 	.LONGA ON
 	lda m_a
@@ -91,11 +30,6 @@
 	sta m_prod
 	sep #$20
 	.LONGA OFF
- .else
-        jsr m_x4
-        asl m_prod
-        rol m_prod+1
- .endif
         rts
 .endp
         .endseg
@@ -167,18 +101,10 @@ di_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc init_doors
- .if 1
         stz DOOR_TRIGPREV
         stz DOOR_NACT                ; nothing animating yet
         stz btn_timer                ; no SR button mid-flip from the old level
         stz face_t                   ; face picks on the first frame
- .else
-        lda #0                       ; USE not pressed (so first press is a rising edge)
-        sta DOOR_TRIGPREV
-        sta DOOR_NACT                ; nothing animating yet
-        sta btn_timer                ; no SR button mid-flip from the old level
-        sta face_t                   ; face picks on the first frame
- .endif
         lda #1                       ; paint the shared bar once
         sta hud_dirty                ;   (w3d hud_dirty model -- see hud.asm)
         lda #HUD_FACE
@@ -195,12 +121,7 @@ di_resume = *
         lda MAP_DOORS,y              ; sector id -> DOOR_SIDL (+ m_a for the maths)
         sta.l DOOR_SIDL,x
         sta m_a
- .if 1
         stz m_a+1
- .else
-        lda #0
-        sta m_a+1
- .endif
         lda MAP_DOORS+1,y            ; the byte the sector id's high half left:
         sta.l DOOR_DENY,x            ;   the face USE is refused from (use_leaf)
         lda MAP_DOORS+2,y            ; open_ceil -> DOOR_OPNL/H
@@ -238,16 +159,6 @@ di_resume = *
 
 ;--------------------------------------------------------------
 ; update_doors -- advance every door by the TIME the last frame took.
-;   DOOM's T_VerticalDoor runs on 35 Hz tics: VDOORSPEED = 2 units/tic and
-;   VDOORWAIT = 150 tics. The port's frame rate is neither fixed nor 35 Hz, so
-;   the move is scaled by the VBLANKs elapsed since the previous frame
-;   (DOOR_SPEED_Q8 = 1.4 units per PAL VBLANK, Q8) and the dwell counts VBLANKs.
-;   Q8 leftovers are kept per door in DOOR_FRAC, so slow frames do not round the
-;   fractional 0.4 away.
-;   A closing door also honours T_MovePlane's `crushed` result (p_floor.c): if the
-;   player is standing in this door's sector and the step would leave less than
-;   PLAYER_H of opening, the ceiling stays put and the door goes back UP, exactly
-;   like p_doors.c:151-165 for a `normal` door.
 ;--------------------------------------------------------------
 ;--------------------------------------------------------------
 ; frame_dt -- dt_vbl = VBLANKs the previous frame took (1..DOOR_DTMAX). Called once
@@ -257,16 +168,17 @@ di_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc frame_dt
-        lda RTCLOK3                  ; RTCLOK3 wraps at 256 -- so does the subtract,
-        sec                          ;   so only a frame longer than 5 s confuses it
-        sbc fps_last
-        bne ?dt
-        lda #1                       ; same jiffy (very fast frame) -> count 1
+                                      ; 2026-09-22: THE FPS CAP. A frame may not start
+?wt     lda RTCLOK3                  ;   before FPS_MINVB VBLANKs have passed since the
+        sec                          ;   last one: 2 on PAL (312 lines, 49.86 Hz --
+        sbc fps_last                 ;   alt-src antic.cpp) = 25 fps at most. Flat
+        cmp #FPS_MINVB               ;   walls ('T') ran past 50 and everything the
+        bcc ?wt                      ;   frame paces ran with it. RTCLOK3 is rom_nmi's
+                                     ;   (underrom.asm), zero page: a fast-RAM spin
 ?dt     cmp #DOOR_DTMAX+1            ; a load hitch must not fling a door open
         bcc ?ok
         lda #DOOR_DTMAX
 ?ok     sta dt_vbl
- .if 1
         tax                          ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
         lda RTCLOK3                  ;   frame: update_movers doubles it (PLATSPEED*4)
         sta fps_last                 ;   and update_doors uses it as it is. A TABLE
@@ -274,30 +186,11 @@ di_resume = *
         sta DOOR_STEP                ;   D0 below) for the product umul16 computed
         lda dsq_lo,x                 ;   at ~90 cycles a frame
         sta DOOR_FADD
- .else
-        lda RTCLOK3
-        sta fps_last
-        lda dt_vbl                    ; DOOR_STEP/DOOR_FADD = SPEED_Q8 * dvb, once per
-        sta m_a                      ;   frame: update_movers doubles it (PLATSPEED*4)
- .if 1
-	stz m_a+1
- .else
-        lda #0                       ;   and update_doors uses it as it is
-        sta m_a+1
- .endif
-        lda #<DOOR_SPEED_Q8
-        sta m_b
-        lda #>DOOR_SPEED_Q8
-        sta m_b+1
-        jsr umul16
-        lda m_prod+1
-        sta DOOR_STEP
-        lda m_prod
-        sta DOOR_FADD
- .endif
-        jmp plr_steps                ; + the player's speed/turn for this frame
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>plr_steps            ;   next byte of this segment -- fall through
 .endp
         .endseg
+FPS_MINVB   equ 2                    ; frame_dt's cap: VBLANKs per frame at least
         .segment D0                  ; frame_dt's dt_vbl * DOOR_SPEED_Q8 table
 dsq_lo  .rept DOOR_DTMAX+1, #
         dta <[#*DOOR_SPEED_Q8]
@@ -312,12 +205,7 @@ dsq_hi  .rept DOOR_DTMAX+1, #
 
 ;--------------------------------------------------------------
 ; plr_steps -- PLR_STEP/TRN_STEP for this frame: the ORIGINAL fixed per-frame
-;   amounts (SPD=24 units, TURN=3 BAM). The PSPD_Q8*dt_vbl time scaling of
-;   2026-07-28 was reverted the same day: at the real frame rates it moved and
-;   turned several times faster than the fixed step ever did (unplayable), and
-;   move_player's halfway collision probe assumes a step <= 24 anyway.
-;   Still frame_dt's tail, so doors/lifts keep their own dt_vbl scaling.
-;   Parked in the $FBC0 hole: the doors block is full.
+;   amounts (SPD=24 units, TURN=3 BAM).
 ;--------------------------------------------------------------
 plrs_resume = *
         org PSTEP_BASE
@@ -325,19 +213,7 @@ plrs_resume = *
 .proc plr_steps
         lda #SPD
         sta PLR_STEP
-        ; --- THE SLOW TURN (g_game.c G_BuildTiccmd). DOOM keeps `turnheld`, the
-        ;     number of tics a turn key has been down, and turns at angleturn[2]
-        ;     -- HALF speed -- while it is under SLOWTURNTICS. Those 6 tics are
-        ;     0.17 s, which is about ONE frame at this port's rate, so the port's
-        ;     version is "the first frame of a press turns slowly". That frame
-        ;     steps ONE BAM: the whole point of it is aiming, and 1 BAM is the
-        ;     finest angle an 8-bit BAM can express (memory_map.inc TURN_SLOW).
-        ;     Tap the stick to walk the crosshair one BAM at a time; hold it and
-        ;     the normal 3.75 BAM/frame takes over from the second frame.
-        ;     NOTE the phasing: read_input consumes TRN_STEP at the TOP of the
-        ;     next frame, so what is decided here is the step the NEXT frame will
-        ;     turn by. "No turn key down now" therefore ARMS the slow step for a
-        ;     press that has not started yet. ---
+        ; --- THE SLOW TURN (g_game.c G_BuildTiccmd).
         ldx #0                       ; the turnheld to store back
         lda stick_save               ; bit 2 = left, bit 3 = right, 0 = pressed;
         and #$0C                     ;   $0C = neither -> turnheld = 0, exactly
@@ -348,8 +224,7 @@ plrs_resume = *
         inx                          ; turnheld = 1 -> full speed from here on
         ; --- TURN = TURN + TURN_FADD/256 BAM per frame, carried as a Q8 fraction
         ;     so the sub-BAM part is not lost (the DOOR_STEP/DOOR_FADD pattern
-        ;     right above). Still PER FRAME, i.e. still frame-rate dependent --
-        ;     deliberately; the rate and the one knob are in memory_map.inc. ---
+        ;     right above).
 ?full   stx trn_held
         lda trn_acc
         clc
@@ -358,11 +233,7 @@ plrs_resume = *
         lda #TURN
         adc #0                       ; the fraction's carry -> a 4-BAM frame
         sta TRN_STEP
- .if 1
 	bra ?run
- .else
-        jmp ?run
- .endif
 ?arm    stx trn_held                 ; nothing held -> turnheld = 0 (X is 0) and
         lda #TURN_SLOW               ;   the next press starts with ONE BAM
         sta TRN_STEP                 ; (trn_acc is left alone: a whole-BAM step
@@ -381,15 +252,15 @@ plrs_resume = *
 ; skipx_ref -- move_player's between-axes cur_floor refresh. Grounded: a
 ;   committed X step may have raised the player (stairs), so the Y step-up is
 ;   measured from where he ACTUALLY stands now (matches gui pos_ok, which
-;   probes floor_at(px,py) live). Airborne: the reference is his FEET and a
-;   horizontal step never moves them -- keep what pl_airmove set. Parked in
-;   plr_steps' block: it outgrew the FALL block (bsp_main_player.asm).
+;   probes floor_at(px,py) live).
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc skipx_ref
         lda pl_air
         bne ?out
         jsr locate_floor
+                                    ; 2026-09-22 (65816-windows): locate_floor returns 16-bit
+        sep #$20
         lda loc_floor
         sta cur_floor
         lda loc_floor+1
@@ -433,13 +304,7 @@ plrs_resume = *
         cmp #1
         beq ?opening
         cmp #2
- .if 1
 	jeq ?dwell
- .else
-        bne ?closing
-        jmp ?dwell                   ; (out of branch range past the crush test)
-?closing
- .endif
         ; --- closing: new = cur - delta; floor clamp, then the crush test ---
         sec
         lda.l DOOR_CURLO,x
@@ -448,7 +313,6 @@ plrs_resume = *
         lda.l DOOR_CURHI,x
         sbc #0
         sta m_ma+1
- .if 1
 	rep #$20
 	.LONGA ON
 	sec
@@ -458,19 +322,6 @@ plrs_resume = *
 	sep #$20
 	.LONGA OFF
 	bmi ?shut
- .else
-        ldy #0                       ; floor @ sector+0
-        sec
-        lda m_ma
-        sbc (zp_ptr),y
-        sta m_a
-        iny
-        lda m_ma+1
-        sbc (zp_ptr),y               ; new - floor <= 0 ? -> reached closed
-        sta m_a+1
-        bmi ?shut
-        ora m_a
- .endif
         beq ?shut
 
         lda m_a+1                    ; opening >= 256 -> everything under this
@@ -481,9 +332,9 @@ plrs_resume = *
         cpx DOOR_PLR                 ; ...it does not. The player under it?
         bne ?crmon
         jsr door_crush               ; a normal door goes back up and stops here;
-        bcs ?crmon                   ;   a CRUSHER hurts him instead, and the
-        jsr crush_things             ;   fast one keeps coming down
-        jmp ?next                    ; (cur untouched -> nothing to write)
+        bcs ?crmon                   ;   a CRUSHER hurts him instead and keeps
+        jsr crush_things             ;   coming down (at CEILSPEED/8 if slow)
+        bra ?next                    ; (cur untouched -> nothing to write)
 
 ?crmon  jsr crush_things             ; P_ChangeSector: the MONSTERS under it too
 ?move   lda m_ma
@@ -493,20 +344,11 @@ plrs_resume = *
         jmp ?writ
 
 ?shut
- .if 1
 	lda (zp_ptr)
         sta.l DOOR_CURLO,x
 	ldy #1	
         lda (zp_ptr),y
         sta.l DOOR_CURHI,x
- .else
-	ldy #0
-        lda (zp_ptr),y
-        sta.l DOOR_CURLO,x
-        iny
-        lda (zp_ptr),y
-        sta.l DOOR_CURHI,x
- .endif
 ;       ldy #1                       ; a CRUSHER turns straight round and rises
         lda #0                       ; a door PARKS shut: one less to scan next
         jsr door_end                 ;   frame (door_end gives DOOR_NACT back)
@@ -520,14 +362,8 @@ plrs_resume = *
         lda.l DOOR_CURHI,x
         adc #0
         sta.l DOOR_CURHI,x
- .if 1
         lda.l DOOR_CURLO,x
         cmp.l DOOR_OPNL,x
- .else
-        sec
-        lda.l DOOR_CURLO,x
-        sbc.l DOOR_OPNL,x
- .endif
         lda.l DOOR_CURHI,x
         sbc.l DOOR_OPNH,x
         bmi ?writ                    ; cur < open -> keep rising
@@ -538,7 +374,7 @@ plrs_resume = *
         ldy #3                       ; a CRUSHER reverses at the top instead --
         lda #2                       ;   no dwell, and DOOR_WAIT keeps its speed
         jsr door_end                 ;   class (p_ceilng.c T_MoveCeiling case 1)
-        jmp ?writ
+        bra ?writ
 
 ?dwell  lda.l DOORSTAY,x             ; a switch parked this door OPEN (103/2 --
         bne ?writ                    ;   p_doors.c case open: thinker removed)
@@ -565,14 +401,7 @@ plrs_resume = *
 ;--------------------------------------------------------------
 ; door_at_point -- descend to the subsector at (zp_px,zp_py); return A = index of
 ;   the door whose sector CONTAINS the point (the subsector's own front sector is in
-;   MAP_DOORS), or $FF if none. Only "inside the door sector" counts -- NOT merely
-;   bordering one -- so the ray-walk in try_use triggers the door it actually enters,
-;   not a far door that just happens to wall the player's current (large) subsector.
-;
-;   A subsector is convex and belongs to ONE sector, so every one of its segs
-;   carries the same front_sec: the old loop over all n_segs asked the same
-;   question up to a dozen times per probe (and try_use fires 16 probes on one
-;   frame). Read seg 0 and answer.
+;   MAP_DOORS), or $FF if none.
 ;--------------------------------------------------------------
 ;--------------------------------------------------------------
 ; use_locate -- descend the BSP from the root to the leaf containing
@@ -584,45 +413,18 @@ ul_resume = *
         org USELOC_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_locate
-        lda MAP_HROOT                 ; root node index (map header, per level)
+                                      ; 2026-09-26: 16-bit descent through node_side
+        rep #$20                     ;   (renderer.asm: calc_nodeptr + point_on_side
+        .LONGA ON                    ;   fused, Y = the child's offset)
+        lda MAP_HROOT                ; root node index (map header, per level)
         sta zp_nid
-        lda MAP_HROOT+1
-        sta zp_nid+1
-?w      lda zp_nid+1
- .if 1
-	bmi ?leaf
- .else
-        and #$80
-        bne ?leaf
- .endif
-        jsr calc_nodeptr
-        jsr point_on_side
-        bne ?lft
-        ldy #8
- .if 1
-	bra ?ds
- .else
-        bne ?ds
- .endif
-?lft    ldy #10
-?ds
- .if 1
-	rep #$20
-	.LONGA ON
-	lda [zp_nodeptr],y
-        sta zp_nid
-	sep #$20
-	.LONGA OFF
-	bra ?w	
- .else
-	lda [zp_nodeptr],y
-        sta zp_nid
-        iny
+?w      bmi ?leaf
+        jsr node_side
         lda [zp_nodeptr],y
-        sta zp_nid+1
-        jmp ?w
- .endif
-?leaf   rts
+        sta zp_nid
+        bra ?w
+?leaf   rts                          ; returns 16-BIT with A = zp_nid: every caller
+        .LONGA OFF                   ;   went `rep #$20 / lda zp_nid` next (2026-09-26)
 .endp
         .endseg
     .if * > USELOC_END+1
@@ -635,17 +437,11 @@ ul_resume = *
 ;     exactly where SQ2H_UROM wanted to live. All four fire once per USE
 ;     press, so win2 prices them at nothing (DAPUSE_BASE, 2026-08-31).
 dap_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org DAPUSE_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_at_point
         jsr use_locate
- .if 1
-	rep #$20
-	.LONGA ON
-	lda zp_nid
+	.LONGA ON                    ; (2026-09-26: use_locate returns 16-bit, A = zp_nid)
 	asl
 	asl
 ;	clc
@@ -674,50 +470,6 @@ dap_resume = *
 	.LONGA OFF
 	lda #$ff
 	rts
- .else
-        lda zp_nid                   ; ssptr = MAP_SSECT + (nid&7FFF)*4
-        sta m_a
-        lda zp_nid+1
-        and #$7F
-        sta m_a+1
-        jsr m_x4
-        clc
-        lda m_prod
-        adc #<MAP_SSECT
-        sta zp_ptr
-        lda m_prod+1
-        adc #>MAP_SSECT
-        sta zp_ptr+1
-
-        ldy #2                       ; n_segs == 0 -> nothing to read, no door
-        lda [zp_ptr],y
-        iny
-        ora [zp_ptr],y
-        beq ?none
-
-        ldy #0                       ; first seg index
-        lda [zp_ptr],y
-        sta m_a
-        iny
-        lda [zp_ptr],y
-        sta m_a+1
-        jsr m_x8                     ; zp_sptr = MAP_SEGS + first*SEG_SIZE
-        clc
-        lda m_prod
-        adc #<MAP_SEGS
-        sta zp_sptr
-        lda m_prod+1
-        adc #>MAP_SEGS
-        sta zp_sptr+1
-        ldy #SEG_FRONT               ; front_sec: the sector this subsector IS
-        lda [zp_sptr],y
-        sta m_a
-        lda #0
-        sta m_a+1
-        jmp door_index_of            ; tail call -> A = door index, or $FF
-?none   lda #$FF
-        rts
- .endif
 .endp
         .endseg
 
@@ -727,21 +479,11 @@ dap_resume = *
 ; use_leaf -- test every seg of the subsector in zp_nid against the USE ray.
 ;   OUT: A = door index if a crossed seg is a door line ($FF = none),
 ;        USE_BLK = 1 if a crossed seg blocks the ray.
-;   This is DOOM's PTR_UseTraverse over the linedefs the ray crosses:
-;     * a SPECIAL line never blocks and activates its door -- the .bin has no
-;       linedef specials, so the stand-in is "two-sided seg with a door sector on
-;       either side" (exact on E1M1: no two-sided non-special line touches one);
-;     * any other crossed line stops the ray if it is one-sided, or if its
-;       opening is <= 0 (P_LineOpening) -- "can't use through a wall".
-;   A door is reported immediately (specials win); blocking is only reported
-;   after the whole leaf, so a door line in the same leaf still wins.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_leaf
         jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
-                                     ;   (the body is parked in the POWER block:
-                                     ;    this one was full to four bytes, which
-                                     ;    is what lifting it out bought back)
+                                     ;   (the body is parked in the POWER block: ...
 ?loop   lda zp_segcnt
         ora zp_segcnt+1
         beq ?none
@@ -765,30 +507,11 @@ dap_resume = *
 ?noexit                              ;   exit_level AND wi.asm both read MAP_HNEXT,
                                      ;   and the map slot is untouched until
                                      ;   exit_level streams the next level.
-                                     ;   Before this, pack_map gave a map with a
-                                     ;   secret exit ONE next_level (its M9) for
-                                     ;   BOTH doors, so finishing E1M3 the normal
-                                     ;   way landed in E1M9 instead of E1M4.
         jsr switch_match             ; THE LINE'S OWN SPECIAL COMES FIRST. p_map.c
         bcs ?fired                   ;   :1099 PTR_UseTraverse tests
                                      ;   line->special and goes straight to
                                      ;   P_UseSpecialLine; what stands BEHIND the
-                                     ;   line never enters into it. This test used
-                                     ;   to sit AFTER the door one below, which
-                                     ;   holds until the switch sits on the very
-                                     ;   door it opens -- E2M1's ld288 (special 29,
-                                     ;   tag 19) is the WEST FACE of door sector
-                                     ;   35, so door_index_of answered "door" and
-                                     ;   returned before switch_match ever saw the
-                                     ;   seg. That door is remote-only, so
-                                     ;   use_door_go's bit5 only said "oof": the
-                                     ;   skull switch next to the platform one did
-                                     ;   nothing at all (2026-08-19, (776,-1031)).
-                                     ;   46 switch faces in E1-E3 are shaped like
-                                     ;   this; the ones on an unlocked door that
-                                     ;   also has a PUSH line came open anyway,
-                                     ;   through the DR toggle, which is why only
-                                     ;   the remote-only ones ever looked broken.
+                                     ;   line never enters into it.
         ldy #SEG_BACK                ; back_sec: none -> one-sided wall -> blocks
         lda [zp_sptr],y
         sta m_a
@@ -805,17 +528,12 @@ dap_resume = *
         txa                          ;   and only says "oof". pack_map names that
         rts                          ;   face's sector in DOOR_DENY, because a seg
                                      ;   cannot tell the two faces apart: BOTH
-                                     ;   have the door as their back sector. This
-                                     ;   used to open either way (and from INSIDE
-                                     ;   the doorway, which DOOM refuses too) --
-                                     ;   E1M2's secret door came open from the
-                                     ;   wrong room, 2026-08-11
+                                     ;   have the door as their back sector.
 ?plain  jsr use_shut                 ; not a switch face: does its opening block?
         beq ?next
 ?block  lda #1
         sta USE_BLK
 ?next
- .if 1
 	rep #$21
 	.LONGA ON
 	lda zp_sptr
@@ -824,20 +542,7 @@ dap_resume = *
 	dec zp_segcnt
 	sep #$20
 	.LONGA OFF
- .else
-	clc
-        lda zp_sptr
-        adc #SEG_SIZE
-        sta zp_sptr
-        lda zp_sptr+1
-        adc #0
-        sta zp_sptr+1
-        lda zp_segcnt
-        bne ?dec
-        dec zp_segcnt+1
-?dec    dec zp_segcnt
- .endif
-        jmp ?loop
+        bra ?loop
 ?none   lda #$FF
         rts
 ?fired  lda #$FE                     ; a switch fired (its sound is queued):
@@ -849,15 +554,10 @@ dap_resume = *
 ;--------------------------------------------------------------
 ; use_sample -- A = distance n along the player's facing (0..USERANGE);
 ;   OUT: zp_px/zp_py = USE_PT_A + n*(cos,sin) -- where DOOM's trace would be.
-;   Every sample is derived from the ORIGIN, never from the previous sample: the
-;   truncated 4-unit step is only 3.16 units long at 22.5 deg, and repeating it 16
-;   times left the ray 14 units short of USERANGE -- 1.8 % of the sweep in
-;   tools/_verify_useray.py missed a door DOOM opens (97.9 % vs 99.6 %).
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc use_sample
         sta m_ma                     ; keep n (smul_14 eats m_a)
- .if 1
 	rep #$20
 	.LONGA ON
 	and #$00ff
@@ -866,21 +566,12 @@ dap_resume = *
         sta m_b
 	sep #$20
 	.LONGA OFF
- .else
-        sta m_a
-        lda #0
-        sta m_a+1
-        lda zp_cos
-        sta m_b
-        lda zp_cos+1
-        sta m_b+1
- .endif
         jsr smul_14                  ; m_res = n*cos
- .if 1
-	rep #$21
+                                    ; 2026-09-22 (65816-windows): smul_14 returns 16-bit,
+        clc                          ;   and that rep also cleared C
 	.LONGA ON
-        lda USE_PT_A
-        adc m_res
+;       lda USE_PT_A                 ; smul_14 leaves m_res IN A: add the other
+        adc USE_PT_A                 ;   operand to it (the sum commutes)
         sta zp_px
 	lda m_ma
 	and #$00ff
@@ -889,41 +580,15 @@ dap_resume = *
         sta m_b
 	sep #$20
 	.LONGA OFF
- .else
-        clc
-        lda USE_PT_A
-        adc m_res
-        sta zp_px
-        lda USE_PT_A+1
-        adc m_res+1
-        sta zp_px+1
-        lda m_ma
-        sta m_a
-        lda #0
-        sta m_a+1
-        lda zp_sin
-        sta m_b
-        lda zp_sin+1
-        sta m_b+1
- .endif
         jsr smul_14                  ; m_res = n*sin
- .if 1
-	rep #$21
+                                    ; 2026-09-22 (65816-windows): smul_14 returns 16-bit,
+        clc                          ;   and that rep also cleared C
 	.LONGA ON
-        lda USE_PT_A+2
-        adc m_res
+;       lda USE_PT_A+2               ; smul_14 leaves m_res IN A (as above)
+        adc USE_PT_A+2
         sta zp_py
-	sep #$20
+                                    ; 2026-09-22 (65816-windows): use_sample returns 16-bit
 	.LONGA OFF
- .else
-        clc
-        lda USE_PT_A+2
-        adc m_res
-        sta zp_py
-        lda USE_PT_A+3
-        adc m_res+1
-        sta zp_py+1
- .endif
         rts
 .endp
         .endseg
@@ -932,19 +597,9 @@ dap_resume = *
 ; try_use -- DOOM P_UseLines (p_map.c). Walk a ray USERANGE units forward, visit
 ;   the subsectors it passes through in order, and in each one test the segs the
 ;   ray CROSSES: activate the first door line, stop at the first wall.
-;
-;   The old probe only asked "did a sample land inside a door sector", so it
-;   happily opened doors through walls -- 4.84 % of the sweep in
-;   tools/_verify_useray.py. Testing crossings instead: 99.61 % identical to
-;   P_UseLines (0.21 % opens DOOM would not, 0.18 % missed, 0 wrong doors).
-;
-;   The 16 steps only ENUMERATE subsectors now (the crossing test always uses the
-;   whole ray), so consecutive duplicates are skipped and both ray endpoints stay
-;   loop constants.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc try_use
- .if 1
 	rep #$20
 	.LONGA ON
         lda zp_px                    ; USE_PT_A = the real player position (the walk
@@ -953,21 +608,10 @@ dap_resume = *
         sta USE_PT_A+2
 	sep #$20
 	.LONGA OFF
- .else
-        lda zp_px                    ; USE_PT_A = the real player position (the walk
-        sta USE_PT_A                 ;   moves zp_px/zp_py, the BSP descent reads it)
-        lda zp_px+1
-        sta USE_PT_A+1
-        lda zp_py
-        sta USE_PT_A+2
-        lda zp_py+1
-        sta USE_PT_A+3
- .endif
         lda #USE_STEP*USE_NSTEPS     ; USE_PT_B = the ray END, USERANGE ahead
         jsr use_sample
 
- .if 1
-	rep #$20
+                                    ; 2026-09-22 (65816-windows): use_sample returns 16-bit
 	.LONGA ON
         lda zp_px
         sta USE_PT_B
@@ -980,60 +624,25 @@ dap_resume = *
 	sta USE_DOOR
 	stz USE_BLK
 	stz USE_N
- .else
-        lda zp_px
-        sta USE_PT_B
-        lda zp_px+1
-        sta USE_PT_B+1
-        lda zp_py
-        sta USE_PT_B+2
-        lda zp_py+1
-        sta USE_PT_B+3
-        lda #$FF                     ; default: no door found
-        sta USE_DOOR
-        sta USE_SS                   ; no subsector tested yet ($FFFF is not a leaf id)
-        sta USE_SS+1
-        lda #0
-        sta USE_BLK
-        sta USE_N                    ; sample the player's own subsector first (n = 0)
- .endif
 ?loop   lda USE_N                    ; zp_px/zp_py = A + n * facing
         jsr use_sample
+                                    ; 2026-09-22 (65816-windows): use_sample returns 16-bit
+        sep #$20
         jsr use_locate               ; zp_nid = leaf at (zp_px, zp_py)
- .if 1
-	rep #$20
-	.LONGA ON
-	lda zp_nid
+	.LONGA ON                    ; (2026-09-26: use_locate returns 16-bit, A = zp_nid)
 	cmp USE_SS
 	beq ?step
 	sta USE_SS
 	sep #$20
 	.LONGA OFF
- .else
-        lda zp_nid                   ; same leaf as last step -> nothing new to test
-        cmp USE_SS
-        bne ?test
-        lda zp_nid+1
-        cmp USE_SS+1
-        beq ?step
-?test
-	lda zp_nid
-        sta USE_SS
-        lda zp_nid+1
-        sta USE_SS+1
- .endif
         jsr use_leaf                 ; A = door index, USE_BLK = hit a wall
         cmp #$FF
         bne ?hit
         lda USE_BLK
         bne ?restore                 ; "can't use through a wall"
 ?step
- .if 1
 	sep #$20
 	.LONGA OFF
- .else
- 	;nothing
- .endif
 	clc                          ; next sample, USE_STEP further along the ray
         lda USE_N
         adc #USE_STEP
@@ -1047,7 +656,6 @@ dap_resume = *
 ?nogun  sta USE_DOOR                 ;   :1099 sounds noway ONLY for a line with no
 ?restore                             ;   special, and 572 has one. $FE is try_use's
                                      ;   silent stop (the switch-fired path)
- .if 1
 	rep #$20
 	.LONGA ON
         lda USE_PT_A                 ; restore the real player position
@@ -1056,53 +664,28 @@ dap_resume = *
         sta zp_py
 	sep #$20
 	.LONGA OFF
- .else
-        lda USE_PT_A                 ; restore the real player position
-        sta zp_px
-        lda USE_PT_A+1
-        sta zp_px+1
-        lda USE_PT_A+2
-        sta zp_py
-        lda USE_PT_A+3
-        sta zp_py+1
- .endif
         lda USE_DOOR
         cmp #$FF
         beq ?none
         cmp #$FE                     ; a switch line fired -- its action queued
         beq ?swit                    ;   its own sound, and there is no DR door
-        jmp use_door_go              ; A = door index -> key check, then DR/D1 open
+        bra use_door_go              ; A = door index -> key check, then DR/D1 open
 ?none   lda USE_BLK                  ; p_map.c PTR_UseTraverse: the "uh-uh"
         beq ?swit                    ;   belongs to a WALL (openrange <= 0); a
         jmp snd_q_nowayx             ;   ray that just RAN OUT found nothing
-                                     ;   and says nothing -- spacebar into open
-                                     ;   space was wrongly grunting until
-                                     ;   2026-08-31 ("stlacam medzernik len tak,
-                                     ;   v priestore"). USE_BLK is 0 then: the
-                                     ;   last use_leaf saw no wall, and the
-                                     ;   wall path exits the loop immediately.
+                                     ;   and says nothing -- spacebar into open ...
 ?swit   rts                          ; (also the EXIT switch's silent stop --
                                      ;   snd_q_nowayx plays ITS click)
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > DAPUSE_END+1
-        ert 'door_at_point..try_use outgrew DAPUSE_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org dap_resume
 
 ;--------------------------------------------------------------
 ; use_door_go -- A = door index the USE ray hit. EV_VerticalDoor's key gate
 ;   (p_doors.c:186-244), the same shape as w3d Cmd_Use: MAP_DOORLOCK[door]
 ;   bits0-2 = the PS_KEYS bit this door needs (blue=1 yellow=2 red=4, card and
-;   skull share a bit like P_CheckKeys), 0 = unlocked. Missing key -> DOOM's
-;   "oof" (w3d: NOWAYSND), door untouched. Bit7 = D1 type (specials 31-34):
-;   the door opens once and PARKS open (p_doors.c case open removes the
-;   thinker), so it force-opens with DOORSTAY instead of the DR toggle.
-;   A special-46 door needs no bit here: try_use refuses the LINE (gun_seg_p),
-;   which is where DOOM refuses it too, and never gets as far as the door.
+;   skull share a bit like P_CheckKeys), 0 = unlocked.
 ;--------------------------------------------------------------
 udg_resume = *
         org USEDOORGO_BASE
@@ -1112,17 +695,6 @@ udg_resume = *
         lda MAP_DOORLOCK,x           ; (under-ROM read: USE runs after rom_out)
         and #$27                     ; key bits 0-2 -- plus bit5, "this door has
                                      ;   no PUSH line at all" (pack_map _doors).
-                                     ;   DOOM only ever runs P_UseSpecialLine on
-                                     ;   the LINE you bumped, and a remote door's
-                                     ;   own lines carry special 0, so
-                                     ;   PTR_UseTraverse just plays sfx_noway
-                                     ;   (p_map.c) -- E1M5's sector 82, the one
-                                     ;   the SW1STONE switch at ld189 opens, came
-                                     ;   open under the spacebar here. Bit5 can
-                                     ;   never coincide with a key bit (keys only
-                                     ;   exist on manual lines), so ANDing the
-                                     ;   keys below turns it into exactly that
-                                     ;   refusal, for no extra byte.
         beq ?open
         and PSTATE+PS_KEYS           ; the one required key bit present?
         beq ?locked
@@ -1131,13 +703,11 @@ udg_resume = *
         lda #1                       ; D1: park OPEN forever once used
         sta.l DOORSTAY,x
         jmp door_force_open.dfo_go   ; X = door index; open + positional SFX.
-                                     ;   PAST the b9 test: there is no trigger
-                                     ;   record here, and reading one out of a
-                                     ;   stale zp_ptr shut the door instead
-                                     ;   (see door_force_open's header)
 ?dr     txa
         jmp snd_door_toggle          ; DR: the normal toggle + open/close SFX
-?locked jmp door_keymsg              ; no key -> the PD_*K line + "uh-uh",
+?locked
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>door_keymsg          ;   next byte of this segment -- fall through
 .endp                                ;   nothing moves (tail-parked: this
         .endseg
                                      ;   block has 4 B of slack)
@@ -1148,9 +718,7 @@ udg_resume = *
 ; door_keymsg -- use_door_go's locked tail (X = the door): DOOM shows
 ;   PD_BLUEK/YELLOWK/REDK with the oof; this port's message line shows the
 ;   ONE colour-blind PD strip (the array is a row from full -- pack_menu.py's
-;   note). A bit5-only refusal is a REMOTE-ONLY door, and DOOM's
-;   PTR_UseTraverse plays noway with no text there -- the `and #7` keeps
-;   that shape. Runs in USE context (ROM out), so the under-ROM home is fine.
+;   note).
 ;--------------------------------------------------------------
 dkm_resume = *
         org DKEYMSG_BASE
@@ -1161,7 +729,10 @@ dkm_resume = *
         beq ?nw
         lda #36+MSG_IDX0             ; the PD strip (pack_menu.py)
         jsr msg_set.msg_arm
-?nw     jmp snd_q_noway              ; ...and the "uh-uh" either way
+                                      ; 2026-09-22 idiom: snd_q_noway inlined (the tail
+?nw     lda #SFX_NOWAY               ;   jmp went: -3) ...and the "uh-uh" either way
+        sta snd_pending
+        rts
 .endp
         .endseg
     .if * > DKEYMSG_END+1
@@ -1175,10 +746,6 @@ dkm_resume = *
 ;   p_switch.c P_UseSpecialLine:  103 S1 EV_DoDoor(open)   62 SR EV_DoPlat(DWU)
 ;                                  29 S1 EV_DoDoor(normal)  63 SR EV_DoDoor(normal)
 ;   p_spec.c  P_CrossSpecialLine:   2 W1 EV_DoDoor(open)    90 WR EV_DoDoor(normal)
-;   p_doors.c T_VerticalDoor case open: the thinker is REMOVED when fully open
-;   -> the door stays open forever = DOORSTAY here.
-; The trigger records come from pack_things.py; a USE record carries the seg
-; RECORD ADDRESSES of its switch line, so matching is a compare, not geometry.
 ;==============================================================
 
 ;--------------------------------------------------------------
@@ -1189,20 +756,11 @@ dkm_resume = *
 ;   fired. Preserves zp_sptr/zp_segcnt (use_leaf's loop); clobbers A/X/Y+zp_ptr.
 ;--------------------------------------------------------------
 swf_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org SWFIRE_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc switch_match
- .if 1
         stz sw_hit
         stz mv_i
- .else
-        lda #0
-        sta sw_hit
-        sta mv_i
- .endif
 ?loop   lda mv_i
         cmp THINGS_BASE+13           ; trigger count
         bcs ?done
@@ -1215,7 +773,6 @@ swf_resume = *
         beq ?nx
 
         ldy #4                       ; 4 seg-record address slots @ bytes 4..11
- .if 1
 	rep #$20
 	.LONGA ON
 ?slot	lda (zp_ptr),y
@@ -1227,44 +784,20 @@ swf_resume = *
 	bcc ?slot
 	sep #$20
 	.LONGA OFF
- .else
-?slot   lda (zp_ptr),y
-        cmp zp_sptr
-        bne ?ns
-        iny
-        lda (zp_ptr),y
-        cmp zp_sptr+1
-        beq ?hit
-        dey
-?ns     iny
-        iny
-        cpy #12
-        bcc ?slot
- .endif
- .if 1
 	bra ?nx
 ?hitw	sep #$20
 	.LONGA OFF
- .else
-        bcs ?nx                      ; always
- .endif
 ?hit    ldy #13
         lda (zp_ptr),y
         sta sw_fl                    ; flags: b12 once = S1, clear = SR button
         jsr trig_fire                ; keeps mv_i/zp_ptr
         inc sw_hit                   ; only ever tested for "not zero"
 ?nx     inc mv_i
- .if 1
 	bra ?loop
- .else
-        jmp ?loop
- .endif
 ?done   lda sw_hit
         beq ?no
         jsr sw_swap                  ; P_ChangeSwitchTexture (SW1 -> SW2)
- .if 1
         bcc ?nosw                    ; BUG FIX 2026-09-15: p_switch.c plays sfx_swtchn
- .endif                               ;   only when a SWITCH TEXTURE flipped (sw_swap
         lda #SFX_SWTCHN              ;   C=1). E3M1's lift "door" (62 on BIGDOOR7)
         sta snd_pending              ;   has none, and the click overwrote its
 ?nosw   sec                          ;   sfx_pstart in the single sound slot
@@ -1309,31 +842,21 @@ sw_hit  dta 0
 ?try    sty sw_y
         lda [zp_sptr],y
         sta btn_old                  ; the whole byte, for the flip back
-        and #$3F
-        cmp #$3F                     ; $3F is "THIS SLOT HAS NO TEXTURE", not a
+        and #SEG_TEXM
+        cmp #SEG_TEXM                ; $7F is "THIS SLOT HAS NO TEXTURE", not a
         beq ?nosw                    ;   texid -- and MAP_TEXSWMATE is TEX_COUNT
                                      ;   = 63 entries wide (0..62), so index $3F
                                      ;   reads the first byte of the NEXT row,
-                                     ;   MAP_TEXIXLO[0]. That is never $FF, so
-                                     ;   the wall probe "succeeded" on every
-                                     ;   two-sided seg with no upper texture,
-                                     ;   took the C=1 exit, and the switch face
-                                     ;   on the LOWER byte was never looked at:
-                                     ;   E2M8's four SW1EXIT stair switches
-                                     ;   (also E1M8, E2M1/5/7, E3M1/2/4/9) fired
-                                     ;   their action and never lit up.
-                                     ;   p_switch.c matches TEXTURE NUMBERS
-                                     ;   against switchlist and "no texture" (0)
-                                     ;   is not one of them.
+                                     ;   MAP_TEXIXLO[0].
         tax
-        lda MAP_TEXSWMATE,x          ; $FF = not a switch texture
+        lda.l MAP_TEXSWMATE,x        ; $FF = not a switch texture (EXT bank row)
         cmp #$FF
         beq ?nosw
         sta sw_t
         lda btn_old
-        and #$C0                     ; keep the peg/blocking bits
+        and #$80                     ; keep the blocking / EXIT bit
         ora sw_t
-        ldy sw_y
+                                      ; 2026-09-22 idiom: Y IS sw_y (?try's sty; tax and
         sta [zp_sptr],y
         sec
         rts
@@ -1355,10 +878,16 @@ sw_hit  dta 0
         bne ?door
         lda (zp_ptr),y               ; (Y still 13) b9 WITHOUT b13 = STOP the
         and #$02                     ;   plat, p_spec.c case 89 EV_StopPlat. The
-        jne mv_stop                  ;   89 is WR: no once-bit to spend, so
+                                      ; 2026-09-22 (drac030 inline): mv_stop -- its rts returns
+        beq ?nstop                   ;   from trig_fire, as the jmp's did
+        ldx #MV_NMAX-1
+?stop   stz MV_STATE,x
+        dex
+        bpl ?stop
+        rts
+?nstop
                                      ;   mv_stop's rts returns from trig_fire
-                                     ;   directly. Body is in movers.asm --
-                                     ;   this block has nothing left.
+                                     ;   directly.
         jsr mv_free                  ; a slot for this record? mv_free also runs
         bcs ?go                      ;   EV_DoPlat's "if (sec->specialdata)
         rts                          ;   continue" -- all busy, or that sector is
@@ -1368,46 +897,20 @@ sw_hit  dta 0
         jmp ?once
 
 ?door   lda (zp_ptr),y               ; (Y is still 13) b15 WITH b13 is not a door
- .if 1
 	jmi trig_light
- .else
-        and #$80                     ;   at all -- a floor's "stays down" bit can
-        beq ?nolt                    ;   never ride a door record, so the pair is
-        jmp trig_light               ;   free to mean EV_LightTurnOn (p_spec.c
-                                     ;   case 35). It spends the once-bit itself.
-?nolt
- .endif
         ldy #12                      ; door index from the tagged sector id
         lda (zp_ptr),y
         sta m_a
- .if 1
 	stz m_a+1
- .else
-        lda #0                       ; byte 13 is ALL flags now (pack_things asserts
-        sta m_a+1                    ;   <= 256 sectors). It used to be `and #$07`,
-                                     ;   which handed a b9 record (16/76, door close
-                                     ;   30 s) a high byte of 2 -> sector id + 512 ->
-                                     ;   door_index_of missed and E1M6's three never
-                                     ;   fired at all
- .endif
         jsr door_index_of
         cmp #$FF
-        bne ?have
-        jmp trig_light               ; no door carries this tag: either the LIGHTS
-                                     ;   action (b15 with b13, p_spec.c case 35)
-                                     ;   or nothing at all -- trig_light tells
-                                     ;   them apart and comes back to tl_once
+        beq trig_light 
+        ;jmp trig_light               ; no door carries this tag: either the LIGHTS ...
 ?have
         tax
         ldy #14                      ; DST. A door record has never used it ("the
         lda (zp_ptr),y               ;   height is in MAP_DOORS"), so it is where
- .if 1
 	jne trig_crush
- .else
-        beq ?nc                      ;   p_ceilng.c's action rides: 1 = 73
-        jmp trig_crush               ;   crushAndRaise, 2 = 77 fast, 3 = 74 stop
-?nc
- .endif
 	dey                          ; ...and back to 13, the flags
         lda (zp_ptr),y
         and #$08                     ; b11 = the door parks OPEN (103 / type 2)
@@ -1424,12 +927,7 @@ tl_once ldy #13                      ; (trig_light comes back in here)
 ?out    rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > SWFIRE_END+1
-        ert 'switch_match/trig_fire outgrew SWFIRE_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org swf_resume
 
 
@@ -1438,15 +936,11 @@ tl_once ldy #13                      ; (trig_light comes back in here)
 ;   the line's tag takes a fixed light level (35, "Lights Very Dark"). The
 ;   packer emits one record per tagged sector, so this is one write; the level
 ;   itself rides in the record's dst field, where a floor keeps its height.
-;   E1M3's blue key is the only place episode 1 uses it -- the room goes dark
-;   the moment you pick the card up (2026-08-07).
-;   zp_ptr = the record. Falls into the once-bit spend, like every other action.
 ;--------------------------------------------------------------
 tl_resume = *
         org TRIGLT_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc trig_light
- .if 1
 	ldy #12
 	rep #$20
 	.LONGA ON
@@ -1461,29 +955,6 @@ tl_resume = *
 	sta zp_mvsec
 	sep #$20
 	.LONGA OFF
- .else
-        ldy #13                      ; b15 WITH b13 is no door at all -- a floor's
-        lda (zp_ptr),y               ;   "stays down" bit can never ride a door
-        and #$80                     ;   record, so the pair is free to mean
-        beq tl_back                  ;   EV_LightTurnOn. Anything else here is a
-                                     ;   tag with no door: nothing to do.
-        lda #0                       ; zp_mvsec = &MAP_SECTORS[sector], the *8 in
-        sta zp_mvsec+1               ;   the accumulator (250 sectors = 11 bits)
-        ldy #12
-        lda (zp_ptr),y
-        asl
-        rol zp_mvsec+1
-        asl
-        rol zp_mvsec+1
-        asl
-        rol zp_mvsec+1
-        clc
-        adc #<MAP_SECTORS
-        sta zp_mvsec
-        lda zp_mvsec+1
-        adc #>MAP_SECTORS
-        sta zp_mvsec+1
- .endif
         ldy #14                      ; the LEVEL rides where a floor keeps its
         lda (zp_ptr),y               ;   height
         ldy #4                       ; sector->lightlevel
@@ -1505,68 +976,32 @@ tl_back jmp trig_fire.tl_once        ; and spend the W1 bit
 ;   needs: special 46, GR "open door on impact". E1M2's secret computer wall
 ;   (linedef 572, tag 6 -> sector 188) is the only one in episode 1, so the
 ;   packer hands the engine ONE seg address instead of a table to scan.
-;
-;   BOTH halves of DOOM's rule live here, and the second one is why this is not
-;   just gun_match:
-;     * a BULLET opens it -- gun_match, off pf_shot's hitscan/melee trace. A
-;       flying missile does not (P_ExplodeMissile activates no line), so the
-;       rocket and plasma traces in proj.asm never call this.
-;     * SPACE does not -- P_UseSpecialLine has no case 46, and PTR_UseTraverse
-;       returns false on any special line without even the "oof". try_use asks
-;       gun_seg_p and stops the ray silently.
-;   That second half is a real difference in this port: sector 188 IS a door
-;   (linedef 582 is a plain DR from the far side, which DOOM does let you push
-;   by hand), and use_leaf's stand-in for "special line" is "the seg has a door
-;   sector on one side" -- which cannot tell 572 from 582 on geometry alone.
-;
-;   Deviation, stated: DOOM fires the special for every special line the shot
-;   CROSSES; this fires it for the one the shot STOPS on. The only 46 in
-;   episode 1 is a shut door -- openrange 0, so the bullet stops there anyway.
 ;--------------------------------------------------------------
 gm_resume = *
         org GUNMATCH_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc gun_seg_p                      ; C=1 if zp_sptr is EITHER face of the 46
         pha                          ;   line. A survives (try_use still needs it)
-        ldy #26                      ; the header's two seg record addresses. Both
- .if 1
+                                     ; 2026-09-22 (6502-idioms: counting UP to zero):
+        ldy #256-4                   ;   Y = $FC, $FE = slots 26, 28 (the callers read
 	rep #$20
 	.LONGA ON
 ?l	lda zp_sptr
-	cmp THINGS_BASE,y
+	cmp THINGS_BASE+30-256,y
 	beq ?yes
- .else
-?l      lda zp_sptr                  ;   sides: the shot comes from the room, but
-        cmp THINGS_BASE,y            ;   USE from INSIDE the opened secret crosses
-        bne ?nx                      ;   the other face of the same line -- and
-        lda zp_sptr+1                ;   that is what let SPACE shut it again
-        cmp THINGS_BASE+1,y
-        beq ?yes
-?nx
- .endif
 	iny                          ; 0 on a level with no gun line, and no seg
         iny                          ;   record ever lives at $0000
-        cpy #30
-        bcc ?l
- .if 1
+        bne ?l
 	sep #$20
 	.LONGA OFF
- .else
-	;nothing
- .endif
         pla
         clc
         rts
 
 ?yes
- .if 1
 	sep #$21
 	.LONGA OFF
 	pla
- .else
-	pla
-        sec
- .endif
         rts
 .endp
         .endseg
@@ -1603,21 +1038,6 @@ gf_resume = *
 ;--------------------------------------------------------------
 ; door_force_open -- X = door index: make it open (NOT the DR toggle: an
 ;   already-open door stays put). Queues the door-open sound.
-;   Specials 16/76 (close 30 s, then open) come through here too -- b9 of the
-;   trigger record, which trig_fire still has zp_ptr on, sends them DOWN
-;   instead and arms update_door30 with DOORSTAY b1.
-;
-;   TWO ENTRIES, and the b9 read belongs to the FIRST one only. trig_fire has
-;   zp_ptr on the record; use_door_go (a D1 door under the spacebar) has no
-;   record at all -- zp_ptr is still on the vertex use_seg_hit/coll_vptr read
-;   last, so (zp_ptr)+13 was a coin flip decided by which segs the USE ray
-;   happened to cross. Bit1 set -> the press CLOSED the door: dorcls on an
-;   already-shut door, nothing moves, and DOORSTAY b1 armed update_door30 on
-;   top of it. E1M3's first door (ld995/996, sector 64, special 31) does it
-;   whenever you stand off to one side or come at it at an angle; the middle
-;   works because a different vertex answers. E1M1 never showed it -- it is
-;   the one episode-1 map with no D1 line at all. D1 callers enter at dfo_go,
-;   past the test (2026-08-11).
 ;--------------------------------------------------------------
 dfo_resume = *
         org DFORCE_BASE
@@ -1639,31 +1059,18 @@ dfo_go                               ; no-record entry: open, never close
 ?rev    lda #1
         sta.l DOOR_STATE,x
         lda #SFX_DOROPN              ; positional: a REMOTE door opens quietly
- .if 1
-        jmp snd_q_door_at            ;   or silently (s_sound.c attenuation)
- .else
-        jsr snd_q_door_at            ;   or silently (s_sound.c attenuation)
- .endif
+        bra snd_q_door_at            ;   or silently (s_sound.c attenuation)
 ?out    rts
 ?shut   lda (zp_ptr),y               ; Y is still 13 HERE -- the b9 test at the
                                      ;   top of this proc left it, and ?shut is
-                                     ;   only reachable through that test. It is
-                                     ;   read BEFORE the DOOR_STATE dance below,
-                                     ;   which clobbers Y with `tay`.
+                                     ;   only reachable through that test.
         and #$08                     ; b11 WITH b9 = close and STAY shut, i.e.
-                                     ;   special 3. Alone, b11 means "parks OPEN",
-                                     ;   which a close action can never also mean,
-                                     ;   so the pair is free the way b15+b13 is.
         eor #$08                     ; 8 -> 0 (stay shut), 0 -> 8 (arm the timer)
         lsr @
         lsr @                        ; ...8 lands on b1, which is what
                                      ;   update_door30 waits on, and b0 (parked
                                      ;   open) comes out 0 either way -- it has
                                      ;   to, or the dwell test never fires.
-                                     ;   DOORSTAY holds nothing but b0 and b1, so
-                                     ;   this plain store IS the whole update.
-                                     ;   16 and 76 keep b11 clear and so keep
-                                     ;   their 30 s reopen, unchanged.
         pha                          ; onto the stack, not into a RAM cell
         lda.l DOOR_STATE,x           ; already on its way down? leave it alone
         cmp #3
@@ -1676,7 +1083,7 @@ dfo_go                               ; no-record entry: open, never close
         pla
         sta.l DOORSTAY,x
         lda #SFX_DORCLS
-        jmp snd_q_door_at
+        bra snd_q_door_at
 ?outp   pla                          ; the early exit has to balance it
         rts
 .endp
@@ -1710,45 +1117,7 @@ btu_resume = *
         ldy btn_y                    ;   to be a LONG one into the seg bank
         lda btn_tex                  ;   (map_syms.inc:14, [[map-offsets-not-
         sta [zp_sptr],y              ;   addresses]] -- plain (zp),y here wrote
-                                     ;   btn_tex into BASE RAM: seg 683, E1M4's
-                                     ;   switch, is offset $1558, which is
-                                     ;   tw_setup's CODE, and the write landed
-                                     ;   there BTN_VB after the press).
-                                     ;
-                                     ; WHY zp_sptr AND NOT zp_ptr (2026-08-16).
-                                     ;   This used to point zp_ptr at the seg by
-                                     ;   storing MAP_SEG_BANK into zp_ptr+2 --
-                                     ;   and never put it back. But zp_ptr+2 is
-                                     ;   an engine-wide CONSTANT $01 that
-                                     ;   init_level seeds ONCE: seg_draw, the
-                                     ;   AI's bank-$01 pages (TH_KIND, TH_STATE,
-                                     ;   TH_WROW, TH_HP...), infight, collision
-                                     ;   and the door code all read [zp_ptr],y
-                                     ;   assuming it -- the same trap wp_wload
-                                     ;   documents for $04/$05. So BTN_VB after
-                                     ;   ANY switch press, the whole engine
-                                     ;   started reading thing kinds, monster
-                                     ;   state and door state out of the SEG
-                                     ;   bank. E1M8's start switch shows it
-                                     ;   worst: wrot_idle reads TH_KIND = 0 for
-                                     ;   every thing, spr_dyn takes the static
-                                     ;   path, spr_one submits NO blit at all,
-                                     ;   and the barrel room's 20 barrels + 4
-                                     ;   pinkies vanish one second after the
-                                     ;   wall drops -- with the doors dying in
-                                     ;   the same breath.
-                                     ;   zp_sptr ALREADY carries MAP_SEG_BANK,
-                                     ;   set once per level by load_level
-                                     ;   (diskio.asm) and touched by nobody
-                                     ;   since (powerups.asm:284, midtex.asm),
-                                     ;   and its low pair is rebuilt per
-                                     ;   subsector by render_subsector -- so
-                                     ;   borrowing it costs nothing and leaves
-                                     ;   nothing to hand back. 4 bytes SMALLER
-                                     ;   than the version that set a bank byte,
-                                     ;   which matters: this block is full to
-                                     ;   $CFFF and $D000 is hardware.
-                                     ;   Measured: tools/tests/_dbg_e1m8_switch.py
+                                     ;   btn_tex into BASE RAM: seg 683, E1M4's ...
         lda #SFX_SWTCHN              ; the button pops back out (p_switch.c)
         sta snd_pending
 ?out    rts
@@ -1770,10 +1139,7 @@ sw_fl     dta 0
 ;--------------------------------------------------------------
 ; snd_q_door_at -- queue a door SFX only if the door is AUDIBLE: p_doors.c
 ;   plays at the door sector's soundorg (bbox centre, MAP_DOORS record +4) and
-;   s_sound.c cuts it dead past S_CLIPPING_DIST (1200). Distance here is
-;   Chebyshev (max of the axes) -- up to 41 % short on diagonals, i.e. the cut
-;   is a little generous there, which errs on the audible side.
-;   A = SFX id, X = door index (preserved).
+;   s_sound.c cuts it dead past S_CLIPPING_DIST (1200).
 ;--------------------------------------------------------------
 sda_resume = *
         org SNDDIST_BASE
@@ -1787,7 +1153,6 @@ sda_resume = *
         tay                          ;   FOUR and not eight, so this index still
                                      ;   fits a byte at DOORS_NMAX 48 (47*4=188);
                                      ;   at the old 8 B stride it wrapped past 31
- .if 1
 	rep #$20
 	.LONGA ON
 	sec
@@ -1817,59 +1182,11 @@ sda_resume = *
 ?far	cmp #1200
 	sep #$20
 	.LONGA OFF
- .else
-        sec                          ; m_a = |px - soundorg.x|
-        lda zp_px
-        sbc MAP_DSND+0,y
-        sta m_a
-        lda zp_px+1
-        sbc MAP_DSND+1,y
-        sta m_a+1
-        sta sda_sx+1
-        bpl ?ax
-        jsr m_neg
-?ax     sec                          ; m_b = |py - soundorg.y|
-        lda zp_py
-        sbc MAP_DSND+2,y
-        sta m_b
-        lda zp_py+1
-        sbc MAP_DSND+3,y
-        sta m_b+1
-        sta sda_sy+1
-        bpl ?ay
-        jsr m_negb
-?ay
-	lda m_a+1                    ; max(|dx|,|dy|) -> m_a (16-bit)
-        cmp m_b+1
-        bcc ?useb
-        bne ?far
-        lda m_a
-        cmp m_b
-        bcs ?far
-?useb   lda m_b
-        sta m_a
-        lda m_b+1
-        sta m_a+1
-?far    sec                          ; dist >= 1200 -> inaudible: queue nothing
-        lda m_a
-        sbc #<1200
-        lda m_a+1
-        sbc #>1200
- .endif
         bcs ?silent
         jsl snd_setpan_w0               ; STEREO: which ear gets this door
         ldx sda_id                   ; PLAY it, do not queue it: snd_pending is
         jsr snd_play                 ;   one byte and spr_pickup runs later in
-                                     ;   the same frame -- the key's ITEMUP
-                                     ;   overwrote the secret opening behind it
-                                     ;   and the door was silent (2026-08-07,
-                                     ;   proved in the simulator). s_sound.c
-                                     ;   starts every sound at once anyway, and
-                                     ;   the mixer has SND_NV voices; only the
-                                     ;   QUEUE was single-file. Same byte count,
-                                     ;   and no new RAM -- the byte I added to
-                                     ;   sound.asm's data for this broke the
-                                     ;   build outright.
+                                     ;   the same frame -- the key's ITEMUP ...
 ?silent ldx sda_x
         rts
 .endp
@@ -1884,57 +1201,15 @@ sda_x   dta 0
 ;--------------------------------------------------------------
 ; snd_setpan -- QUADRANT pan for the door snd_q_door_at is about to start:
 ;   snd_side = pan_tab[world quadrant of the door * 4 + facing quadrant].
-;   sda_sx/sy carry the SIGNS of (player - soundorg) before the abs; zp_ang's
-;   top two bits are the facing. Coarse on purpose -- 90 degree resolution,
-;   no multiplies, and the centre never appears (a diagonal model always
-;   picks an ear). ASSUMES BAM 0 = east, +y = north, POKEY1 = left ear: if
-;   the ears come out MIRRORED on the bench, swap every $40/$80 in pan_tab
-;   -- the logic never changes. Cold (a door event); under-ROM is fine, every
-;   caller runs in the frame loop with the ROM out.
 ;--------------------------------------------------------------
 spn_resume = *
         org SNDPAN_BASE
- .if 1
 ; snd_setpan LEFT for sound.asm (SNDPAN2, 2026-09-09): the monsters wanted DOOM's
 ;   angle model (s_sound.c S_AdjustSoundParams: sep = 128 - 96*sin(angle to the
 ;   source, relative to the facing), silence past S_CLIPPING_DIST) and the
 ;   quadrant table below could not say "centre" at all. Same contract for
 ;   the door: sda_sx/sda_sy = player - soundorg, words. The variables stay
 ;   here; the code and its tables live in the bigger hole.
- .else
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc snd_setpan
-        ldx #0
-        lda sda_sx+1                 ; bit7: the door is EAST of the player
-        bpl ?px                      ;   (m_a was player - door)
-        ldx #8
-?px     lda sda_sy+1
-        bpl ?py
-        inx
-        inx
-        inx
-        inx
-?py     lda zp_ang                   ; facing quadrant = the BAM's top 2 bits
-        lsr
-        lsr
-        lsr
-        lsr
-        lsr
-        lsr
-        sta sda_f
-        txa
-        ora sda_f                    ; the two indices are disjoint bits
-        tax
-        lda pan_tab,x
-        sta snd_side                 ; snd_play hands it to the voice + resets
-        rts
-.endp
-        .endseg
-pan_tab dta $80,$40,$40,$80          ; door SW of the player, facing E/N/W/S
-        dta $40,$40,$80,$80          ;   ... NW
-        dta $80,$80,$40,$40          ;   ... SE
-        dta $40,$80,$80,$40          ;   ... NE
- .endif
 sda_sx  dta 0,0                     ; 16-bit cells: snd_q_door_at stores
 sda_sy  dta 0,0                     ;   the whole difference, the sign is +1
 sda_f   dta 0
@@ -1946,50 +1221,12 @@ snd_side dta 0                       ; the NEXT snd_play's pan; 0 = centre
 
 ;==============================================================
 ; CRUSHERS -- p_ceilng.c EV_DoCeiling / T_MoveCeiling, on the door mover.
-;
-; The ceiling that comes down on your head, rises, and does it again for ever.
-; Episodes 1-3 use three of DOOM's six crusher actions, all WR walkovers:
-;   73  crushAndRaise      CEILSPEED     E2M2/E2M4/E2M6/E3M4/E3M5
-;   77  fastCrushAndRaise  CEILSPEED*2   E2M2/E2M4
-;   74  EV_CeilingCrushStop              every map that has one
-; and until 2026-08-29 the port had none of them: the tagged sectors sat
-; motionless, so E2M2's mincer corridor (the reported bug -- "drvice nefunguju",
-; 91,-306, which is right on top of ld1564, a 77) was a walk-through.
-;
-; WHY IT IS A DOOR. The door mover already animates a sector CEILING between two
-; heights at a VBLANK-scaled speed, already writes it back into MAP_SECTORS for
-; the renderer and collision, and already has the "is the player under it" test
-; (DOOR_PLR). A crusher is that machine with three answers changed, and each one
-; is a jsr on a path that had the bytes to spare:
-;   crush_pre    the SPEED (CEILSPEED is half the VDOORSPEED a door moves at)
-;   door_crush   what happens when it catches the player: HURT, do not bounce
-;   door_end     what happens at each end of the travel: REVERSE, never park
-; plus the one thing a door never had to do at all:
-;   crush_things P_ChangeSector's sweep -- the MONSTERS under it die too
-; pack_map._doors gives the tagged sectors ordinary door records (open_ceil =
-; the sector's own map ceiling, LOCK bit3 = CRUSH_BIT, bit5 = no PUSH line, so
-; the spacebar and the monsters are refused exactly as on any remote-only door),
-; and pack_things puts p_ceilng.c's action in the trigger record's dst.
-;
-; The whole block is parked at CRUSH_BASE: 384 B under the ROM that the map's
-; HIGH region stopped needing when SSECTORS left for the Rapidus EXT bank.
 ;==============================================================
 crush_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org CRUSH_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; crush_pre -- A = the whole-unit ceiling step door X takes this frame.
-;   Stores it as DOOR_DELTA, halves it for a SLOW crusher, and hands back the
-;   door's STATE so update_doors can dispatch. It replaces the
-;   `sta DOOR_DELTA / lda.l DOOR_STATE,x` that was there, so an ordinary door
-;   pays one jsr and nothing else.
-;   The halving is of the WHOLE part, after DOOR_FRAC has taken the Q8 carry, so
-;   a slow crusher runs a few per cent under CEILSPEED rather than exactly on
-;   it -- the alternative is a second 16-bit accumulate per door per frame, and
-;   nobody can see 3.2 units a frame against 3.5 on a ceiling.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc crush_pre
@@ -1998,30 +1235,54 @@ crush_resume = *
         and #CRUSH_BIT              ;   OS ROM out -- bsp_main.asm's rom_out)
         beq ?out
         jsr snd_q_grind              ; T_MoveCeiling plays sfx_stnmov on
-                                     ;   !(leveltime&7), which is snd_q_grind's
-                                     ;   own gate (sound.asm) -- and it is
-                                     ;   WEAK-queued, so the grind never eats a
-                                     ;   real event. A crusher you cannot hear
-                                     ;   coming is not the same trap DOOM sets.
-                                     ;   Preserves X.
+                                     ;   !(leveltime&7), which is snd_q_grind's ...
         lda.l DOOR_WAIT,x            ; the crusher's speed class: 0 = CEILSPEED,
-        bne ?out                     ;   1 = CEILSPEED*2 (special 77)
-        lsr DOOR_DELTA
+        beq ?half                    ;   1 = CEILSPEED*2 (special 77),
+        cmp #1                       ;   2 | acc<<4 = CEILSPEED/8 (crush_slow)
+        beq ?out
+        lsr
+        lsr
+        lsr
+        lsr                          ; acc; C=0 -- the class nibble is 2
+        adc DOOR_DELTA               ; + this frame's whole step (< 256)
+        pha
+        lsr
+        lsr
+        lsr
+        lsr                          ; /16: VDOORSPEED is 2*CEILSPEED
+        sta DOOR_DELTA
+        pla
+        asl
+        asl
+        asl
+        asl                          ; what did not move yet rides to next frame
+        ora #2
+        sta.l DOOR_WAIT,x
+        bra ?out
+?half   lsr DOOR_DELTA
 ?out    lda.l DOOR_STATE,x
         rts
+.endp
+
+;--------------------------------------------------------------
+; crush_slow -- something does not fit under crusher X: crushAndRaise drops to
+;   CEILSPEED/8 until the bottom (p_ceilng.c:154, door_end resets); the fast
+;   one never slows. Preserves X.
+;--------------------------------------------------------------
+.proc crush_slow
+        lda.l DOOR_WAIT,x
+        bne ?out                     ; fast, or slowed already (acc kept)
+        lda #2
+        sta.l DOOR_WAIT,x
+?out    rts
 .endp
         .endseg
 
 ;--------------------------------------------------------------
 ; door_crush -- the descending ceiling has caught the player (update_doors'
 ;   opening < PLAYER_H test). p_doors.c sends a `normal` door back UP, and that
-;   is what T_MovePlane's `crushed` means for a door. A CRUSHER does not bounce:
-;   T_MoveCeiling keeps it coming and PIT_ChangeSector takes health off whatever
-;   is under it -- crushAndRaise drops to CEILSPEED/8 while it is crushing,
-;   fastCrushAndRaise does not slow at all.
-;   The port's CEILSPEED/8 is "hold still this frame", which at these frame
-;   rates is the same picture and costs no state.
-;   OUT: C=1 = go on moving (a fast crusher), C=0 = leave the ceiling alone.
+;   is what T_MovePlane's `crushed` means for a door.
+;   OUT: C=1 = go on moving (a crusher), C=0 = leave the ceiling alone.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_crush
@@ -2037,11 +1298,8 @@ crush_resume = *
         jsr en_plr_hurt              ;   by the frame like every other timer
                                      ;   here. X survives it (enemy.asm) --
                                      ;   update_damage leans on the same fact
-        lda.l DOOR_WAIT,x            ; slow -> CEILSPEED/8 -> stand still
-        beq ?stop
+        jsr crush_slow
         sec
-        rts
-?stop   clc
         rts
 .endp
         .endseg
@@ -2050,13 +1308,6 @@ crush_resume = *
 ; door_end -- door X has arrived at one end of its travel.
 ;   IN: A = the state an ORDINARY door takes there (2 = dwell at the top,
 ;           0 = parked shut)
-;       Y = the state a CRUSHER takes instead (3 = straight back down at the
-;           top, 1 = straight back up at the bottom)
-;   A crusher never parks and never dwells, so it never gives DOOR_NACT back:
-;   update_doors keeps scanning it for the rest of the level, which is exactly
-;   what DOOM does by leaving the thinker in the list. That is the standing cost
-;   of a running crusher -- the door scan plus door_at_point's one BSP descent,
-;   and any moving door already pays both.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc door_end
@@ -2067,6 +1318,9 @@ crush_resume = *
         pla
         tya                          ; the crusher's other direction
         sta.l DOOR_STATE,x
+        lda.l DOOR_WAIT,x            ; pastdest: speed = CEILSPEED again
+        and #1                       ;   (p_ceilng.c:131) -- fast stays fast
+        sta.l DOOR_WAIT,x
         rts
 ?door   pla
         sta.l DOOR_STATE,x           ; (A survives the store, for the cmp)
@@ -2083,14 +1337,6 @@ crush_resume = *
 ;--------------------------------------------------------------
 ; trig_crush -- a crusher line was crossed (trig_fire, off the record's dst).
 ;   IN: A = 1 (73 crushAndRaise) | 2 (77 fastCrushAndRaise) | 3 (74 stop)
-;       X = the door index the record's tagged sector maps to
-;   EV_DoCeiling walks every sector with the line's tag and skips the ones
-;   already running ("if (sec->specialdata) continue"); here the packer emits
-;   one record per tagged sector, so the walk IS the trigger scan and the skip
-;   is the DOOR_STATE test. A crusher that 74 put in stasis restarts DOWNWARD
-;   rather than in the direction it was going -- P_ActivateInStasisCeiling
-;   remembers that and this does not; the cost is one wrong half-cycle, once,
-;   on a machine that then repeats for ever.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc trig_crush
@@ -2113,33 +1359,13 @@ crush_resume = *
         dec DOOR_NACT
         lda #0
         sta.l DOOR_STATE,x
- .if 1
 	bra ?out
- .else
-        beq ?out                     ; (always)
- .endif
 .endp
         .endseg
 
 ;--------------------------------------------------------------
 ; crush_things -- P_ChangeSector(sector, true) for the crusher whose door index
 ;   is X: the MONSTERS under the descending ceiling, not only the player.
-;   p_map.c PIT_ChangeSector runs over the sector and, for every thing
-;   P_ThingHeightClip cannot fit, takes 10 health off it every 4 tics; a thing
-;   that is ALREADY dead becomes S_GIBS instead, and a dropped item is removed.
-;   The port keeps the first of those three and states the other two: it has no
-;   gib state to put a corpse into, and nothing it drops is in anyone's way.
-;
-;   The sweep is en_bthings' (A_Explode's), for the same reason -- the cheap
-;   rejects come first and almost everything leaves on health 0 or "already
-;   dying", so the linear walk costs about what a blockmap walk would once the
-;   port's cells (512 units, WRAPPED into 8x8) have handed back their strangers.
-;   What decides membership is door_at_point, which answers "which door's sector
-;   is this point in" exactly, and is the same descent update_doors makes for
-;   the player every frame anyway.
-;
-;   The caller has already established that the opening is under PLAYER_H, so
-;   none of this runs until the ceiling is low enough to hurt something.
 ;   Preserves X and m_ma (the ceiling ?move is about to store) and rebuilds
 ;   zp_ptr, which door_at_point clobbers.
 ;--------------------------------------------------------------
@@ -2149,11 +1375,8 @@ crush_resume = *
         and #CRUSH_BIT
         bne ?go
 ?rts    rts                          ; an ordinary door crunches nobody here:
-                                     ;   P_ChangeSector(crunch=false) only says
-                                     ;   "no fit", and what this port does with
-                                     ;   that is send the door back up
+                                     ;   P_ChangeSector(crunch=false) only says ...
 ?go     stx ct_d
- .if 1
 	rep #$20
 	.LONGA ON
         lda m_ma                     ; ?move still wants the new ceiling, and
@@ -2165,22 +1388,6 @@ crush_resume = *
 	sep #$20
 	.LONGA OFF
 	stz en_bi
- .else
-        lda m_ma                     ; ?move still wants the new ceiling, and
-        sta ct_m                     ;   door_at_point/en_bhit own the maths
-        lda m_ma+1                   ;   registers between here and there
-        sta ct_m+1
-        lda zp_px                    ; ...and the player's probe point, which
-        sta ct_p                     ;   door_at_point reads
-        lda zp_px+1
-        sta ct_p+1
-        lda zp_py
-        sta ct_p+2
-        lda zp_py+1
-        sta ct_p+3
-        lda #0
-        sta en_bi
- .endif
 ?lp     lda en_bi
         cmp THINGS_BASE              ; the thing count (blob header +0)
         bcs ?done
@@ -2203,9 +1410,7 @@ crush_resume = *
         bne ?next                    ; already dying -- PIT_ChangeSector gibs a
                                      ;   corpse; there is no gib state here
         lda en_bi                    ; its x/y -> the point to place
-        jsr en_thing.en_th2
- .if 1
-	rep #$20
+        jsr en_thing.en_th2w          ; 2026-09-22: returns 16-bit
 	.LONGA ON
         lda (sp_ptr)
         sta zp_px
@@ -2214,30 +1419,17 @@ crush_resume = *
         sta zp_py
 	sep #$20
 	.LONGA OFF
- .else
-        ldy #0
-        lda (sp_ptr),y
-        sta zp_px
-        iny
-        lda (sp_ptr),y
-        sta zp_px+1
-        ldy #2
-        lda (sp_ptr),y
-        sta zp_py
-        iny
-        lda (sp_ptr),y
-        sta zp_py+1
- .endif
         jsr door_at_point            ; standing in THIS crusher's sector?
         cmp ct_d
         bne ?next
+        tax                          ; (= ct_d) a MONSTER slows it as the player
+        jsr crush_slow               ;   does: `crushed` does not ask who
         lda dt_vbl                   ; the same 10-every-4-tics the player takes
         asl                          ;   (CRUSH_DMG_VB), scaled by the frame
         jsr en_bhit                  ; P_DamageMobj: health, death, the scream
 ?next   inc en_bi
         bne ?lp                      ; (always: the count is a byte)
 ?done
- .if 1
 	rep #$20
 	.LONGA ON
 	lda ct_p
@@ -2248,20 +1440,6 @@ crush_resume = *
         sta m_ma
 	sep #$20
 	.LONGA OFF
- .else
-	lda ct_p
-        sta zp_px
-        lda ct_p+1
-        sta zp_px+1
-        lda ct_p+2
-        sta zp_py
-        lda ct_p+3
-        sta zp_py+1
-        lda ct_m
-        sta m_ma
-        lda ct_m+1
-        sta m_ma+1
- .endif
         ldx ct_d                     ; update_doors' door index and its sector
         lda.l DOOR_SECL,x            ;   pointer, both of which the descent and
         sta zp_ptr                   ;   the damage above went through
@@ -2275,10 +1453,5 @@ ct_d    dta 0                        ; the door being crushed under
 ct_m    dta 0,0                      ; m_ma across the sweep
 ct_p    dta 0,0,0,0                  ; the player's probe point across it
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > CRUSH_END+1
-        ert 'the crusher block outgrew CRUSH_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org crush_resume

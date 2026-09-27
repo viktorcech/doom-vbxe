@@ -1,38 +1,7 @@
-;==============================================================
-; fps.asm -- THE 'F' FRAME-RATE READOUT, top-left of the 3D view.
 ;--------------------------------------------------------------
-; It lived in hud.asm while it was drawn ON the status bar. It is not on the
-; bar any more, so it is not in that file any more either (2026-08-28).
-;
-; WHAT IT SHOWS, AND WHY IT IS EXACT. doors.asm's frame_dt already measures
-; dt_vbl = the VBLANKs the last frame took; hud_tail sums a 4-frame window and
-; the rate of that window is EXACTLY 4 frames / sum VBLANKs = 200/sum on PAL.
-; The readout this replaced counted RENDERED FRAMES in a one-second window
-; (whole numbers, a second stale); its successor averaged mean=floor(sum/4)
-; and showed 50/mean, which overstated the rate by up to 12 % whenever the sum
-; was not divisible by 4 (2026-08-31, "ci sa FPS zobrazuje uplne presne").
-;
-; NO DIVISION AT RUNTIME. 200/sum for every sum a window can reach (4..255) is
-; three 252-byte digit tables built by MADS at assembly time (FPSSUM_BASE, end
-; of this file) in the win2 pages the SQ2 mirror vacated. Reading them is
-; three plain lda,x per window.
-;
-; PARKED PIECEWISE. Base RAM has no hole that holds this whole, so each proc
-; sits in its own gap with the usual org + ert guard. Per frame:
-;   draw_hud_gate -> msg_tick -> hud_tail -> fps_draw2 -> fps_fetch (the digits)
-;   -> fps_dig / fps_glyph (one glyph each) -> hud_blit.
-;
-; IT REDRAWS EVERY FRAME and that is not waste: the digits are inside the view,
-; so the next frame's render erases them for free. That is also why the old
-; "repaint only when the value is stale" machinery (fps_shown, fps_val, fps_win)
-; is gone -- it existed because the STATUS BAR persists.
-;
-; THE FONT IS THE BIG ONE. STTNUM is 14x16 DOOM pixels, which is 7x16 of our
-; bytes; the small STYSNUM set is 4x6, i.e. TWO pixels wide once the port halves
-; it horizontally, and two pixels is not a digit ("necitatelne, zly font",
-; 2026-08-28). STTNUM is variable width -- 14 for most, 11 for the '1' -- so the
-; pen advances by the width hud_entry hands back, not by a constant.
-;==============================================================
+; fps.asm -- the 'F' frame-rate readout, top-left of the 3D view:
+;   200 / (VBLANKs of the last 4 frames) on PAL.
+;--------------------------------------------------------------
 fps_resume = *
         org FPSTEN_BASE
 ;--------------------------------------------------------------
@@ -76,25 +45,19 @@ fps_resume = *
 ;   units back in A. Only a very fast frame gets here (10 fps is a frame under
 ;   5 VBLANKs). It shared FPSTEN with hud_tail until hud_tail grew the window
 ;   accumulator.
-;
-;   IT MUST NOT TOUCH fd_d0, and that was the bug behind "blika 0.00 a real
-;   fps": it used to leave the units there. The readout paints every frame but
-;   fetches once per window, so frame 1 drew 50,00 and frames 2..4 re-read a
-;   fd_d0 that now held 50's UNITS -- zero -- and drew 0,00. Same mechanism
-;   turned 25,00 into 5,00. The draw may not edit what it draws from.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_tens
         ldy #0
-        sec
 ?lp     sbc #10
         iny
         cmp #10
         bcs ?lp
-        sta fd_w                     ; the units, parked across the tens' blit
+                                      ; 2026-09-22 (65816-style): the units ride the
+        pha                          ;   stack across the tens' blit
         tya
         jsr fps_dig
-        lda fd_w
+        pla
         rts
 .endp
         .endseg
@@ -128,14 +91,6 @@ fps_resume = *
         org FPSGLY_BASE
 ;--------------------------------------------------------------
 ; fps_glyph -- the decimal comma, STCFN044 out of DOOM's own message font.
-;   It is NOT in HUD_TAB: pack_hud.py stops that table at HUD_TAB_ENGINE = 29
-;   entries because HUDTAB_BASE..END is 240 B with the vissprite arrays right
-;   above it. (Asking hud_entry for an index past the end was the 2026-08-28
-;   "press F and the game falls into garbage" -- it read off the table.) So the
-;   comma is addressed by its VRAM address from the generated hud_syms.inc and
-;   ridden into hud_blit on a record of our own.
-;   FPS_COMMAY drops it to the digits' baseline: the glyph is 4 rows and they
-;   are 16, and hud_blit SUBTRACTS the record's top from the row.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_glyph
@@ -147,7 +102,8 @@ fps_resume = *
         sta fps_rec+4
         lda #[FPS_COMMAY&$FF]        ; negative: hud_blit subtracts it
         sta fps_rec+6
-        jmp fps_emit
+                                      ; 2026-09-21 drac_bra: the target is the very
+        ert *<>fps_emit             ;   next byte of this segment -- fall through
 .endp
         .endseg
     .if * > FPSGLY_END+1
@@ -178,20 +134,35 @@ fps_resume = *
         .endseg
 
 ;--------------------------------------------------------------
-; fps_blit -- hud_blit with the destination bank borrowed. hud_blit defaults to
-;   bank 0, which is right for the status bar (rows 168+ are SHARED between the
-;   buffers and painted once) and wrong for every row above it: the readout is
-;   inside the view and has to land in the BACK buffer. Put back immediately,
-;   so no other caller can be surprised.
+; fps_blit -- zp_ptr = a glyph's 7-byte row, X = the pen, Y = the row: RECORD
+;   it for the strip's chain (strip.asm st_glyph) instead of drawing it. The
+;   readout is 320 now, on the strip; the pen is in its pixels.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_blit
-        lda zback_hi
-        sta hud_blit.hb_dbnk+1
-        jsl hud_blit_w0
-        lda #[VRAM_SCREEN>>16]
-        sta hud_blit.hb_dbnk+1
-        rts
+        stx st_tx
+        sty st_ty
+        lda st_ng
+        cmp #ST_NGL
+        bcs ?out                     ; (never: "NN,NN" is ST_NGL)
+        asl
+        asl
+        asl
+        adc st_ng                    ; *9: st_ng < 32, the asl's shift out 0s
+        tax
+        ldy #0
+?c      lda (zp_ptr),y               ; the row, as hud_blit would have read it
+        sta st_gl,x
+        inx
+        iny
+        cpy #7
+        bne ?c
+        lda st_tx
+        sta st_gl,x
+        lda st_ty
+        sta st_gl+1,x
+        inc st_ng
+?out    rts
 .endp
         .endseg
     .if * > FPSEMIT_END+1
@@ -204,17 +175,6 @@ fps_resume = *
 ;   rate. C=0 means the window is not full yet (at boot, or the first frame
 ;   after a toggle -- sum < 4 is precisely the old mean==0 test): fps_draw2
 ;   retries next frame rather than paint a number it never fetched.
-;
-;   EXACT BY SUM (2026-08-31, "ci sa FPS zobrazuje uplne presne"): the rate of
-;   a 4-frame window is 4 frames / (sum VBLANKs) = 200/sum -- no mean at all.
-;   The old floor(sum/4) -> 50/mean path overstated the rate whenever the sum
-;   was not divisible by 4: sum 34 (a typical 8,9,9,8 stretch) showed 6,25 for
-;   a true 5,88 -- up to +12 %, always in the flattering direction. Three
-;   252-byte tables indexed by sum-4 replace the divide AND the error; they
-;   sit in the win2 pages the SQ2 mirror vacated, read three times per
-;   window (~0.7 s), where x11.2 costs nothing.
-;   frame_dt clamps dt_vbl to DOOR_DTMAX and hud_tail saturates the sum at
-;   255, so sum-4 lands in 0..251 -- exactly the tables' length.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_fetch
@@ -229,7 +189,6 @@ fps_resume = *
         sta fd_d1
         lda FPS_SUMD2,x
         sta fd_d2
-        sec
         rts
 ?none   clc
         rts
@@ -242,33 +201,20 @@ fps_resume = *
         org FPSD2_BASE
 ;--------------------------------------------------------------
 ; fps_draw2 -- "N,NN" (or "NN,NN") at the top-left of the view.
-;   The value STANDS for FPS_HOLD frames while the digits are re-blitted every
-;   frame. 50/dt_vbl is exact but it is ONE frame's rate, and a scene whose
-;   frames alternate 7 and 8 VBLANKs flipped the readout between 7,14 and 6,25
-;   every frame ("fps musi byt presne a stabilne"). Nothing is averaged, so
-;   nothing is blurred -- what stands is still one real frame's real rate.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fps_draw2
         dec fd_hold
-        bpl ?paint
+        bpl ?out                     ; held: the strip's chain has these digits
         jsr fps_fetch
         bcc ?out                     ; NOTHING TIMED YET -- and the hold is armed
- .if 1
         stz fd_sum                   ; ...and open the next window
- .else
-        lda #0
-        sta fd_sum                   ; ...and open the next window
- .endif
         lda #FPS_HOLD                ;   only AFTER a fetch that worked. Arming it
         sta fd_hold                  ;   first was the "0,00" flicker: the bail
-                                     ;   skipped the paint but left the hold set,
-                                     ;   so the next eight frames drew fd_d0/d1/d2
-                                     ;   as they had been left -- and their initial
-                                     ;   value is zero, which is a reading no row
-                                     ;   of the table can produce (they run 50,00
-                                     ;   down to 0,78). Retry next frame instead.
-?paint  lda #FPS_VX
+                                     ;   skipped the paint but left the hold set, ...
+        stz st_ng                    ; a new rate: its glyphs, recorded for the
+        inc st_cur                   ;   chains (strip.asm) -- once, not a frame
+        lda #FPS_VX*2                ; the pen, in the 320 strip's pixels
         sta fd_x
         lda fd_d0
         cmp #10
@@ -302,7 +248,7 @@ fps_resume = *
         lda mn_arm
         beq ?no                      ; still held from the press that acted
         dec mn_arm                   ; 1 -> 0: this press is spent
-        jmp fps_tog
+        bra fps_tog
 ?no     jmp mn_pend                  ; carry on down read_keys' old tail
 .endp
         .endseg
@@ -310,10 +256,7 @@ fps_resume = *
         ert 'fps_key outgrew FPSKEY_BASE..END (memory_map.inc)'
     .endif
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org FPSTOG_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; fps_tog -- the press: flip the readout. It used to buy a status-bar repaint
 ;   as well, to rub the digits off the ARMS box on the way out; the digits are
@@ -327,19 +270,13 @@ fps_resume = *
         jmp mn_pend
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > FPSTOG_END+1
-        ert 'fps_tog outgrew FPSTOG_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
         org FPSDRW_BASE
 fps_rec   dta a(0), [HUDV_COMMA>>16], HUDV_YSW, HUDV_COMMAH, 0, 0
                                      ; hud_blit's record for the glyphs that are
                                      ;   not in HUD_TAB: u24 vram, w, h, left,
-                                     ;   top. Only the comma uses it, so the
-                                     ;   bank and the width are set once here.
+                                     ;   top.
 fps_on    dta 0                      ; 'F': 1 = readout visible
 fd_hold   dta 0                      ; frames left in the window
 fd_sum    dta 0                      ; VBLANKs accumulated in it (saturating)
@@ -353,10 +290,7 @@ fd_d2     dta 0
         ert 'the fps_* state outgrew FPSDRW_BASE..END (memory_map.inc)'
     .endif
 
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org FPSSUM_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; The EXACT-rate tables (see fps_fetch): entry s-4 holds the three decimal
@@ -378,10 +312,5 @@ FPS_SUMD2
         dta [20000/[#+4]]%10
         .endr
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > FPSSUM_END+1
-        ert 'the FPS sum tables outgrew FPSSUM_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org fps_resume

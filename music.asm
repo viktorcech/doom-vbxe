@@ -1,29 +1,7 @@
-;==============================================================
-; music.asm -- the intermission song as a stream of POKEY register writes.
-;
-; NOT an RMT player. The RMT player is 1178 B (measured off
-; mads-src/players/rmt_player_relocator/example/_rmt_player_demo.obx, segments
-; $3182/$3200/$3300) and the biggest contiguous free block in this machine is
-; 173 B, so it could only live in the MENU_RUN overlay window -- which the
-; intermission's OWN overlay already occupies. tools/pack_musstream.py settled
-; this from the start: "the player runs HERE instead, once, at build time".
-; RMT stays the authoring format (mus/D_INTER.rmt, editable in the tracker);
-; what ships is the register stream it renders to.
-;
-; THE STREAM (tools/pack_musstream.py encode()), per frame:
-;     mask byte -- bit n set = register $D200+n changed this frame
-;     values    -- one byte per set bit, low bit first
-;     $FF       -- end of song; mus_play loops back to the start
-; A frame that changes nothing is one zero byte, which is why 202 s of music
-; is 29,714 B.
-;
-; CHANNEL 1 IS NEVER WRITTEN. Bits 0 and 1 of the mask are never set, because
-; pack_musstream seeds its `prev` with 0 for $D200/$D201: AUDF1 is the divisor
-; sound.asm's Timer-1 digi mixer clocks itself with, and while that IRQ is
-; enabled channel 1 cannot be deferred (Altirra pokey.cpp), so a note there
-; multiplies POKEY's event rate. The music gets $D202-$D207 -- three voices.
-; AUDCTL is not in the stream either; it must stay 0 for the same mixer.
-;==============================================================
+;--------------------------------------------------------------
+; music.asm -- the intermission song as a stream of POKEY register writes,
+;   rendered at build time by tools/pack_musstream.py.
+;--------------------------------------------------------------
         icl 'music_syms.inc'         ; MUS_BANK0/COUNT/BYTES + one equ per song
 ; The songs must sit ABOVE the SDRAM level cache: read_sectors' tee parks every
 ; cached ATR sector at PREn_BASE + (sec - PREn_SEC)*128 on its first drive
@@ -53,55 +31,40 @@ mus_resume = *
         org MUSICLD_BASE             ; the loader first, in its own hole
 ;--------------------------------------------------------------
 ; load_music -- MUS_CHUNKS x 4 KB from sector MUS_SEC1 into Rapidus SDRAM at
-;   bank MUS_BANK0, offset 0. A straight copy of load_weapons (diskio.asm):
-;   read_ext carries ll_dst/ll_sec forward, and ll_dst wrapping to 0 between
-;   chunks is how the run detects it crossed into the next 64 KB bank -- which
-;   is why pack_musstream puts the songs at a BANK-ALIGNED MUS_BANK0:0000 and
-;   not at the first free SDRAM byte.
-;   Boot path: ROM is in and the CPU is in emulation mode here, so this stays
-;   8-bit throughout (no rep/sep -- they are no-ops with E=1).
-;   2026-09-16: and then a SECOND walk, WIM_CHUNKS into WIMAP_BANK:0000 -- the
-;   episode 2/3 intermission world maps (tools/pack_wi.py wimaps.bin, wi.asm
-;   wi_bgsel). make_atr_doom.py lays them down right behind the songs, so
-;   ll_sec is already there when the first walk ends.
+;   bank MUS_BANK0, offset 0.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc load_music
-        lda #<MUS_SEC1
-        sta ll_sec
-        lda #>MUS_SEC1
+        lda #<MUS_SEC1               ; the songs: ONE DEFLATE stream too
+        sta ll_sec                   ;   (2026-09-26) -- POKEY register runs
+        lda #>MUS_SEC1               ;   pack to a quarter of their sectors
         sta ll_sec+1
-        lda #MUS_BANK0               ; A = bank, X = chunks, offset 0 of it
-        ldx #MUS_CHUNKS
+        stz inf_out
+        stz inf_out+1
+        lda #MUS_BANK0
+        sta inf_out+2
+        jsr inflate
  .if WIM_CHUNKS > 0
-        jsr ?run                     ; the songs...
-        lda #WIMAP_BANK              ; ...then the world maps, the next region
-        ldx #WIM_CHUNKS              ;   on the disk
+        lda #<WIM_SEC1               ; ...then the world maps: the next
+        sta ll_sec                   ;   stream, straight into their banks
+        lda #>WIM_SEC1
+        sta ll_sec+1
+        stz inf_out
+        stz inf_out+1
+        lda #WIMAP_BANK
+        sta inf_out+2
+        jsr inflate
  .endif
-?run    sta ll_bank
-        stx mus_i
-        stz ll_dst
-        stz ll_dst+1
-?chunk  lda #32                      ; one 4 KB chunk per read_ext pass
-        sta ll_left
-        jsr read_ext
-        lda ll_dst
-        ora ll_dst+1
-        bne ?same
-        inc ll_bank
-?same   dec mus_i
-        bne ?chunk
         lda #MAP_EXT_BANK            ; put ll_bank back the way load_weapons
-        sta ll_bank                  ;   does -- load_dtab/load_los assume it
+        sta ll_bank                  ;   used to -- load_dtab/load_los assume it
         rts
 .endp
         .endseg
-mus_i    dta 0                       ; load_music chunk counter
     .if * > MUSICLD_END+1
         ert 'load_music outgrew MUSICLD_BASE..END (memory_map.inc)'
     .endif
-    .if [WIM_CHUNKS > 0] .and [WIM_SEC1 != MUS_SEC1+MUS_CHUNKS*32]
-        ert 'load_music reads the world maps on from the songs: WIM_SEC1 must follow MUS'
+    .if [WIM_CHUNKS > 0] .and [WIM_SEC1 != MUS_SEC1+MUS_PAK_SECT]
+        ert 'the world-map stream must follow the packed songs (make_atr_doom.py)'
     .endif
     .if [WIM_CHUNKS > 0] .and [WIMAP_BANK >= MUS_BANK0] .and [WIMAP_BANK <= MUS_BANK0+[[MUS_CHUNKS*4096-1]>>16]]
         ert 'WIMAP_BANK overlaps the songs (MUS_BANK0 + MUS_CHUNKS)'
@@ -122,9 +85,7 @@ mus_i    dta 0                       ; load_music chunk counter
         stx mus_cur                  ; remembered so the $FF marker can loop
         inc mus_on                   ; ...and arm mus_play (mus_stop disarms)
         stz snd_vmax                 ; and take channels 2/3/4 off the SFX
-                                     ;   allocator: every effect on this screen
-                                     ;   plays on channel 1, which the song does
-                                     ;   not use anyway
+                                     ;   allocator: every effect on this screen ...
         lda mus_b0,x
         sta mus_p
         lda mus_b1,x
@@ -161,49 +122,44 @@ mus_i    dta 0                       ; load_music chunk counter
         lda mus_on                   ; ARMED? wi_melt calls wi_tic -- and so
         beq ?off                     ;   this -- BEFORE wi_pre has run mus_reset
                                      ;   (wi_head takes the melt entry without
-                                     ;   touching wi_pre). Without this gate the
-                                     ;   first melt of every level plays from a
-                                     ;   garbage mus_p: zp_sptr is whatever the
-                                     ;   last BSP walk left in it.
-        lda [mus_p]                  ; the mask
-        jsr mus_adv
-        cmp #$FF                     ; end of song?
-        beq ?loop
-        sta mus_mask
+                                     ;   touching wi_pre).
+                                      ; 2026-09-23 (6502-idioms: stream bytes): Y walks the
+        lda [mus_p]                  ;   record (<= 1+8 bytes; [dp],y carries into the
+        cmp #$FF                     ;   bank itself) and the cursor moves ONCE, by the
+        beq ?loop                    ;   record's length -- no jsr mus_adv a byte. At
+        sta mus_mask                 ;   $FF mus_reset re-points it anyway
+        ldy #1                       ; Y = the next value byte
         ldx #0                       ; X = register index: $D200 + X
 ?bit    lsr mus_mask                 ; bit 0 first, so X walks up with it
         bcc ?next
-        lda [mus_p]
-        jsr mus_adv                  ; consume the value byte EITHER WAY (A is
-                                     ;   untouched by mus_adv), so the cursor
-                                     ;   never desyncs from the mask
-        cpx #2                       ; CHANNEL 1 IS NEVER TOUCHED. pack_musstream
-        bcc ?next                    ;   seeds prev[0..1] = 0, so bits 0-1 are
-                                     ;   never set in a well-formed stream -- but
-                                     ;   AUDF1 is the digi IRQ's Timer-1 divisor
-                                     ;   and one stray write retunes the whole
-                                     ;   mixer. Dropping the STORE and not the
-                                     ;   byte is what keeps the cursor aligned.
+        lda [mus_p],y                ; consume the value byte EITHER WAY, so the
+        iny                          ;   cursor never desyncs from the mask
+        cpx #2                       ; CHANNEL 1 IS NEVER TOUCHED (bits 0-1: see
+        bcc ?next                    ;   the .else)
         sta mus_shad-2,x             ; into the SHADOW, not into POKEY
 ?next   inx
         cpx #8
         bne ?bit
+        tya                          ; mus_p += the record's length, 24-bit
+        clc
+        adc mus_p
+        sta mus_p
+        bcc ?emit
+        inc mus_p+1
+        bne ?emit
+        inc mus_p+2
 
         ; ---- RE-ASSERT EVERY FRAME ---------------------------------------
         ; The stream is a DELTA stream: a register that does not change carries
-        ; no byte, and stretches of 20+ unchanged frames are normal. POKEY is
-        ; not ours alone across a level boundary, so the shadow is re-sent every
-        ; frame rather than trusted to still be in the chip. mus_reset has taken
-        ; channels 2/3/4 off the SFX allocator (snd_vmax), so nothing else
-        ; writes them while this runs -- which is what finally gave three voices
-        ; instead of one or two.
-?emit   ldy #4                       ; register pair: 4 = ch4, 2 = ch3, 0 = ch2
-?e      lda mus_shad,y
-        sta AUDF1_R+2,y              ; AUDF
-        lda mus_shad+1,y
-        sta AUDF1_R+3,y              ; AUDC
-        dey
-        dey
+        ; no byte, and stretches of 20+ unchanged frames are normal.
+                                      ; 2026-09-22 (rapidus-bus-timing): X and long,x --
+?emit   ldx #4                       ;   an abs,y store dummy-reads POKEY first (a chip
+?e      lda mus_shad,x               ;   cycle), and there is no long,y. X is free here
+        sta.l AUDF1_R+2,x            ;   (the ?bit loop spent it already).
+        lda mus_shad+1,x
+        sta.l AUDF1_R+3,x
+        dex
+        dex
         bpl ?e
         rts
 ?loop   lda mus_cur                  ; DOOM loops the intermission song for as
@@ -242,12 +198,6 @@ mus_i    dta 0                       ; load_music chunk counter
                                      ;   their own hole -- the player block is
                                      ;   140 B and the code fills it
 snd_vmax dta SND_VTOP                ; snd_alloc's ceiling (doubled voice index).
-                                     ;   SND_VTOP normally, 0 while the song is
-                                     ;   up. It lives HERE and not in sound.asm
-                                     ;   because that file's data sits in the
-                                     ;   pitch block, which has no spare byte --
-                                     ;   and because SND_VTOP/snd_vtop would be
-                                     ;   the SAME label: MADS is case-insensitive.
 mus_on   dta 0                       ; 0 = mus_play does nothing. Load-time zero
                                      ;   from the XEX, so the first melt of the
                                      ;   first level is already safe.

@@ -13,7 +13,6 @@ lump rotation digit 1..8, digit 0 = one sprite for all angles. Lumps named
 XXXXA2A8 hold frame A rot 2 and, mirrored, rot 8 (flip=True).
 
 CLI (verification):
-  python wadthings.py            -> E1M1 inventory + sprite resolution
   python wadthings.py --verify   -> resolve EVERY MOBJ entry against the WAD
   python wadthings.py --dump BAR1A0 -> _pomocne/preview/<lump>.png
 """

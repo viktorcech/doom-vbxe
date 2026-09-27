@@ -6,4 +6,4 @@ mus_b0
 mus_b1
         dta $00
 mus_b2
-        dta $67
+        dta $6B

@@ -1,47 +1,26 @@
 ;--------------------------------------------------------------
-;
-; BEFORE YOU ADD CODE ANYWHERE, read this: some RAM looks free to MADS and is
-; NOT. It carries no XEX segment, so the assembler places code there happily --
-; and then something overwrites it at runtime, before the first frame:
-;     $1000-$13FF  TEX_STAGE   -- the SIO staging buffer, every loader streams here
-;     $4000-$4BFF  map slot    -- load_level streams the level here
-;                              ($4C00-$85FF was the seg table until
-;                               2026-07-31; it is ordinary RAM now)
-;     $9000-$9FFF  MEMAC window-- writes go to VBXE, not to RAM
-;     $1400-$14FF  bsp_stack   -- rebuilt every frame ($1500+ is CODE now)
-;     $0700-$08FF  ATR boot loader, alive WHILE the XEX loads
-; There is no error message. The symptom is a flat pink screen at boot. It has
-; already cost one debugging session ($A800 blit segment crept past $B000).
-;
-; When a segment runs out of room, move a whole .proc out with `org` + absolute
-; jsr -- that is why collision sits at $0900, check_bbox at $1B00 and tw_setup at
-; $8D00 -- instead of letting the segment creep into the next thing.
-;
-; Guards, all three wired into build.ps1 / build_atr.ps1:
-;   * the RESERVED list in tools/ram_map.py (check_xex.py enforces it)
-;   * tools/check_xex.py                    (fails the build on any overlap)
-;   * tools/ram_map.py --update             (regenerates these figures)
-;--------------------------------------------------------------
-;==============================================================
-; math.asm -- fixed-point helpers for the BSP renderer.
-;   Correctness-first: plain shift/add multiply + shift/sub divide
-;   (easy to verify by reading). The fast wolf3d quarter-square mul
-;   replaces these once the geometry is proven correct.
-;
-; All signed 16-bit unless noted. ZP scratch defined in bsp_main.asm.
-;==============================================================
-
+; math.asm -- fixed-point helpers for the renderer (signed 16-bit unless noted).
 ;--------------------------------------------------------------
 ; qsmul -- INLINED 8x8 -> 16 quarter-square.  :3(2) = (:1) * (:2)
 ;   a*b = QSqr[a+b] - QSqr[|a-b|], QSqr[x]=floor(x^2/4) (qs_tables.inc).
 ;   tips2 #3: a macro inlined 4x into umul16 -> no jsr/rts, reads the
-;   operand bytes directly (no qs_x/qs_y staging). Clobbers A,Y.
-;   :3 is the 16-bit DESTINATION -- qs_p for every caller but umul16's first
-;   product, which lands straight in m_prod and saves the copy that followed.
 ;--------------------------------------------------------------
-
-
 .macro qsmul
+ .ifdef ANTONIA2
+        ; ANTONIA II (drac030: "wykorzystujac na szersza skale sprzetowe ...
+        rep #$20
+        .LONGA ON
+        lda :1
+        and #$00FF
+        sta.l ANT_MUL
+        lda :2
+        and #$00FF
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL
+        sta :3
+        sep #$20
+        .LONGA OFF
+ .else
         clc
         lda :1
         adc :2                     ; x+y (9-bit: Y=low8, carry=bit8)
@@ -60,11 +39,7 @@
         sbc :2
         bcs ?dok
         eor #$FF                   ; the carry is ALREADY clear -- that is what
- .if 1
 	inc
- .else
-        adc #1                     ;   the bcs above just tested -- so the `clc`
- .endif
 ?dok    tay                        ;   that stood here was dead (2 cyc, 83 %)
         sec                        ; :3 -= QSqr[|x-y|]
         lda :3
@@ -73,6 +48,37 @@
         lda :3+1
         sbc QSqrHiBase,y
         sta :3+1
+ .endif
+.endm
+
+;--------------------------------------------------------------
+; RECIP_NORM -- normalize the 16-bit A (> 0) to a 9-bit mantissa + exponent
+;   for the reciprocal tables: X = the mantissa's low byte (the table index;
+;   m in [256,511]), rc_e = e (signed, value ~= m << e). IN 16-bit M, OUT
+;   8-bit M. INLINED at its four callers (2026-09-26): 20 instructions, 407
+;   calls a frame, and the jsr/rts pair was 12 of each call's ~39 cycles
+;   (6502-cycles-layout: inline what is smaller than its call).
+;--------------------------------------------------------------
+.macro RECIP_NORM
+	.LONGA ON
+	ldx #0                       ; e = 0, X counts it
+	cmp #2*256                   ; the tests once, then the shift loops carry
+	bcc ?dn0                     ;   their own compare: 10 cycles a step
+?up	lsr                          ; m >= 512 -> halve until it is not; a halved
+	inx                          ;   512+ is 256+, so the doubling test below
+	cmp #2*256                   ;   is skipped outright
+	bcs ?up
+	bra ?done
+?dn0	cmp #256
+	bcs ?done
+?dn	asl                          ; m < 256 -> double until it is not
+	dex
+	cmp #256
+	bcc ?dn
+?done	stx rc_e
+	sep #$20
+	.LONGA OFF
+	tax                          ; the mantissa's low byte -> X
 .endm
 
 ;--------------------------------------------------------------
@@ -84,7 +90,9 @@
 ;--------------------------------------------------------------
 .macro qsmulx
         sec                        ; |x-y| FIRST, into X (0..255 -> Base table)
-        lda :1
+  .if :0 < 4                       ; (a 4th argument: A ALREADY holds :1 -- the
+        lda :1                     ;   caller's last store, 2026-09-26)
+  .endif
         sbc :2
         bcs ?dok
         eor #$FF                   ; the carry is clear: that is what the bcs
@@ -111,129 +119,170 @@
 .endm
 
 ;--------------------------------------------------------------
+; qsmulxa -- qsmulx with the product LEFT IN A:B (A = lo, B = hi, M 8-bit), not
+;   stored: umul16's partial products are added straight in, no qs_p round trip.
+;   xba keeps C, so the hi subtract takes the lo subtract's borrow as before.
+;--------------------------------------------------------------
+.macro qsmulxa
+        sec                        ; |x-y| into X (0..255 -> Base table)
+        lda :1
+        sbc :2
+        bcs ?dok
+        eor #$FF
+        inc
+?dok    tax
+        clc
+        lda :1
+        adc :2                     ; x+y (9-bit: Y=low8, carry=bit8)
+        tay
+        bcc ?base
+        lda QSqrLoExt,y            ; C = 1: the adc's carry IS the sec
+        sbc QSqrLoBase,x
+        xba
+        lda QSqrHiExt,y
+        bra ?have
+?base   sec
+        lda QSqrLoBase,y
+        sbc QSqrLoBase,x
+        xba                        ; lo -> B
+        lda QSqrHiBase,y
+?have   sbc QSqrHiBase,x
+        xba                        ; A = lo, B = hi
+.endm
+
+;--------------------------------------------------------------
+; qsmulxa_ld -- qsmulxa for a caller whose A ALREADY holds :1 (2026-09-26,
+;   drac_flow RELOAD: umul16's p11 test `lda m_a+1 / jeq ?end` leaves it
+;   there, and qsmulxa's first `lda :1` reloaded it). Otherwise identical.
+;--------------------------------------------------------------
+.macro qsmulxa_ld
+        sec                        ; |x-y| into X, A = :1 on the way in
+        sbc :2
+        bcs ?dok
+        eor #$FF
+        inc
+?dok    tax
+        clc
+        lda :1
+        adc :2                     ; x+y (9-bit: Y=low8, carry=bit8)
+        tay
+        bcc ?base
+        lda QSqrLoExt,y            ; C = 1: the adc's carry IS the sec
+        sbc QSqrLoBase,x
+        xba
+        lda QSqrHiExt,y
+        bra ?have
+?base   sec
+        lda QSqrLoBase,y
+        sbc QSqrLoBase,x
+        xba                        ; lo -> B
+        lda QSqrHiBase,y
+?have   sbc QSqrHiBase,x
+        xba                        ; A = lo, B = hi
+.endm
+
+;--------------------------------------------------------------
 ; umul16 -- UNSIGNED 16x16 -> 32.  m_a(2) * m_b(2) -> m_prod(4)
 ;   tips #2/#3: four 8x8 quarter-square products (inlined qsmul) instead
 ;   of the 16-iteration shift/add loop.  Bit-identical, much faster.
 ;     P = p00 + (p01+p10)<<8 + p11<<16
 ;     p00=aL*bL  p01=aL*bH  p10=aH*bL  p11=aH*bH   (aL=m_a, aH=m_a+1, ...)
 ;--------------------------------------------------------------
+;   UMUL16I is the BODY, a macro since 2026-09-26: the hottest callers
+;   (smul32 272/frame, screenx_signed 189, calc_u 136) expand it in place
+;   and drop the 12-cycle jsr/rts per call; the rest `jsr umul16`. Clobbers
+;   A/X/Y (umul16 no longer saves X -- 2026-09-23, drac_xlive). ANTONIA2
+;   keeps the call: the hardware multiplier lives in umul16a.asm.
+;--------------------------------------------------------------
+.macro UMUL16I
+ .ifdef ANTONIA2
+        jsr umul16
+ .else
+  .if :0 = 2                       ; (2026-09-26) UMUL16I 0, 1: A holds m_a's low
+   .if :2 = 1                      ;   byte on entry; UMUL16I 0, 2: m_b's. The
+        qsmulx m_a, m_b, m_prod, ld ;  product is symmetric (|x-y|, x+y), so the
+   .else                           ;   held one goes first and is not reloaded
+        qsmulx m_b, m_a, m_prod, ld
+   .endif
+  .else
+        qsmulx m_a, m_b, m_prod    ; p00 = aL*bL, written STRAIGHT into bytes 0,1
+  .endif
+        stz m_prod+2               ; bytes 2,3 start at zero and the products that
+        stz m_prod+3               ;   would land there are ADDED, not stored,
+        lda m_a+1                  ;   which is what lets any of them be skipped
+        ora m_b+1
+  .if :0 <> 1
+        jeq ?end                   ; both high bytes 0: p00 is the product
+  .else                            ; (the umul16 PROC passes an argument: its
+        bne ?nz1                   ;   early exits are a straight rts, not a
+        rts                        ;   jmp to the rts at ?end -- drac_flow
+?nz1                               ;   JMPRTS, 2026-09-26)
+  .endif
+        lda m_b+1
+	jeq ?p10
+                                      ; p01 = aL*bH IN A:B (qsmulxa) -> add at byte 1
+        qsmulxa m_a, m_b+1
+	rep #$21		;absorb CLC
+	.LONGA ON
+        adc m_prod+1                 ; byte 2 is still 0 here: p00_hi + p01 <=
+        sta m_prod+1                 ;   $FE + $FE01 = $FEFF never carries, so
+	sep #$20                     ;   byte 3 needs no carry step (2026-09-26:
+	.LONGA OFF                   ;   the bcc/inc was always taken)
+        lda m_a+1
+  .if :0 <> 1
+        jeq ?end                   ; aH = 0 -> p10 = p11 = 0 (another 32 %)
+  .else
+        bne ?nz2
+        rts
+?nz2
+  .endif
+                                      ; p11 = aH*bH IN A:B -> add at byte 2; A IS
+        qsmulxa_ld m_a+1, m_b+1      ;   m_a+1 already (2026-09-26, drac_flow RELOAD)
+	rep #$21		;absorb CLC
+	.LONGA ON
+        adc m_prod+2
+        sta m_prod+2
+	sep #$20
+	.LONGA OFF
+?p10
+                                      ; p10 = aH*bL IN A:B -> add at byte 1
+        qsmulxa m_a+1, m_b
+	rep #$21		;absorb CLC
+	.LONGA ON
+        adc m_prod+1
+        sta m_prod+1
+	sep #$20
+	.LONGA OFF
+        bcc ?end
+        inc m_prod+3
+?end
+ .endif
+.endm
+
+;--------------------------------------------------------------
+; UDQ -- after udiv24 (any entry) the software divider returns with the whole
+;   16-bit accumulator = the quotient (its tail is `lda m_prod / sta m_quot`),
+;   so a caller that goes on 16-bit uses A instead of reloading m_quot
+;   (2026-09-26). drac030's ANTONIA2 divider leaves the remainder in A: there
+;   the macro is the reload. Use it right after the caller's `rep #$20`.
+;
+;   ANTONIA2 IS NOT TESTED: Altirra does not emulate the Antonia II
+;   multiplier/divider, so the sim and the emulator cannot run that build.
+;   Keep the .ifdef ANTONIA2 paths correct by reading, do not try to test them.
+;--------------------------------------------------------------
+.macro UDQ
+ .ifdef ANTONIA2
+        lda m_quot
+ .endif
+.endm
+
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc umul16
  .ifdef ANTONIA2
-        ; ---- ANTONIA II HARDWARE MULTIPLIER (drac030, 2026-09-10) -----------
-        ; $FFF00C/$FFF00E take the two 16-bit factors, $FFF00C..$FFF00F hands
-        ; back the 32-bit product: CONSTANT 46 cycles, against 80..360+ for the
-        ; four quarter-squares below. Bit-identical -- the same unsigned product
-        ; -- so every caller (smul32 included) inherits it unchanged.
-        ; drac030's file, dropped in verbatim so a newer one can replace it
-        ; without re-editing math.asm. NOT Rapidus-compatible; build it with
-        ;   .\build_atr.ps1 -Antonia2
+        ; ---- ANTONIA II HARDWARE MULTIPLIER (drac030, 2026-09-10) ----------- ...
         icl 'umul16a.asm'
  .else
-        ; --- THE OPERANDS ARE SMALL. Measured on a real frame
-        ;     (tools/_dbg_mathargs.py, 1307 calls): m_a < 256 in 76 % of them and
-        ;     BOTH < 256 in 44 %. A zero high byte makes p10 and p11 zero and
-        ;     p01 zero as well, i.e. three of the four quarter-squares are
-        ;     multiplying by nothing. Testing for it costs 5 cycles and skips up
-        ;     to 260 -- and it is not an approximation: the products it drops
-        ;     ARE zero, so the 32-bit result is the same.
-        phx                        ; qsmulx eats X (2026-09-15); 7 cycles a call
-                                   ;   against 12 saved per product, ~1.8 of them
-        qsmulx m_a, m_b, m_prod    ; p00 = aL*bL, written STRAIGHT into bytes 0,1
-                                   ;   (2026-08-30). It used to land in qs_p and
-                                   ;   then be copied here -- 12 cycles on every
-                                   ;   one of the 1040 calls a frame, for nothing:
-                                   ;   only the OTHER three products need qs_p,
-                                   ;   because they are ADDED to m_prod. p00 has
-                                   ;   nothing to add to, so it can just land.
-        stz m_prod+2               ; bytes 2,3 start at zero and the products that
-        stz m_prod+3               ;   would land there are now ADDED, not stored,
-                                   ;   which is what lets any of them be skipped.
-                                   ;   stz, not lda #0/sta: A dies on the next
-                                   ;   line, 1,023 calls/frame (_an_drac030)
-        lda m_a+1
-        ora m_b+1
-        bne ?more
-        plx
-        rts
- .if 0                             ; both high bytes 0 -> p00 IS the product (44 %)
-?far10  jmp ?p10                   ; TRAMPOLINE (2026-08-30). ?p10 sits past two
- .endif                            ;   qsmul expansions, out of branch reach, so
-                                   ;   the test used to be `bne ?p01 / jmp ?p10`
-                                   ;   -- a TAKEN branch on the 99 % path. Now
-                                   ;   that path falls through and the 1 % path
-                                   ;   pays the hop. Unreachable by fallthrough:
-                                   ;   the rts above ends the block.
-?more   lda m_b+1
- .if 1
-	jeq ?p10
- .else
-        beq ?far10                 ; bH = 0, aH != 0 -> only p10 is left (1 %)
- .endif
-?p01    qsmulx m_a, m_b+1, qs_p    ; p01 = aL*bH -> add at byte 1
- .if 1
-	rep #$21		;absorb CLC
-	.LONGA ON
-        lda m_prod+1
-        adc qs_p
-        sta m_prod+1
-	sep #$20
-	.LONGA OFF	
- .else
-        clc
-        lda m_prod+1
-        adc qs_p
-        sta m_prod+1
-        lda m_prod+2
-        adc qs_p+1
-        sta m_prod+2
- .endif
-        bcc ?p11
-        inc m_prod+3
-?p11    lda m_a+1
-        bne ?p11go
-        plx
-        rts                        ; aH = 0 -> p10 = p11 = 0 (another 32 %)
-
-?p11go  qsmulx m_a+1, m_b+1, qs_p        ; p11 = aH*bH -> add at byte 2
- .if 1
-	rep #$21		;absorb CLC
-	.LONGA ON
-        lda m_prod+2
-        adc qs_p
-        sta m_prod+2
-	sep #$20
-	.LONGA OFF
- .else
-        clc
-        lda m_prod+2
-        adc qs_p
-        sta m_prod+2
-        lda m_prod+3
-        adc qs_p+1
-        sta m_prod+3
- .endif
-?p10    qsmulx m_a+1, m_b, qs_p          ; p10 = aH*bL -> add at byte 1
- .if 1
-	rep #$21		;absorb CLC
-	.LONGA ON
-        lda m_prod+1
-        adc qs_p
-        sta m_prod+1
-	sep #$20
-	.LONGA OFF
- .else
-        clc
-        lda m_prod+1
-        adc qs_p
-        sta m_prod+1
-        lda m_prod+2
-        adc qs_p+1
-        sta m_prod+2
- .endif
-        bcc ?done
-        inc m_prod+3
-?done   plx
+        UMUL16I rts                  ; (2026-09-26) the body, with rts early exits
         rts
  .endif
 .endp
@@ -247,13 +296,9 @@
 ;   in the $2000 engine segment, and step_recip below needed the bytes.
 ;--------------------------------------------------------------
 sm14_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org SMUL14_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc smul_14
- .if 1
         lda m_a+1
 	eor m_b+1
 	sta m_sign
@@ -276,34 +321,13 @@ sm14_resume = *
 ?b_pos
 	sep #$20
 	.LONGA OFF
- .else
-  .if 1
-	stz m_sign
-  .else
-        lda #0
-        sta m_sign
-  .endif
-        ; abs(m_a)
-        lda m_a+1
-        bpl ?a_pos
-        inc m_sign
-        jsr m_neg
-?a_pos
-        ; abs(m_b)
-        lda m_b+1
-        bpl ?b_pos
-        lda m_sign
-        eor #1
-        sta m_sign
-        jsr m_negb
-?b_pos
- .endif
-        jsr umul16
+        phx                          ; umul16 no longer keeps X (2026-09-23)
+        UMUL16I 0, 2                 ; (inlined 2026-09-26; A = |m_b| lo already)
+        plx
 
         ; m_prod >>= 14 via (m_prod << 2) >> 16: shift the 32-bit product LEFT
         ; twice, then the result is bytes [2],[3]. 8 shifts instead of the
-        ; 14-iteration (56-shift) loop. Bit-identical (Gemini tip, tips #4b).
- .if 1
+        ; 14-iteration (56-shift) loop.
 	rep #$20
 	.LONGA ON
 	lda m_prod
@@ -317,11 +341,7 @@ sm14_resume = *
 	cpy #$80
         lda m_prod+2                 ;   >>14 instead of truncating. Truncation
         adc #0                       ;   lost up to a whole unit per frame per
-		                     ;   axis in move_player, bending the walk
-                                     ;   heading up to 2 deg toward the nearest
-                                     ;   axis ("pulls sideways", 2026-07-28 --
-                                     ;   DOOM's fixed_t positions lose nothing)
-        ; apply sign
+		                     ;   axis in move_player, bending the walk ...
         ldy m_sign
 	bpl ?done
 
@@ -330,47 +350,13 @@ sm14_resume = *
 
 ?done   sta m_res
 
-	sep #$20
+                                    ; 2026-09-22 (65816-windows): smul_14 returns 16-bit
 	.LONGA OFF
 	rts
- .else
-        asl m_prod
-        rol m_prod+1
-        rol m_prod+2
-        rol m_prod+3
-        asl m_prod
-        rol m_prod+1
-        rol m_prod+2
-        rol m_prod+3
-
-        asl m_prod+1                 ; C = the dropped fraction's MSB: ROUND the
-        lda m_prod+2                 ;   >>14 instead of truncating. Truncation
-        adc #0                       ;   lost up to a whole unit per frame per
-        sta m_res                    ;   axis in move_player, bending the walk
-        lda m_prod+3                 ;   heading up to 2 deg toward the nearest
-        adc #0                       ;   axis ("pulls sideways", 2026-07-28 --
-        sta m_res+1                  ;   DOOM's fixed_t positions lose nothing)
-        ; apply sign
-        lda m_sign
-        beq ?done
-        sec
-        lda #0
-        sbc m_res
-        sta m_res
-        lda #0
-        sbc m_res+1
-        sta m_res+1
-?done   rts
- .endif
 
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > SMUL14_END+1
-        ert 'smul_14 outgrew SMUL14_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org sm14_resume
 
 ;--------------------------------------------------------------
@@ -417,14 +403,7 @@ sm14_resume = *
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc smul32
  .ifdef ANTONIA2
-        ; ANTONIA II: |a| * |b| on the multiplier, the sign put back after --
-        ; the software's own shape, minus the jsr and the write-back of |a|/|b|
-        ; into m_a/m_b (every caller -- collision, cross_pos, seg_draw, sprites,
-        ; the projection -- reads m_prod and reloads m_a/m_b). The factors stay
-        ; at or below $8000, the range drac030's umul16 has been proven with on
-        ; the card: how it treats bit 15 is not written down anywhere here, and
-        ; the first version (the unsigned-wrap correction, factors up to $FFFF)
-        ; drew a stray band at the E1M1 start on the real machine (draco.jpg).
+        ; ANTONIA II: |a| * |b| on the multiplier, the sign put back after -- ...
         lda m_a+1
         eor m_b+1
         sta m_sign                   ; bit 7 = the product's sign
@@ -461,7 +440,6 @@ sm14_resume = *
         .LONGA OFF
 ?pos    rts
  .else
- .if 1
 	lda m_a+1
 	eor m_b+1
 	sta m_sign
@@ -482,31 +460,12 @@ sm14_resume = *
 ?bp
 	sep #$20
 	.LONGA OFF
- .else
-  .if 1
-	stz m_sign
-  .else
-        lda #0
-        sta m_sign
-  .endif
-        lda m_a+1
-        bpl ?ap
-        inc m_sign
-        jsr m_neg
-
-?ap     lda m_b+1
-        bpl ?bp
-        lda m_sign
-        eor #1
-        sta m_sign
-        jsr m_negb
-?bp
- .endif
-	jsr umul16
-
+	UMUL16I 0, 2                 ; (inlined 2026-09-26; A = m_b lo already: no reload) (no phx/plx: NO caller keeps X across smul32 --
+                                     ;   cross_pos clobbers it itself, track_calc's and
+                                     ;   process_seg's callers reload it, spr_proj's
+                                     ;   main path clobbers it; checked 2026-09-23)
         lda m_sign
         bpl ?done
- .if 1
 	rep #$20
 	.LONGA ON
 	sec
@@ -518,24 +477,6 @@ sm14_resume = *
         sta m_prod+2
 	sep #$20
 	.LONGA OFF
- .else
-        lda m_sign
-        beq ?done
-
-        sec                          ; negate m_prod (4 bytes)
-        lda #0
-        sbc m_prod
-        sta m_prod
-        lda #0
-        sbc m_prod+1
-        sta m_prod+1
-        lda #0
-        sbc m_prod+2
-        sta m_prod+2
-        lda #0
-        sbc m_prod+3
-        sta m_prod+3
- .endif
 ?done   rts
  .endif
 .endp
@@ -546,27 +487,16 @@ sm14_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cross_pos
- .if 1
 	rep #$20
 	.LONGA ON
+cp_w16                               ; (16-bit callers enter here: seg_draw, use_side)
         lda cx_a
         sta m_a
         lda cx_b
         sta m_b
 	sep #$20
 	.LONGA OFF
- .else
-        lda cx_a
-        sta m_a
-        lda cx_a+1
-        sta m_a+1
-        lda cx_b
-        sta m_b
-        lda cx_b+1
-        sta m_b+1
- .endif
         jsr smul32                   ; m_prod = a*b
- .if 1
 	rep #$20		;20 bytes
 	.LONGA ON
 	lda m_prod
@@ -580,24 +510,7 @@ sm14_resume = *
         sta m_b
 	sep #$20
 	.LONGA OFF
- .else
-        ldx #3			;25 bytes
-?s1     lda m_prod,x
-        sta cx_p1,x
-        dex
-        bpl ?s1
-
-        lda cx_c
-        sta m_a
-        lda cx_c+1
-        sta m_a+1
-        lda cx_d
-        sta m_b
-        lda cx_d+1
-        sta m_b+1
- .endif
         jsr smul32                   ; m_prod = c*d
- .if 1
 	rep #$20
 	.LONGA ON
 	sec
@@ -620,33 +533,6 @@ sm14_resume = *
 	.LONGA OFF
 	lda #0
 	rts
- .else
-        sec                          ; cx_p1 -= m_prod  (P1 - P2)
-        lda cx_p1
-        sbc m_prod
-        sta cx_p1
-        lda cx_p1+1
-        sbc m_prod+1
-        sta cx_p1+1
-        lda cx_p1+2
-        sbc m_prod+2
-        sta cx_p1+2
-        lda cx_p1+3
-        sbc m_prod+3
-        sta cx_p1+3                  ; sign test (sta leaves sbc's N alone)
-        bmi ?zero                    ; negative -> not > 0
-
-        lda cx_p1
-        ora cx_p1+1
-        ora cx_p1+2
-        ora cx_p1+3
-        beq ?zero                    ; zero -> not > 0
-
-        lda #1
-        rts
-?zero   lda #0
-        rts
- .endif
 .endp
         .endseg
 
@@ -677,90 +563,187 @@ sm14_resume = *
 ;   land between a write and its read. FMUL keeps its tables on both builds.
 ANT_MUL equ $FFF00C                  ; w: factor, factor   r: the 32-bit product
 ANT_DIV equ $FFF008                  ; w: dividend, divisor  r: quotient, remainder
+ANT_CONF1 equ $FFF001                ; CONF1: b0 VBENA, b1 VBADR (underrom.asm sets them)
  .endif
+; FMUL_BODY -- the table product of the 16-bit magnitude in :4 (X = its hi byte
+;   on entry), sign applied from :5 (0 = keep): 8-bit in, 16-bit A out.
+.macro FMUL_BODY
+        clc                        ; X = hi byte index, phase 1
+        lda.l FRAC_EXT+:2,x        ; Tmi[hi] -> byte2's other half
+        sta qs_p
+        lda.l FRAC_EXT+:3,x        ; Thi[hi] -> byte3, parked in Y (tay/tya is
+        tay                        ;   2 cycles cheaper than a qs_p+1 roundtrip
+        lda.l FRAC_EXT+:1,x        ;   and neither touches the carry)
+        ldx :4                     ; lo byte index, phase 2 (ldx keeps carry)
+        adc.l FRAC_EXT+:2,x        ; byte1 = Tlo[hi] + Tmi[lo]  (carry only)
+        lda qs_p
+        adc.l FRAC_EXT+:3,x        ; byte2 = Tmi[hi] + Thi[lo] + carry
+                                      ; the WORD is built in A, m_res is not written:
+        xba                        ;   byte2 parks in B (xba keeps C), byte3 comes
+        tya                        ;   in, xba again -> A = byte2, B = byte3. The
+        adc #0                     ;   RESULT IS IN A (16-bit) on exit: every user
+        xba                        ;   takes it from there (transform, cb_corners)
+.endm
+
+; FMUL :1=Tlo :2=Tmi :3=Thi :4=const sign (0/1) :5=the signed16 variable.
+;   2026-09-26: the variable is read IN PLACE -- no copy into m_a first, no
+;   m_sign: a positive variable indexes the tables straight from :5 and its
+;   sign is :4 alone; a negative one gets |var| in m_a and its own body copy,
+;   where the sign is :4 inverted. Same tables, same sums: bit-identical.
+;   2026-09-27: :4 is a per-FRAME sign, so the `ldx :4 / beq|bne` of both
+;   tails is gone -- fmp/fmn are patched by build_frac_tables (fm_patch):
+;   $80 `bra ?done` keeps the product, $B0 `bcs ?done` falls into the negate
+;   (C = 0 after FMUL_BODY: its sum is <= 2^31, the top byte's adc #0 cannot
+;   carry). Assembled: the sign-0 form. :6/:7 name the two slots (global
+;   labels: a macro's own labels are local to it), :8 = the negated form.
+;   Entered 8-bit, LEAVES 16-bit. Clobbers A/X/Y, qs_p (and m_a if var < 0).
 .macro FMUL
-        lda :4                     ; total sign = sign(var) XOR sign(const):
-        ldx m_a+1                  ;   the hi byte is phase 1's index anyway, and
-        bpl ?abs                   ;   ldx sets N from it (2026-09-15: the common
-        eor #1                     ;   path stores the sign once, 15 cycles for 18)
-        sta m_sign
-        rep #$20                   ; m_a = |var|, the two's complement in the
-        .LONGA ON                  ;   accumulator (m_neg's jsr/rts + six 8-bit
-        lda m_a                    ;   instructions were 34 cycles; this is 19)
+        .LONGA OFF
+        ldx :5+1                   ; the hi byte is phase 1's index, N = the sign
+        bpl ?pos
+        rep #$20                   ; m_a = |var| (two's complement in A)
+        .LONGA ON
+        lda :5
         eor #$FFFF
         inc
         sta m_a
         .LONGA OFF
         sep #$20
         ldx m_a+1
-        bra ?go
-?abs    sta m_sign
-        ; --- THE TABLE CARRIES THE >>14. build_frac_tables stores 4*|const|*b,
-        ;     so this sum IS (|var|*|const|) << 2 and its top two bytes ARE the
-        ;     >>14 the transform wants: the eight-shift chain is gone, and with
-        ;     it bytes 0 and 1 -- byte 0 is a plain copy that cannot carry, and
-        ;     byte 1 is read only for ITS carry. 98 cycles -> 36, on the routine
-        ;     the view transform calls four times per vertex. Same number, not a
-        ;     cheaper approximation of it: 4*T[b] is exact (< 2^24) and the sum
-        ;     still fits 32 bits, so <<2 never loses a bit here either.
-?go     clc                        ; X = hi byte index, phase 1
-        lda.l FRAC_EXT+:2,x        ; Tmi[hi] -> byte2's other half
-        sta qs_p
-        lda.l FRAC_EXT+:3,x        ; Thi[hi] -> byte3, parked in Y (tay/tya is
-        tay                        ;   2 cycles cheaper than a qs_p+1 roundtrip
-        lda.l FRAC_EXT+:1,x        ;   and neither touches the carry)
-        ldx m_a                    ; lo byte index, phase 2 (ldx keeps carry)
-        adc.l FRAC_EXT+:2,x        ; byte1 = Tlo[hi] + Tmi[lo]  (carry only)
-        lda qs_p
-        adc.l FRAC_EXT+:3,x        ; byte2 = Tmi[hi] + Thi[lo] + carry
-        sta m_res
-        tya                        ; byte3 = Thi[hi] + carry
-        adc #0
-        sta m_res+1
-        lda m_sign                 ; apply sign
-        beq ?done
-        rep #$20                   ; -m_res, the word in A (2026-09-15)
+        FMUL_BODY :1, :2, :3, m_a
+        rep #$20                   ; var < 0: negate when the const is positive
         .LONGA ON
-        lda m_res
+        .def :%%6 = *              ; fmn (2026-09-27: named by the caller, :6)
+  .if :0 > 7
+        bra ?done                  ; (:8 given: the NEGATED product, 2026-09-26)
+  .else
+        bcs ?done
+  .endif
         eor #$FFFF
         inc
-        sta m_res
+        bra ?done
+        .LONGA OFF
+?pos    FMUL_BODY :1, :2, :3, :5
+        rep #$20
+        .LONGA ON
+        .def :%%7 = *              ; fmp (named by the caller, :7)
+  .if :0 > 7
+        bcs ?done
+  .else
+        bra ?done
+  .endif
+        eor #$FFFF
+        inc
+?done
+.endm
+
+;--------------------------------------------------------------
+; XFORM rx, ry -- (rx, ry) signed16, player-relative -> zp_X, zp_Z:
+;     X = (rx*sin - ry*cos) >> 14 ;  Z = (rx*cos + ry*sin) >> 14
+;   A macro since 2026-09-26 so each vertex slot has a body that reads its own
+;   cells in place (transform: zp_rx/zp_ry, transform2: zp_rx2/zp_ry2) -- no
+;   copies. X - p is formed as (-p) + X: the second FMUL returns -p itself.
+;   Enters 8-bit, leaves 16-bit with A = zp_Z.
+;--------------------------------------------------------------
+.macro XFORM
+        .local tf1
+        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, :1, fmn_%%3a, fmp_%%3a
+        .endl
+        sta zp_X
         .LONGA OFF
         sep #$20
-?done
+        .local tf2
+        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, :2, fmn_%%3b, fmp_%%3b, neg
+        .endl
+        clc
+        adc zp_X
+        sta zp_X
+        .LONGA OFF                   ; Z = rx*cos + ry*sin
+        sep #$20
+        .local tf3
+        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, :1, fmn_%%3c, fmp_%%3c
+        .endl
+        sta zp_Z
+        .LONGA OFF
+        sep #$20
+        .local tf4
+        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, :2, fmn_%%3d, fmp_%%3d
+        .endl
+        clc
+        adc zp_Z
+        sta zp_Z
 .endm
 
 ;--------------------------------------------------------------
 ; The FRACTAB block ($1920-$1A10): build_frac_tables' body moved to bank $01
 ; (b1_build_frac, bank01.asm -- it writes the six table pages, and those live
 ; in bank $01 now, so the builder follows them and its 1,536 stores stop
-; paying win2's x11.2 on every rotation frame). What stays here is its thunk
-; -- frame_setup TAIL-JUMPS in, so the rts hands control back to
-; frame_setup's caller -- and the two fmul procs, which grew 17 bytes each on
-; the long,x restructure and no longer fit the byteless $2000 segment.
+; paying win2's x11.2 on every rotation frame).
 ;--------------------------------------------------------------
 bft_resume = *
         org FRACTAB_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc build_frac_tables
         jsl B1CODE_BASE+b1_build_frac
-        rts
+                                      ; --- fm_patch (2026-09-27): the FMUL tails' sign
+        ldx #$80                     ;   branches follow sin_sgn/cos_sgn (see FMUL).
+        ldy #$B0                     ;   X = the plain tail's opcode (fmp of a var >= 0,
+        lda sin_sgn                  ;   fmn of the :6 form), Y = the inverse one.
+        beq ?s0                      ;   Sign 1 negates the plain product
+        ldx #$B0
+        ldy #$80
+?s0     txa                          ; unchanged since the last patch -> nothing
+        cmp.l B1CODE_BASE+fmp_cb1   ;   (6502-loops-tables-smc)
+        beq ?cos
+        sta.l B1CODE_BASE+fmp_cb1
+        sta.l B1CODE_BASE+fmp_cb2
+        sta.l B1CODE_BASE+fmp_cb3
+        sta.l B1CODE_BASE+fmp_cb4
+        sta.l B1CODE_BASE+fmp_ta
+        sta.l B1CODE_BASE+fmp_td
+        sta.l B1CODE_BASE+fmp_ua
+        sta.l B1CODE_BASE+fmp_ud
+        tya
+        sta.l B1CODE_BASE+fmn_cb1
+        sta.l B1CODE_BASE+fmn_cb2
+        sta.l B1CODE_BASE+fmn_cb3
+        sta.l B1CODE_BASE+fmn_cb4
+        sta.l B1CODE_BASE+fmn_ta
+        sta.l B1CODE_BASE+fmn_td
+        sta.l B1CODE_BASE+fmn_ua
+        sta.l B1CODE_BASE+fmn_ud
+?cos    ldx #$80
+        ldy #$B0
+        lda cos_sgn
+        beq ?c0
+        ldx #$B0
+        ldy #$80
+?c0     txa
+        cmp.l B1CODE_BASE+fmp_cb5
+        beq ?done
+        sta.l B1CODE_BASE+fmp_cb5
+        sta.l B1CODE_BASE+fmp_cb6
+        sta.l B1CODE_BASE+fmp_cb7
+        sta.l B1CODE_BASE+fmp_cb8
+        sta.l B1CODE_BASE+fmp_tc
+        sta.l B1CODE_BASE+fmp_uc
+        sta.l B1CODE_BASE+fmn_tb    ; tf2 is the :6 (negated) form
+        sta.l B1CODE_BASE+fmn_ub
+        tya
+        sta.l B1CODE_BASE+fmn_cb5
+        sta.l B1CODE_BASE+fmn_cb6
+        sta.l B1CODE_BASE+fmn_cb7
+        sta.l B1CODE_BASE+fmn_cb8
+        sta.l B1CODE_BASE+fmn_tc
+        sta.l B1CODE_BASE+fmn_uc
+        sta.l B1CODE_BASE+fmp_tb
+        sta.l B1CODE_BASE+fmp_ub
+?done   rts
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc fmul_sin
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn
-        rts
-.endp
-        .endseg
-
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc fmul_cos
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn
-        rts
-.endp
-        .endseg
+; (fmul_sin / fmul_cos had no callers left -- every FMUL is inlined; removed
+;  2026-09-26.)
 
 ;--------------------------------------------------------------
 ; sq2_lt_init -- mv_reset's per-level tail chain, rerouted through here so the
@@ -774,11 +757,7 @@ bft_resume = *
                                      ;   here; the SQ2 restore it was born for
                                      ;   died with the $C900 home, 2026-08-31)
         jsr wp_flight                ; extralight off + lt_seg call retargeted
-                                     ;   to normal: wp_init has just parked the
-                                     ;   flash state at WS_NULL, so an exit or
-                                     ;   death MID-FLASH cannot carry a lit
-                                     ;   view into the new level (g_game.c:788
-                                     ;   "cancel gun flashes")
+                                     ;   to normal: wp_init has just parked the ...
         jmp lt_init
 .endp
         .endseg
@@ -798,105 +777,29 @@ bft_resume = *
 ; digi IRQ inherits them (sound.asm:316). fmul_sin/fmul_cos are 8-bit code.
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc transform
-        ; FMUL INLINED x4 (2026-09-14): the four `jsr fmul_sin/fmul_cos` were
-        ; 12 cycles of jsr/rts each on ~200 transforms a frame (bench 09-14:
-        ; fmul_sin+fmul_cos 83k cyk/f, all from here and cb_corners). Same
-        ; macro, same tables, same order -> bit-identical. fmul_sin/fmul_cos
-        ; stay as procs for cb_corners (a fixed block, no room to inline).
- .if 1
-        lda zp_rx                  ; X = rx*sin - ry*cos (dp/dp: two byte
-        sta m_a                    ;   copies, 12 cycles, beat the lone
-        lda zp_rx+1                ;   rep/sep window at 14)
-        sta m_a+1
- .else
-        rep #$20                   ; ---- 16-bit A
-        .LONGA ON
-        lda zp_rx                  ; X = rx*sin - ry*cos
-        sta m_a
+        XFORM zp_rx, zp_ry, t       ; (FMUL inlined x4 since 2026-09-14)
+        rts                          ; 16-bit out
         .LONGA OFF
-        sep #$20
- .endif
-        .local tf1
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn
-        .endl
-        rep #$20
-        .LONGA ON
-        lda m_res
-        sta zp_X
-        lda zp_ry
-        sta m_a
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; transform2 -- transform for process_seg's v2: reads zp_rx2/zp_ry2 in place
+;   (2026-09-26; v1 lives in zp_rx/zp_ry, so neither needs a copy).
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc transform2
+        XFORM zp_rx2, zp_ry2, u
+        rts                          ; 16-bit out
         .LONGA OFF
-        sep #$20
-        .local tf2
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn
-        .endl
-        rep #$20
-        .LONGA ON
-        sec
-        lda zp_X
-        sbc m_res
-        sta zp_X
-        lda zp_rx                  ; Z = rx*cos + ry*sin
-        sta m_a
-        .LONGA OFF
-        sep #$20
-        .local tf3
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn
-        .endl
-        rep #$20
-        .LONGA ON
-        lda m_res
-        sta zp_Z
-        lda zp_ry
-        sta m_a
-        .LONGA OFF
-        sep #$20
-        .local tf4
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn
-        .endl
- .if 1
-        rep #$21		;absorb CLC
-        .LONGA ON	
- .else
-        rep #$20
-        .LONGA ON
-        clc
- .endif
-        lda zp_Z
-        adc m_res
-        sta zp_Z
-        .LONGA OFF
-        sep #$20
-        rts
 .endp
         .endseg
 
 ;--------------------------------------------------------------
 ; udiv24 -- UNSIGNED (m_num: 24-bit in m_prod[0..2]) / (m_den 16) ->
 ;   quotient m_quot(2), remainder m_rem(2).  Restoring division.
-;
-; THE ONE ROUTINE THAT COSTS THE MOST. 543 calls in a rendered E1M1 frame at
-; 1476 cycles each = 15 % of the whole frame (tools/_prof_procs.py) -- more than
-; the wall painter's own body. Two bit-exact changes buy most of it back:
-;
-; 1. SKIP THE LEADING ZERO QUOTIENT BITS. Restoring division walks the dividend
-;    MSB-first and emits a quotient bit per step. While the prefix shifted in so
-;    far is < den that bit is 0 and the remainder is simply the prefix itself --
-;    so any prefix known to be < den can be LOADED into the remainder and its
-;    steps skipped outright. Two 16-bit compares pick the longest such prefix:
-;      top 16 bits < den -> remainder = them, 8 steps left  (calc_u: always)
-;      top  8 bits < den -> remainder = them, 16 steps left (tw_setup: always)
-;      neither           -> the full 24 (den = 0 lands here, unchanged)
-;    Every skipped step would have produced a 0 into the quotient's low end, so
-;    the result is the same number, not an approximation of it.
-; 2. THE QUOTIENT RIDES IN THE DIVIDEND. asl m_prod vacates bit 0 exactly as it
-;    consumes a dividend bit, so the quotient bit goes there (inc m_prod, only
-;    when it is 1) instead of into a second 16-bit rol pair. 10 cycles a step.
-;
-; Relocated to FASTDIV_BASE: three loop bodies do not fit the $2000 segment, and
-; this is per-column code that wants the Rapidus-fast window anyway.
-; Bit-identical to the old single 24-step loop over every input the renderer
-; produces -- tools/_verify_udiv.py checks all three paths against it.
+;   Returns 8-bit M with the 16-bit accumulator = the quotient: callers rely on
+;   it through UDQ (2026-09-26) -- keep `lda m_prod` the last load of each tail.
 ;--------------------------------------------------------------
  .ifndef ANTONIA2                    ; ANTONIA2: no Rapidus window to move into
 udiv_resume = *
@@ -907,250 +810,85 @@ udiv_resume = *
  .ifdef ANTONIA2
         ; ---- ANTONIA II HARDWARE DIVIDER (drac030, 2026-09-10) --------------
         ; $FFF008/$FFF00A take a 16-bit dividend and divisor, $FFF008/$FFF00A
-        ; hand back quotient and remainder. A 24-bit dividend needs TWO of
-        ; those: top 16 / den, then (rem<<8 | low byte) / den -- and that second
-        ; one only fits the 16-bit port while rem < 256, so the routine keeps an
-        ; 8-step software tail for the rest -- v2 keeps that tail entirely in
-        ; A (16-bit) with the quotient riding in ?q_lo's vacated bits, so the
-        ; 32-bit memory shift ladder v1 used is gone. 60..770 cycles vs 230..940.
-        ; NOTE v2 dropped v1's `.LONGI OFF`, so its `ldx #$08` is only 8-bit
-        ; because MADS defaults that way and spr_draw.asm's `.LONGI ON` pair
-        ; (the only one in the tree) is icl'd AFTER math.asm. Order-dependent.
-        ; NO `org FASTDIV_BASE` on this path. v1 could not fit (202 B vs the
-        ; window's 160); v2 is 154 B and WOULD fit, but the point of that window
-        ; is RAPIDUS-fast fetches and an Antonia machine has none, so moving it
-        ; there buys nothing. It assembles where it stands.
+        ; hand back quotient and remainder.
+ud_w16  sep #$20                     ; (the 16-bit entry: the card's code is 8-bit)
+        .LONGA OFF
+                                      ; 2026-09-23 FIX (drac030: VBXE palette 0 trashed on
+        phb                          ;   Antonia II only). The icl'd code keeps ?q_hi/?q_lo
+        phk                          ;   IN its own bytes -- bank $01 here -- and reaches
+        plb                          ;   them absolute, i.e. through DBR = 0: every divide
+        jsr udiv24_antonia2          ;   wrote 4 B of BANK-0 RAM at whatever address the
+        plb                          ;   bank-$01 layout gave them (pld_psel once, it seems).
+        rts                          ;   DBR = PBR for the call; m_* are zero page, the card
         icl 'udiv24a_v2.asm'
  .else
- .if 1
-	rep #$20
-	.LONGA ON
+                                      ; 2026-09-23: the 16- and 8-step loops had the same
+	rep #$20                     ;   body and the same tail: ONE unrolled chain, the
+	.LONGA ON                    ;   8-step paths enter at ?u8. No ldx/dex/bne:
+ud_w16                               ;   ~5 cycles a quotient bit. Bit-identical.
 	lda m_prod+1
 	cmp m_den
-	bcc ?pre16
-
+	bcs ?tst16
+?pre16	ldx m_prod                   ; the dividend's low byte -> the word's HIGH
+	stz m_prod                   ;   half: [0, byte0]; A = the top 16 bits is
+	stx m_prod+1                 ;   the remainder already
+	bra ?u8                      ; (C = 0: bcs not taken)
+udiv24_q8                            ; ENTRY for calc_u: 16-bit A = the dividend's
+	cmp m_den                    ;   top 16 bits, m_prod = [0, byte1, byte2]
+	bcs ?tst16
+	stz m_prod
+	bra ?u8                      ; (C = 0: bcs not taken)
 ?tst16	lda m_prod+2                 ; (udiv24_q8's fallback lands here)
 	and #$00ff
 	cmp m_den
-	bcs ?full
- .else
-        lda m_prod+2                 ; top 16 bits of the dividend vs den
-        cmp m_den+1
-        bcc ?pre16
-        bne ?hi8
-        lda m_prod+1
-        cmp m_den
-        bcc ?pre16
-?hi8    lda m_den+1                  ; top 8 bits vs den: den >= 256 always wins
-        bne ?pre8
-        lda m_prod+2
-        cmp m_den
-        bcs ?full                    ; ... and den = 0 falls here, as before
- .endif
-?pre8
-;  .if 1
-;	rep #$20
-;	.LONGA ON
-;	lda m_prod+2		;put m_rem into accumulator
-;	and #$00ff
-; .else
-;	lda m_prod+2                 ; ---- 16 steps: remainder = the top byte ----
-;        sta m_rem
-;   .if 1
-;	stz m_rem+1
-;   .else
-;        lda #0
-;        sta m_rem+1
-;   .endif
-;  .endif
-
-        ; ---- 65816 NATIVE, 16-BIT ACCUMULATOR (2026-08-11 pm) ---------------
-        ; This is the path tw_setup takes on EVERY column, so it is where the
-        ; port's first 16-bit block goes. Each step was four 8-bit shifts + a
-        ; two-byte subtract done as lda/sbc/tay/lda/sbc/sta/sty; with M=0 it is
-        ; one 16-bit shift pair and ONE subtract -- the same bits, half the
-        ; instructions. m_prod/m_rem/m_den are all zero page, so a 16-bit
-        ; access costs one extra cycle and replaces two whole instructions.
-        ; Only M is switched (rep #$20): X stays 8-bit, so `ldx #16` keeps its
-        ; one-byte immediate and no assembler width directive is needed.
-        ; Interrupts are SAFE here -- urom_init installs the native vectors
-        ; $FFEA/$FFEE and both handlers pin A 8-bit before they push (rom_nmi
-        ; with sep #$20, snd_irq with sep #$30 over a full-width phx/phy) --
-        ; and an NMI taken mid-block returns through RTI, which restores M
-        ; from the pushed P.
-        ;
-        ; NO clc/xce PAIR (2026-08-14). It used to bracket this block, and the
-        ; `sec/xce` on the way out left the CPU in EMULATION mode -- every caller
-        ; is in the frame loop, where underrom.asm's invariant (ROM OUT <=>
-        ; NATIVE) says it is already native, so the entry half was a no-op and
-        ; the exit half silently broke the invariant for everything downstream.
-        ; udiv24 runs on every column, so from the first wall of the first frame
-        ; the whole engine ran as a 6502 -- and rep/sep of the M/X bits is
-        ; IGNORED in emulation mode. Nothing 8-bit noticed; the two routines that
-        ; do rely on the width bits did. It cost the automap every 16-bit index
-        ; it takes (am_mark's mark went into the $03:00xx slack page instead of
-        ; AMSEEN, and am_walls' `ldx am_i8` wrapped every 32 segs, which is
-        ; exactly the corner of the map it drew -- tools/tests/_verify_automap.py).
-        ; Dropping the pair is also what the invariant was FOR: 4 bytes and ~10
-        ; cycles a call, and udiv24 is called ~13 times per seg.
- .if 1
-	ldx #16			;16-bit Acc. continued
-?l16    asl m_prod                   ; dividend MSB -> carry (16-bit)
-        rol                          ; ... into the remainder (16-bit)
-	cmp m_den
-	bcc ?s16
+	jcs ?full
+	.rept 8                      ; quotient bits 15..8: the remainder in A, the
+	rol m_prod                   ;   dividend's next bit out of m_prod and the
+	rol @                        ;   quotient bit (C of cmp/sbc) in. Entry C = 0
+	cmp m_den                    ;   (jcs not taken, bcc taken), so the first
+	scc                          ;   bit in leaves again at the 17th rol
 	sbc m_den
-	inc m_prod
-?s16	dex
-	bne ?l16
-
-	sta m_rem
-	lda m_prod
-	sta m_quot
- .else
-        rep #$20                     ; 16-bit A (native: the frame loop's mode)
-	.LONGA ON
-        ldx #16
-?l16    asl m_prod                   ; dividend MSB -> carry (16-bit)
-        rol m_rem                    ; ... into the remainder (16-bit)
-        sec
-        lda m_rem
-        sbc m_den                    ; ONE subtract, both bytes
-        bcc ?s16
-        sta m_rem                    ; rem >= den -> commit
-        inc m_prod                   ; quotient bit 1 -> the bit asl just vacated
-?s16    dex
-        bne ?l16
-        lda m_prod                   ; the dividend register IS the quotient now
-        sta m_quot                   ;   (16-bit: both bytes in one move)
- .endif
-        sep #$20                     ; back to 8-bit A -- and STAY native, see
-	.LONGA OFF
-        rts                          ;   the block comment above
-
-?pre16
- .if 1
-	.LONGA ON
-	ldx m_prod                   ; the dividend's low byte -> the word's HIGH
-	stz m_prod                   ;   half: [0, byte0]. X is 8-bit, so this is
-	stx m_prod+1                 ;   10 cycles where pha/lda/and/xba/sta/pla
-	bra ?q8go                    ;   were 23 (2026-09-15); A is untouched
-udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
-	cmp m_den                    ;   the dividend's top 16 bits, m_prod bytes
-	bcs ?tst16                   ;   0-2 = [0, byte1, byte2] -- the caller KNOWS
-	stz m_prod                   ;   its low byte is 0, so the word below the
-?q8go	ldx #8                       ;   remainder is simply 0 and A IS the
-?l8	asl m_prod                   ;   remainder already
-	rol
+	.endr
+?u8	.rept 8                      ; quotient bits 7..0
+	rol m_prod
+	rol @
 	cmp m_den
-	bcc ?s8
+	scc
 	sbc m_den
-	inc m_prod
-?s8	dex
-	bne ?l8
-
-	sta m_rem
-	lda m_prod
-	and #$00ff
-	sta m_quot
-	sep #$20
-	.LONGA OFF
- .else
-	lda m_prod+1                 ; ---- 8 steps: remainder = the top 16 bits,
-        sta m_rem                    ;      so the quotient cannot exceed 255 ----
-        lda m_prod+2
-        sta m_rem+1
-
-        ldx #8
-?l8     asl m_prod
-        rol m_rem
-        rol m_rem+1
-        sec
-        lda m_rem
-        sbc m_den
-        tay
-        lda m_rem+1
-        sbc m_den+1
-        bcc ?s8
-        sta m_rem+1
-        sty m_rem
-        inc m_prod
-?s8     dex
-        bne ?l8
-
-        lda m_prod
-        sta m_quot
-  .if 1
-        stz m_quot+1
-  .else
-        lda #0
-        sta m_quot+1
-  .endif
- .endif
-        rts
-
-?full
- .if 1
-	.LONGA ON
-	lda m_prod+1
-	sta m_prod+2
-	lda m_prod
-	and #$00ff
-	xba
-	sta m_prod
-
-	lda #$0000
-	ldx #24
-?l24	asl m_prod
-	rol m_prod+2
-	rol
-	cmp m_den
-	bcc ?s24
-	sbc m_den
-	inc m_prod
-?s24	dex
-	bne ?l24
-
+	.endr
+	rol m_prod                   ; the last quotient bit
 	sta m_rem
 	lda m_prod
 	sta m_quot
 	sep #$20
 	.LONGA OFF
 	rts
- .else
-   .if 1
-        stz m_rem
-        stz m_rem+1
-   .else
-        lda #0                       ; ---- the original 24 steps ----
-        sta m_rem
-        sta m_rem+1
-   .endif
-        ldx #24
-?l24    asl m_prod                   ; shift dividend MSB into remainder
-        rol m_prod+1
-        rol m_prod+2
-        rol m_rem
-        rol m_rem+1
-        sec                          ; tentative rem - den
-        lda m_rem
-        sbc m_den
-        tay
-        lda m_rem+1
-        sbc m_den+1
-        bcc ?s24                     ; rem < den -> carry clear -> quotient bit 0
-        sta m_rem+1                  ; rem >= den -> commit
-        sty m_rem
-        inc m_prod
-?s24    dex
-        bne ?l24
-
-        lda m_prod                   ; the 24-step tail, still 8-bit: this path
-        sta m_quot                   ;   FALLS THROUGH into it instead of the
-        lda m_prod+1                 ;   old `jmp ?q16` -- the 16-step path took
-        sta m_quot+1                 ;   ?q16 into its native block, and those
-        rts                          ;   three bytes are what pays for it
- .endif
+	.LONGA ON
+?full	lda m_prod+1
+	sta m_prod+2
+	lda m_prod
+	and #$00ff
+	xba
+	sta m_prod
+	lda #$0000
+	ldx #24
+	clc                          ; C = 0 first so the 25th rol leaves bits 24-31 0
+?l24	rol m_prod
+	rol m_prod+2
+	rol
+	cmp m_den
+	bcc ?s24
+	sbc m_den
+?s24	dex
+	bne ?l24
+	rol m_prod
+	rol m_prod+2
+	sta m_rem
+	lda m_prod
+	sta m_quot
+	sep #$20
+	.LONGA OFF
+	rts
  .endif
 .endp
         .endseg
@@ -1173,9 +911,7 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
  .ifdef ANTONIA2
         ; ANTONIA II: one hardware divide. m_den = 0 never reaches the divider
         ; (what it answers is written down nowhere): it gets the software
-        ; loop's own answer, quotient $FFFF and the dividend as remainder. The
-        ; loop's side effects stay as well -- m_prod's low word shifted out to 0
-        ; and X = 0, with the Z/N that ldx leaves exactly as dex left them.
+        ; loop's own answer, quotient $FFFF and the dividend as remainder.
         rep #$20
         .LONGA ON
         lda m_prod
@@ -1198,7 +934,6 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
         ldx #0
         rts
  .else
- .if 1
 	rep #$20
 	.LONGA ON
 	lda #$0000	;m_rem in acc.
@@ -1216,111 +951,13 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 	sta m_rem
 	sep #$20
 	.LONGA OFF
- .else
-  .if 1
-        stz m_rem
-        stz m_rem+1
-        stz m_quot
-        stz m_quot+1
-  .else
-        lda #0
-        sta m_rem
-        sta m_rem+1
-        sta m_quot
-        sta m_quot+1
-  .endif
-        ldx #16
-?l      asl m_prod                 ; shift 16-bit dividend MSB into remainder
-        rol m_prod+1
-        rol m_rem
-        rol m_rem+1
-        sec                        ; tentative rem - den
-        lda m_rem
-        sbc m_den
-        tay
-        lda m_rem+1
-        sbc m_den+1
-        bcc ?skip
-        sta m_rem+1
-        sty m_rem
-?skip   rol m_quot
-        rol m_quot+1
-        dex
-        bne ?l
- .endif
         rts
  .endif
 .endp
         .endseg
 
-;--------------------------------------------------------------
-; recip_norm -- normalize zp_Z (16-bit, >0) to a 9-bit mantissa + exponent for
-;   the reciprocal tables. out: Y = table index (mantissa low byte; m in
-;   [256,511] -> hi byte is 1), rc_e = exponent e (signed; Z ~= m << e).
-;   Mirrors gui.py _norm(). Z-range-independent (survives ATR level streaming).
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc recip_norm
-        ; caller preloads rc_m (16-bit value to normalize: Z or span).
- .if 1
-	ldx #0		;rc_e
-	rep #$20
-	.LONGA ON
-	lda rc_m
-	cmp #2*256                   ; the tests once, then the shift loops carry
-	bcc ?dn0                     ;   their own compare: 10 cycles a step, not
-?up	lsr                          ;   13 (2026-09-15). m >= 512 -> halve until
-	inx                          ;   it is not; a halved 512+ is 256+, so the
-	cmp #2*256                   ;   doubling test below is skipped outright
-	bcs ?up
-	bra ?done
-?dn0	cmp #256
-	bcs ?done
-?dn	asl                          ; m < 256 -> double until it is not
-	dex
-	cmp #256
-	bcc ?dn
-?done	stx rc_e
-;	sta rc_m	;not necessary?
-	sep #$20
-	.LONGA OFF
-	tax		;copy LSB to X
-	rts
- .else
-  .if 1
-        stz rc_e
-  .else
-        lda #0
-        sta rc_e
-  .endif
-?up     lda rc_m+1                 ; while m >= 512 (hi >= 2): m >>= 1, e++
-        cmp #2
-        bcc ?dn
-        lsr rc_m+1
-        ror rc_m
-        inc rc_e
-  .if 1
-	bra ?up
-  .else	
-        jmp ?up
-  .endif
-?dn     lda rc_m+1                 ; while m < 256 (hi == 0): m <<= 1, e--
-        bne ?done
-        asl rc_m
-        rol rc_m+1
-        dec rc_e
-  .if 1
-	bra ?dn
-  .else
-        jmp ?dn
-  .endif
-?done	ldx rc_m                   ; index = mantissa low byte (hi == 1)
-        rts                        ; X, not Y: the tables live in Rapidus bank
- .endif
-.endp                              ;   $01 now and `lda.l tab,y` does not exist
-        .endseg
-                                   ;   on the 65816 -- only absolute-long,X.
-                                   ;   No caller had X live across this call.
+; (recip_norm -- the 9-bit mantissa + exponent normalize -- is the RECIP_NORM
+;  macro at the top of this file since 2026-09-26, inlined at its callers.)
 
 ;--------------------------------------------------------------
 ; shr_prod32 -- shift m_prod (32-bit) right by X bits (X in 0..31). Drops whole
@@ -1329,12 +966,13 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc shr_prod32
-        txa
+                                      ; 2026-09-22 idiom: A already holds the count --
+                                     ;   both callers (scale_z, screenx_signed) do
+                                     ;   `tax / jsr shr_prod32`. IN: A = X = count.
         lsr
         lsr
         lsr                        ; whole bytes to drop (X>>3)
         beq ?bits
- .if 1
 	dec                        ; 1, 2 or 3 whole bytes (X <= 31): three
 	beq ?b1                    ;   straight-line word moves instead of the
 	dec                        ;   loop's 24 cycles a byte (2026-09-15)
@@ -1363,27 +1001,10 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 	sta m_prod+2
 ?bdone	sep #$20
 	.LONGA OFF
- .else
-?byte   lda m_prod+1               ; prod >>= 8
-        sta m_prod
-        lda m_prod+2
-        sta m_prod+1
-        lda m_prod+3
-        sta m_prod+2
-  .if 1
-        stz m_prod+3
-  .else
-        lda #0
-        sta m_prod+3
-  .endif
-        dey
-        bne ?byte
- .endif
 ?bits   txa
         and #7
         beq ?done
         tax
- .if 1
 	rep #$20                   ; the high word rides in A: lsr A is 2 cycles
 	.LONGA ON                  ;   against the 8 of a 16-bit `lsr m_prod+2`
 	lda m_prod+2               ;   RMW, on every one of the 1..7 bit steps
@@ -1394,89 +1015,6 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 	sta m_prod+2
 	sep #$20
 	.LONGA OFF
- .else
-?bit    lsr m_prod+3
-        ror m_prod+2
-        ror m_prod+1
-        ror m_prod
-        dex
-        bne ?bit
- .endif
-?done   rts
-.endp
-        .endseg
-
-;--------------------------------------------------------------
-; shr_acc40 -- shift rs_acc (40-bit, 5 bytes) right by X bits (X in 0..39).
-;   Whole low bytes (X>>3) then residual X&7. For the inv_span step shift.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc shr_acc40
-        txa
-        lsr
-        lsr
-        lsr                        ; whole bytes to drop
-        beq ?bits
-        tay
- .if 1
-	phx
-	ldx #$00
-	rep #$20
-	.LONGA ON
-?byte   lda rs_acc+1               ; rs_acc >>= 8
-	sta rs_acc
-	lda rs_acc+3
-	sta rs_acc+2
-	stx rs_acc+4
-	dey
-	bne ?byte
-	sep #$20
-	.LONGA OFF
-	plx
- .else
-?byte   lda rs_acc+1               ; rs_acc >>= 8
-        sta rs_acc
-        lda rs_acc+2
-        sta rs_acc+1
-        lda rs_acc+3
-        sta rs_acc+2
-        lda rs_acc+4
-        sta rs_acc+3
-  .if 1
-        stz rs_acc+4
-  .else
-        lda #0
-        sta rs_acc+4
-  .endif
-        dey
-        bne ?byte
- .endif
-?bits   txa
-        and #7
-        beq ?done
-        tax
- .if 1
-	lda rs_acc+4
-	rep #$20
-	.LONGA ON
-	and #$00ff
-?bit	lsr
-	ror rs_acc+2
-	ror rs_acc
-	dex
-	bne ?bit
-	sep #$20
-	.LONGA OFF
-	sta rs_acc+4
- .else
-?bit    lsr rs_acc+4
-        ror rs_acc+3
-        ror rs_acc+2
-        ror rs_acc+1
-        ror rs_acc
-        dex
-        bne ?bit
- .endif
 ?done   rts
 .endp
         .endseg
@@ -1490,12 +1028,7 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc step_recip
-  .if 1
         stz m_sign
-  .else
-        lda #0
-        sta m_sign
-  .endif
         lda m_prod+2               ; sign + |R-L| -> rs_mag
         bpl ?pos
 
@@ -1505,93 +1038,46 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
         lda #0
         sbc m_prod
         sta rs_mag
- .if 1
 	rep #$20
 	.LONGA ON
 	lda #0
         sbc m_prod+1
         sta rs_mag+1
- .else
-	lda #0
-        sbc m_prod+1
-        sta rs_mag+1
-        lda #0
-        sbc m_prod+2
-        sta rs_mag+2
- .endif
- .if 1
 	bra ?mul
- .else
-        jmp ?mul
- .endif
 ?pos    rep #$20                   ; ---- 16-bit A: a 24-bit copy is two OVERLAPPING
         .LONGA ON                  ;   16-bit moves (bytes 0-1 then 1-2), which
         lda m_prod                 ;   never touches byte 3 and costs four
         sta rs_mag                 ;   instructions instead of six
         lda m_prod+1
         sta rs_mag+1
- .if 1
 	;nothing
- .else
-        .LONGA OFF
-        sep #$20
- .endif
 ?mul
- .if 1
 	;nothing
- .else
-	rep #$20                   ; lo16 * invm -> rs_acc[0..3], acc[4]=0
-        .LONGA ON
- .endif
         lda rs_mag
         sta m_a
         lda rs_invm
         sta m_b
         .LONGA OFF
         sep #$20
-        jsr umul16
+        UMUL16I    ; (inlined 2026-09-26)
         rep #$20                   ; ...and a 32-bit copy is two 16-bit moves
         .LONGA ON
         lda m_prod
         sta rs_acc
         lda m_prod+2
         sta rs_acc+2
-  .if 1
 	lda rs_invm
         sta m_b
-  .else
-	; nothing
-  .endif
         .LONGA OFF
         sep #$20
-  .if 1
         stz rs_acc+4
-  .else
-        lda #0
-        sta rs_acc+4
-  .endif
         lda rs_mag+2               ; hi8 * invm -> add at byte offset 2
         beq ?nohi                  ; hi8 = 0 (|R-L| < 65536, the usual case):
-                                   ;   the product is 0 and the two adds below
-                                   ;   leave rs_acc[2..4] as they are, so the
-                                   ;   umul16 + adds are skipped (2026-09-14)
+                                   ;   the product is 0 and the two adds below ...
         sta m_a
-  .if 1
         stz m_a+1
-  .else
-        lda #0
-        sta m_a+1
-  .endif
- .if 1
 	;nothing, inss below moved up to 16-bit section
- .else
-	lda rs_invm
-        sta m_b
-        lda rs_invm+1
-        sta m_b+1
- .endif
         jsr umul16                 ; m_prod[0..2] = hi8*invm (m_prod+3=0)
- .if 1
 	rep #$21	;absorb CLC
 	.LONGA ON
         lda rs_acc+2
@@ -1599,53 +1085,62 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
         sta rs_acc+2
 	sep #$20
 	.LONGA OFF
- .else
-        clc
-        lda rs_acc+2
-        adc m_prod
-        sta rs_acc+2
-        lda rs_acc+3
-        adc m_prod+1
-        sta rs_acc+3
- .endif
         lda rs_acc+4
         adc m_prod+2
         sta rs_acc+4
 
-?nohi   ldx rs_invsh               ; >> rs_invsh (15..27)
-        jsr shr_acc40
-
-        ; --- SATURATE |step| at 32767 -----------------------------------------
-        ; m_quot is 16 bits and the caller adds it to a 24-bit plane accumulator
-        ; once per column, so a step that does not fit used to WRAP -- and a wrap
-        ; past $8000 FLIPS THE SIGN (m_sign is applied below), so the plane ran
-        ; BACKWARDS across the seg: the front ceiling walked DOWN through the
-        ; view instead of up out of it, and draw_clip then filled the seg's whole
-        ; span with the ceiling colour. That is the grey slab that blinks in when
-        ; the player stands ON a two-sided line -- E1M1 (1858,-2558) is 2 units
-        ; off ld416, the edge of the lower ceiling (sector 8 ceil 224 -> sector 9
-        ; ceil 96): seg 87 near-clips to Z=4 at one end, so wh=183 runs from
-        ; scale 435 to 10240 over 50 columns and |step| = 35887 -> -29649 ->
-        ; +29649. Same trigger as u_guard's ("the flat-looking slab of wall that
-        ; flashes in for a frame"), one track further along.
-        ; Clamping is invisible: |step| >= 2^15 is >= 128 rows per column, so the
-        ; plane crosses all 100 rows inside a single column -- off screen on both
-        ; sides of the crossing whichever of the two slopes it uses. Verified
-        ; pixel-identical to unlimited-precision math over all 256 angles at that
-        ; spot (63772 wrong pixels -> 0).
-
- .if 1
-	rep #$20
-	.LONGA ON
-	lda rs_acc+2
-	ora rs_acc+3		;overlaps, but doesn't exceed the range
-	bne ?sat
-
-	lda rs_acc
-	bpl ?ok
-
-?sat	lda #$7fff
-
+                                      ; shr_acc40 INLINED (its only call): no jsr/rts,
+?nohi   lda rs_invsh                 ;   and the count is re-read instead of parked
+        lsr                          ;   in X (phx/plx). rs_acc >>= rs_invsh (15..27):
+        lsr                          ;   whole bytes first ...
+        lsr
+        beq ?bits
+        dec @                        ; rs_acc >>= 8*n, n = 1..3 (invsh 15..27),
+        rep #$20                     ;   each n straight-line (2026-09-26: the
+        .LONGA ON                    ;   byte loop was 29 cycles a pass, ~2 a
+        beq ?by1                     ;   call). n-1 sorted in 8 bits (B holds
+        bit #$0001                   ;   junk): Z from the dec (rep keeps it),
+        bne ?by2                     ;   then bit 0 alone -- 1 = n 2, 0 = n 3
+        lda rs_acc+3                 ; n = 3: b3:b4 -> b0:b1, the rest 0
+        sta rs_acc
+        stz rs_acc+2
+        bra ?byz
+?by2    lda rs_acc+2                 ; n = 2: b2:b3 -> b0:b1, b4 -> b2
+        sta rs_acc
+        lda rs_acc+4
+        and #$00FF
+        sta rs_acc+2
+        bra ?byz
+?by1    lda rs_acc+1                 ; n = 1: b1:b2 -> b0:b1, b3:b4 -> b2:b3
+        sta rs_acc
+        lda rs_acc+3
+        sta rs_acc+2
+?byz    sep #$20
+        .LONGA OFF
+        stz rs_acc+4                 ; the top byte shifts in 0 in every case
+?bits   lda rs_invsh                 ; ... then the residual k = invsh & 7 bits, in
+        and #7                       ;   A: R = V' >> k (V' = b4..b0) saturates at
+        tax                          ;   32767 iff b4:b3 != 0 or (b2:b1 >> k) >= $80,
+        rep #$20                     ;   else R = (b2:b1 >> k) << 8 | (b1:b0 >> k)
+        .LONGA ON                    ;   & $FF. X = k, and 0 on the way out as before
+        lda rs_acc+3
+        bne ?sat
+        lda rs_acc+1                 ; H = b2:b1
+        txy
+        beq ?k0
+?hsh    lsr @
+        dey
+        bne ?hsh
+        cmp #$0080
+        bcs ?sat
+        xba                          ; (H >> k) << 8: its high byte is 0 here
+        sta m_quot                   ; (scratch until ?sav)
+        lda rs_acc                   ; L = b1:b0
+?lsh    lsr @
+        dex
+        bne ?lsh
+        and #$00FF
+        ora m_quot
 ?ok	ldy m_sign
 	beq ?sav
 
@@ -1653,42 +1148,15 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 	inc
 
 ?sav	sta m_quot
-	sep #$20
-	.LONGA OFF
- .else
-        lda rs_acc+2               ; any bit above 15 set -> saturate
-        ora rs_acc+3
-        ora rs_acc+4
-        bne ?sat
-        lda rs_acc+1
-        bmi ?sat                   ; bit 15 set -> >= 32768
-        lda rs_acc                 ; result low 16 -> m_quot, apply sign
-        sta m_quot
-        lda rs_acc+1
-        sta m_quot+1
-  .if 1
-	bra ?sgn
-  .else
-        jmp ?sgn
-  .endif
-?sat    lda #$FF
-        sta m_quot
-        lda #$7F
-        sta m_quot+1
-
-?sgn    lda m_sign
-        beq ?done
-
-        sec
-        lda #0
-        sbc m_quot
-        sta m_quot
-        lda #0
-        sbc m_quot+1
-        sta m_quot+1
-?done
- .endif
-	rts
+                                     ; 2026-09-22: step_recip returns 16-bit -- its one
+	rts                          ; (16-bit out on the .if 1 side)
+?k0     cmp #$0080                   ; k = 0: R = b1:b0, saturated iff b2:b1 >= $80
+        bcs ?sat
+        lda rs_acc
+        bra ?ok
+?sat	lda #$7fff
+        bra ?ok
+        .LONGA OFF
 .endp
         .endseg
 
@@ -1699,41 +1167,54 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc scale_z
-        lda zp_Z                   ; normalize Z
-        sta rc_m
-        lda zp_Z+1
-        sta rc_m+1
-        jsr recip_norm             ; X = mantissa idx, rc_e = e
+                                      ; Z as one word straight into recip_norm's 16-bit
+        rep #$20                     ;   entry: no byte copies into rc_m, no reload
+        .LONGA ON
+        lda zp_Z
+sz_a16                               ; 16-bit ENTRY with A = Z (process_seg, sprites)
+        RECIP_NORM                   ; (inlined 2026-09-26) X = mantissa idx, rc_e = e (returns 8-bit)
+        .LONGA OFF
 
-        lda.l RCX_SCALE_LO,x       ; the table is in bank $01 (memory_map.inc
-        sta m_prod                 ;   RECIP_EXT): +1 cycle per read, and the
-        lda.l RCX_SCALE_HI,x       ;   1536 B it vacated at $8700 is where the
-        sta m_prod+1               ;   monster AI lives
-  .if 1
-        stz m_prod+2
-        stz m_prod+3
-  .else
-        lda #0
-        sta m_prod+2
-        sta m_prod+3
-  .endif
-        clc                        ; shift = RECIP_SCALE_K + e (signed e; = 2..13)
-        lda #RECIP_SCALE_K
-        adc rc_e
-        clc                        ; + vw_sh: the view-size divider, free here
-        adc vw_sh                  ;   (rc_e is signed, so that adc CAN carry --
-        tax                        ;   hence the second clc)
-        jsr shr_prod32
-        lda vw_q34                 ; ... and *3/4 for the in-between sizes:
-        beq ?q34a                  ;   the full view (0) skips the call
+                                      ; 2026-09-23: the table value is 16-bit, so the
+        lda rc_e                     ;   >> is done on the WORD in A (built in A:B), not
+        clc                          ;   by shr_prod32's 32-bit memory shift. Shift =
+sz_k    adc #RECIP_SCALE_K           ;   e + (K + vw_sh), the sum baked in by vw_apply
+        cmp #8                       ;   (byte adds mod 256: rc_e is signed)
+        bcs ?ge8
+        tay                          ; Y = shift 0..7
+        lda.l RCX_SCALE_HI,x         ; bank $01 (memory_map.inc RECIP_EXT)
+        xba
+        lda.l RCX_SCALE_LO,x
+        rep #$20
+        .LONGA ON
+?sh     cpy #0
+        beq ?st
+?b      lsr @
+        dey
+        bne ?b
+?st     sta m_prod                   ; (m_prod as shr_prod32 left it: the word,
+        stz m_prod+2                 ;   bytes 2-3 zero -- one 16-bit stz)
+        ldy vw_q34                   ; *3/4 for the in-between view sizes
+        bne ?q34
+        sta m_quot                   ; returns 16-bit with A = m_quot
+        rts
+?q34    .LONGA OFF
+        sep #$20
         jsr vw_q34x
-?q34a
-
+        rep #$20
+        .LONGA ON
         lda m_prod
         sta m_quot
-        lda m_prod+1
-        sta m_quot+1
         rts
+        .LONGA OFF
+?ge8    sbc #8                       ; C = 1 (bcs): Y = shift - 8, the word >> 8 is
+        tay                          ;   the table's high byte (>= 16: it shifts to 0)
+        lda.l RCX_SCALE_HI,x
+        rep #$20
+        .LONGA ON
+        and #$00FF
+        bra ?sh
+        .LONGA OFF
 .endp
         .endseg
 
@@ -1744,116 +1225,100 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc screenx_signed
-  .if 1
-        stz m_sign
-  .else
-        lda #0
-        sta m_sign
-  .endif
- .if 1
-	rep #$20
+                                      ; 2026-09-23: 16-bit entry sx_w16, the sign via Y
+	rep #$20                     ;   (no 8-bit stz before the window)
 	.LONGA ON
+sx_w16
+        ldy #0
         lda zp_X
 	bpl ?xp
-
-	ldy #$01
-        sty m_sign                 ; m_a = |X| (16-bit inc, but LSB=0, so no carry to MSB and this is harmless)
+        iny                          ; m_sign = 1: X was negative
 	eor #$ffff
 	inc
-
-?xp	sta m_a
+?xp     sty m_sign
+	sta m_a
         lda zp_Z
-        sta rc_m
-	sep #$20
+        RECIP_NORM                   ; (inlined 2026-09-26) (returns 8-bit; X = mantissa idx, rc_e = e)
 	.LONGA OFF
- .else
-        lda zp_X
-        sta m_a
-        lda zp_X+1
-        sta m_a+1
-        bpl ?xp
-
-        inc m_sign                 ; m_a = |X|
-        jsr m_neg
-
-?xp     lda zp_Z                   ; normalize Z
-        sta rc_m
-        lda zp_Z+1
-        sta rc_m+1
- .endif
-        jsr recip_norm             ; X = mantissa idx, rc_e = e
 
         lda.l RCX_SX_LO,x          ; m_b = SX_TAB[m] (FOCAL baked in), bank $01
         sta m_b
         lda.l RCX_SX_HI,x
         sta m_b+1
-        jsr umul16                 ; m_prod(4) = |X| * SX_TAB[m]
+        UMUL16I                    ; (inlined 2026-09-26) m_prod(4) = |X| * SX_TAB[m]
 
-        clc                        ; shift = RECIP_SX_K + e (signed e; = 11..22)
-        lda #RECIP_SX_K
-        adc rc_e
-        clc                        ; + vw_sh: the view-size divider (see scale_z;
-        adc vw_sh                  ;   the SAME factor, or the picture stops
-        tax                        ;   being square)
-        jsr shr_prod32             ; m_prod[0..1] = |offset| px
-
-        ; --- saturate |offset| at 16384. The true offset reaches 80*32767/4 =
-        ; ~655k px on a long wall walked past at close range; reading only
-        ; m_prod[0..1] wrapped it mod 65536, and the wrapped m_xs mis-ordered /
-        ; mis-spanned the seg in process_seg -- a far one-sided wall then painted
-        ; every still-open column: the transient "brown wall in the window"
-        ; (1..4.png, tools/_verify_segdrop.py). Any real |sx| >= 256 behaves
-        ; identically downstream, so clamping at 16384 changes no visible frame.
-
+                                      ; 2026-09-23: >> c and the clamp in 16-bit A, no
+        lda rc_e                     ;   shr_prod32. c = 17 + e + vw_sh = 9..26 (e is
+        clc                          ;   -8..7: recip_norm of a 16-bit Z), so c >= 9;
+sx_k    adc #RECIP_SX_K              ;   K + vw_sh is baked in by vw_apply
+        cmp #16
+        bcc ?w1                      ;   it falls through, c < 16 is out of line
+        sbc #16                      ; C = 1: Y = c - 16 = 0..10 bits of the high word
+        beq ?w2z                     ;   (c = 16, no shift: out of line)
+        tay
+        rep #$20
+        .LONGA ON
         lda m_prod+2
-        ora m_prod+3
-        bne ?sat                   ; bits 16+ set -> way past the clamp
-        lda m_prod+1
-        cmp #$40                   ; |offset| >= $4000?
-        bcc ?off_ok
-?sat
-  .if 1
-        stz m_prod
-  .else
-	lda #0
-        sta m_prod
-  .endif
-        lda #$40
-        sta m_prod+1
-
-?off_ok lda vw_q34                 ; view size: *3/4 (AFTER the clamp -- the
-        beq ?q34b                  ;   saturated value stays far off-screen);
-        jsr vw_q34x                ;   the full view (0) skips the call
-?q34b
-        lda m_sign
-        bne ?neg
- .if 1
-	rep #$21	;absorb CLC
-	.LONGA ON
-        lda #SCREEN_HALF
+?l2     lsr @
+        dey
+        bne ?l2
+?w2d    cmp #$4000                   ; the clamp is the rare side: out of line
+        bcs ?sat16
+?off16                               ; view size: *3/4 (after the clamp); v - v>>2.
+                                      ; 2026-09-27 (65816-modes-banks: patch the
+sx_q34  sta m_prod                   ;   INSTRUCTION in): vw_apply writes this slot --
+                                      ;   `sta m_prod` itself in the 3/4 view, `bra
+                                      ;   sx_q0` otherwise; the ldy vw_q34 / beq test
+                                      ;   is gone from both modes.
+                                      ; 2026-09-26: every way into ?off16 has C = 0
+                                      ;   (a not-taken bcs, ?sat16 clears it), and
+        lsr @                        ;   v - v>>2 cannot borrow: C = 1 below. Each
+        lsr @                        ;   side gets its own tail with the carry
+        eor #$FFFF                   ;   folded into the immediate -- same sums
+        sec
         adc m_prod
+        ldy m_sign
+        bne ?n16c
+        adc #SCREEN_HALF-1           ; C = 1
         sta m_xs
-	sep #$20
-	.LONGA OFF
- .else
-        clc                        ; +X: SCREEN_HALF + offset
-        lda #SCREEN_HALF
-        adc m_prod
-        sta m_xs
-        lda #0
-        adc m_prod+1
-        sta m_xs+1
- .endif
         rts
-
-?neg    sec                        ; -X: SCREEN_HALF - offset
-        lda #SCREEN_HALF
-        sbc m_prod
+?n16c   eor #$FFFF                   ; C = 1: SCREEN_HALF + ~v + 1
+        adc #SCREEN_HALF
         sta m_xs
-        lda #0
-        sbc m_prod+1
-        sta m_xs+1
         rts
+sx_q0   ldy m_sign                   ; returns 16-BIT with A = m_xs; C = 0 here
+        bne ?n16
+        adc #SCREEN_HALF
+        sta m_xs
+        rts
+?n16    eor #$FFFF                   ; C = 0: SCREEN_HALF + ~v + 1
+        adc #SCREEN_HALF+1
+        sta m_xs
+        rts
+        .LONGA OFF
+?w1     sbc #7                       ; C = 0 (the bcc): Y = c - 8 = 1..7 bits
+        tay
+        rep #$20
+        .LONGA ON
+        lda m_prod+2                 ; A = bytes 3:2, the word at +1 takes the bits
+?l1     lsr @                        ;   (its byte 2 goes stale: rewritten below)
+        ror m_prod+1
+        dey
+        bne ?l1
+        cmp #$0040                   ; bits 16+ of the result, or it >= $4000?
+        bcs ?sat16
+        sta m_prod+2
+        lda m_prod+1                 ; the result = bytes 2:1
+        bra ?off16
+?sat16  lda #$4000
+        clc                          ; (2026-09-26) ?off16 relies on C = 0
+        bra ?off16
+        .LONGA OFF
+?w2z    rep #$20
+        .LONGA ON
+        lda m_prod+2
+        bra ?w2d
+        .LONGA OFF
 .endp
         .endseg
 
@@ -1865,17 +1330,17 @@ udiv24_q8                            ; ENTRY for calc_u (2026-09-15): 16-bit A =
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc track_calc
         jsr smul32                 ; m_prod(4) = world*scale (signed)
-        sec                        ; m_prod[0..2] = HHFP - m_prod  (horizon - world*scale)
-        lda #<HHFP
+        rep #$20                   ; m_prod[0..2] = HHFP - m_prod (horizon - world*
+        .LONGA ON                  ;   scale) as two words. Returns 16-BIT (every
+        sec                        ;   caller goes on 16-bit); byte 3 becomes junk,
+        lda #HHFP                  ;   and no caller reads it
         sbc m_prod
         sta m_prod
-        lda #>HHFP
-        sbc m_prod+1
-        sta m_prod+1
         lda #0
         sbc m_prod+2
         sta m_prod+2
         rts
+        .LONGA OFF
 .endp
         .endseg
 

@@ -1,14 +1,7 @@
-; Part of enemy_ai.asm -- AUTO-SPLIT out of it 2026-08-09 -- assembled in place via icl at the
-; exact point the text was cut from, so every org and every block guard below is
-; unchanged (verified: build/doom_bsp.xex is byte-identical).
-;   P_KillMobj's dropped ammo, give_bonus, spr_take/drop (DROP_BASE)
-;==============================================================
-; P_KillMobj's "Drop stuff" -- the two kinds that leave ammo behind.
-;==============================================================
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org DROP_BASE
- .endif
+;--------------------------------------------------------------
+; Part of enemy_ai.asm (icl in place): P_KillMobj's dropped ammo, give_bonus,
+;   spr_take/drop.
+;--------------------------------------------------------------
 
 ;--------------------------------------------------------------
 ; en_dropmark -- Y = the thing that just died, en_kind = its kind. Flags the
@@ -28,12 +21,14 @@
         lda (sp_ptr),y
         ora #F_DROP
         sta (sp_ptr),y
-        jmp pk_dropadd               ; ...and the pickup list must learn the
+                                      ; 2026-09-22 idiom: pk_dropadd inlined (the tail
+        lda ai_t2                    ;   jmp went: -3) ...and the pickup list must
+        jsr pk_append                ;   learn the corpse (sp_ptr = its record)
+        ldy ai_t2
+        rts
                                      ;   corpse (sp_ptr = its record; restores
                                      ;   Y and returns): spr_pickup walks the
                                      ;   LIST now, not the whole thing table.
-                                     ;   A tail-jmp: this block is FULL, the
-                                     ;   3 B ldy it replaces bought exactly it
 ?out    rts
 .endp
         .endseg
@@ -41,49 +36,10 @@
 ;--------------------------------------------------------------
 ; en_seen -- X = vissprite. Z=0 if the thing is actually VISIBLE in the centre
 ;   column of the view, i.e. the shot can reach it.
-;
-;   Why: en_shoot picks its target on the HORIZONTAL span alone, so without this
-;   a monster behind a door that was still closing stayed shootable -- the door
-;   narrows ytopc/ybotc but does not mark the columns solid until it is fully
-;   shut, so the thing was still a vissprite and the hitscan took it.
-;
-;   The test uses the clip snapshot spr_add already took: 2 bytes (top, bottom)
-;   per column at CLIP_BASE + (vs_cpl & $FE), stepped by 2 -- or ONE pair for
-;   the whole sprite when vs_cpl bit0 says the window was uniform. top = 255
-;   means nearer geometry closed that column outright.
-;
-;   2026-08-01, THE HEIGHT BUG: this used to ask whether the opening covered the
-;   CROSSHAIR ROW (the horizon, view/2) instead of where the sprite actually is.
-;   That silently made everything standing higher than the eye unkillable: a
-;   step up sets the window bottom to the BACK sector's floor row (seg_draw.asm,
-;   nb16 = min(nb16, pybf16)), and a floor above zp_pz (= floor + EYE_H 41)
-;   projects ABOVE the horizon -- so wbot < crosshair and the shot was dropped
-;   even though the barrel or the imp on that ledge was in plain sight. It cut
-;   the other way too: firing DOWN through an opening whose ceiling is below eye
-;   level put wtop below the crosshair and lost the shot the same way.
-;
-;   What it does now is p_map.c's rule, in screen space. PTR_AimTraverse clips
-;   the aim to the line opening and then keeps the thing if ANY part of it is
-;   still inside that range ("shot over the thing" / "shot under the thing" are
-;   the only two rejects); the port's window IS that opening, projected, so the
-;   answer is the overlap of the sprite's rows with it:
-;       ytop <= wbot   (not entirely below the opening -- the ledge case)
-;   AND ybot >= wtop   (not entirely above it   -- the closing door)
-;   ytop is vs_ytl/vs_yth (signed 16: negative = it starts above the screen),
-;   ybot the byte spr_add clamped into vs_ybt. Both are the whole sprite IMAGE,
-;   margins included, which is the same box the billboard draws.
 ;--------------------------------------------------------------
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > DROP_END+1
-        ert 'en_dropmark outgrew DROP_BASE..DROP_END (memory_map.inc)'
-    .endif
- .endif
-        org ESEEN_BASE               ; 2026-08-11 win2 evacuation: the drop block
                                      ;   split four ways (memory_map.inc)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_seen
- .if 1
         ldy #>CLIP_BASE
         sty zp_tmp+1
         lda vs_cpl,x
@@ -91,20 +47,10 @@
         bcs ?uni                     ; one window for every column -> offset 0
         asl                          ; the block, 2 B aligned (bit 0 clear)
         sta zp_tmp
- .else
-        lda vs_cpl,x
-        and #$FE                     ; the block, 2 B aligned (bit0 = uniform)
-        sta zp_tmp
-        lda #>CLIP_BASE
-        sta zp_tmp+1
-        lda vs_cpl,x
-        and #1
-        bne ?read                    ; one window for every column -> offset 0
- .endif
         lda vs_x1h,x                 ; xa = max(x1, 0), as spr_one rebuilds it
         bmi ?xa0
         lda vs_x1l,x
-        jmp ?off
+        bra ?off
 ?xa0    lda #0
 ?off    sta en_t                     ; (aim column - xa) * 2 -- the window this
         sec                          ;   sprite snapshotted for the column being
@@ -122,17 +68,9 @@
         lda en_t+1
 ?idx    asl
         bcs ?yes                     ; > 127 columns in: cannot happen, be safe
-        adc zp_tmp                   ;   (C = 0 past it: no clc)
-        sta zp_tmp
-        bcc ?read
-        inc zp_tmp+1
- .if 1
-        bra ?read
-?uni    asl                          ; (the uniform block: bit 0 back to 0)
-        sta zp_tmp
- .endif
-?read   ldy #0
-        lda (zp_tmp),y               ; window top
+                                      ; 2026-09-23: the offset rides in Y -- (zp),y does
+        tay                          ;   the carry into the page the add/inc did
+?read   lda (zp_tmp),y
         cmp #255
         beq ?no                      ; column fully closed by nearer geometry
         sta en_t                     ; en_t = wtop
@@ -157,6 +95,10 @@
         rts
 ?no     lda #0
         rts
+?uni    asl                          ; (the uniform block: bit 0 back to 0, offset 0)
+        sta zp_tmp
+        ldy #0
+        bra ?read
 .endp
         .endseg
 
@@ -165,35 +107,8 @@
 ;   block's slack beside en_seen, the only other reader of en_col; the ENINIT
 ;   block that owns en_gunshot has ~30 B left and this is one call per pellet,
 ;   i.e. as cold as everything else in here.
-;
-;   DOOM: `angle += (P_Random() - P_Random()) << 18` on a 32-bit angle_t. A
-;   column is SCREEN_HALF + SCREEN_HALF*tan(theta) (SCREEN_HALF IS the focal
-;   length at 90 deg), so for the triangular roll r = -255..255 the offset is
-;       80 * tan(2*pi * r/16384)  =  r * 80/2600  =  r/32.5
-;   -- 2600 at the wide end, 2608 as theta -> 0, the same shape as ai_fire's 620
-;   for its <<20. >>5 is 32: 1.6% wide, a fifth of a column at full deflection.
-;
-;   ROUNDED, not shifted. A bare >>5 is a FLOOR, and a floor of a signed roll
-;   biases the whole cone half a column LEFT -- E[offset] = -0.5, so the
-;   crosshair sits on the edge of the peak bucket instead of in the middle of
-;   it, and a shotgun blast pulls left every time. +16 before the shift is
-;   round-to-nearest and puts the mean back on the crosshair (verified in
-;   tools/_verify_gunspread.py: -0.5 -> +0.016 columns).
-;
-;   No sign-extend needed either. r+16+256 is 256*C + (lo+16) with C = the
-;   borrow out of the subtract, so >>5 of it is 8*(C + the carry out of lo+16)
-;   plus (lo+16)&255 >> 5 -- the 256s are whole multiples of 32. And when that
-;   second carry fires, lo+16 is 256..271, whose low byte shifts to 0, so the
-;   term is just 8. Taking the +256 back off is the -8 in the base.
 ;   Range 72..88. Clobbers A/X and en_t.
 ;--------------------------------------------------------------
-    .if * > ESEEN_END+1
-        ert 'en_seen outgrew ESEEN_BASE..ESEEN_END (memory_map.inc)'
-    .endif
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org EAIM_BASE
- .endif
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc en_aimcol
         lda RANDOM                   ; POKEY's LFSR, this port's P_Random
@@ -206,10 +121,9 @@
         ldx #SCREEN_HALF             ; r >= 0: the right half
 ?add    clc
         adc #16                      ; round to the nearest column
-        bcc ?sh
-        lda #8                       ; carried out -> the shift would give 8 flat
-        bne ?fin                     ; (always: A = 8)
-?sh     lsr
+                                      ; 2026-09-23: the 9-bit sum >> 5 -- ror brings the
+        ror                          ;   carry in (a carry means a low byte < 16, so
+                                     ;   the old flat 8 is exactly this)
         lsr
         lsr
         lsr
@@ -233,13 +147,6 @@
 ;   MF_DROPPED (bn_drop) halves the amount, which is p_inter.c's
 ;   P_GiveAmmo(am_clip, 0) = clipammo[]/2: an enemy's clip is 5, not 10.
 ;--------------------------------------------------------------
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > EAIM_END+1
-        ert 'en_aimcol outgrew EAIM_BASE..EAIM_END (memory_map.inc)'
-    .endif
- .endif
-        org GB_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc give_bonus
         lda BN_AMT,y
@@ -274,23 +181,14 @@
 ?done   sec                          ;   eats (P_GiveArmor, p_inter.c:254)
         rts
 ?power  jmp pw_map                   ; C and Y come back from there. pw_map is
-                                     ;   pw_give with the Computer Map leg in
-                                     ;   front of it (powerups.asm): pw_give's
-                                     ;   own block has no spare byte, and this
-                                     ;   jmp is three either way
+                                     ;   pw_give with the Computer Map leg in ...
 ?bits   cpy #22                      ; 16-21 = a WEAPON: ONE routine does all of
         bcc wp_give                  ;   P_GiveWeapon (the owned bit, the ammo,
-                                     ;   the raise) and answers C from there, so
-                                     ;   the sound, the gold flash and thing_kill
-                                     ;   all follow `gaveweapon || gaveammo`
-                                     ;   instead of a blanket "taken". It used to
-                                     ;   be spread over this branch, wp_give and
-                                     ;   pickup_bonus, and no one of the three
-                                     ;   could see the whole answer (2026-08-11)
+                                     ;   the raise) and answers C from there, so ...
         lda BN_AMT,y                 ; 22-24 = a key: a bit set, always taken and
         ora PSTATE+PS_KEYS           ;   never halved by MF_DROPPED. Absolute, not
         sta PSTATE+PS_KEYS           ;   PSTATE,x -- X only ever held PS_KEYS here
-        sec
+        ;sec
         rts
 ?no     clc
         rts
@@ -305,32 +203,6 @@
 ;        so snd_bonus stays silent and spr_take leaves the thing on the floor --
 ;        the same refusal P_TouchSpecialThing makes. Y is preserved: snd_bonus
 ;        picks the pickup SFX from the bonus id after give_bonus returns.
-;   A found weapon comes with TWO clips of its ammo, one if an enemy dropped it
-;   -- clipammo[] = 10/4/20/1, so 20/8/40/2 found and half that dropped. A
-;   weapon with no art still banks its ammo.
-;
-;   THE TWO RULES THE SPLIT VERSION BROKE (2026-08-11, "when I already have the
-;   gun it must not pop up again, and on full ammo I should not pick it up"):
-;     * `if (player->weaponowned[weapon]) gaveweapon = false; else { ...;
-;       player->pendingweapon = weapon; }` -- the raise belongs to the FIRST
-;       pickup only. This used to end in an unconditional `jmp wp_select`, so
-;       every duplicate shotgun lowered and raised the gun in your hands.
-;     * P_GiveAmmo's first line after the type check is
-;       `if (player->ammo[ammo] == player->maxammo[ammo]) return false`, so a
-;       gun the player already owns, walked over with that counter FULL, gives
-;       nothing at all and the pickup is refused whole -- idkfa and the shotgun
-;       on E1M1 stays lying there. This used to answer a blanket "taken" with
-;       the ammo never looked at, so the thing vanished and the sound played
-;       for nothing.
-;   gaveammo needs no flag byte: the clamp below already has the new counter in
-;   A, and a clamped total is never BELOW what was there, so one compare against
-;   the old value before the store says whether anything moved -- and it leaves
-;   exactly the carry the tail wants (moved -> C=1, Z=0). The only other way out
-;   of the ammo half is am_noammo, and that one clears it by hand.
-;   The bytes came out of spr_take's *8 below, not out of another block: this
-;   one is win1 and stays win1. Checked against p_inter.c over all 572
-;   (weapon, owned, counter, MF_DROPPED, backpack) cases, on the shipped bytes
-;   and through snd_bonus, by tools/tests/_verify_wpgive.py.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_give
@@ -341,8 +213,9 @@
         sta bn_qty                   ;   (p_inter.c's `gaveweapon`). bn_qty is
         stx PSTATE+PS_WEAPONS        ;   free on this path: only the COUNTER
                                      ;   branch of give_bonus reads it
-        tya
-        pha                          ; the bonus id, for Y on the way out
+                                      ; 2026-09-22 (drac030): phy ... ply
+        phy                          ; the bonus id, for Y on the way out
+        tya                          ;   (and #7 below needs it in A too)
         and #7                       ; 16..21 -> 0..5 (the ids are $10..$15, so
         tax                          ;   the mask is the subtraction, one byte up)
         lda wi_ofbonus,x             ; bonus id -> wp_*
@@ -372,11 +245,8 @@
         txa                          ;   not have. This used to be an
         jsr wp_select                ;   unconditional `jmp wp_select`, so every
         sec                          ;   duplicate shotgun lowered and raised the
-                                     ;   gun in your hands. A weapon that WAS new
-                                     ;   is taken whatever the ammo did -- and
-                                     ;   wp_select hands the carry back clobbered
-?fin    pla
-        tay                          ; the bonus id back in Y for snd_bonus
+                                     ;   gun in your hands.
+?fin    ply                          ; the bonus id back in Y for snd_bonus
         rts                          ; C = gaveweapon || gaveammo
 .endp
         .endseg
@@ -391,7 +261,6 @@
         lda sp_pick
         and #F_DROP
         bne spr_drop                 ; a corpse's ammo: no sprtab id, no kill
- .if 1
         ldy #6                       ; sprite id -> its sprtab entry -> bonus id:
         lda (sp_ptr),y               ;   id*8 (8 B records) + th_sprtab, all in a
         rep #$20                     ;   16-bit A (an id is a byte: the asl's
@@ -404,24 +273,6 @@
         sta sp_tab
         sep #$20
         .LONGA OFF
- .else
-        lda #0                       ; sprite id -> its sprtab entry -> bonus id.
-        sta m_prod+1                 ;   id*8 (8 B records) in A:m_prod+1, NOT two
-        ldy #6                       ;   zp bytes shifted three times each: the low
-        lda (sp_ptr),y               ;   half never leaves the accumulator, and it
-        asl                          ;   is the adc's operand already. -7 B, which
-        rol m_prod+1                 ;   is where wp_give's ammo refusal above came
-        asl                          ;   from -- the block is full to the byte and
-        rol m_prod+1                 ;   nothing was going to move out of win1
-        asl
-        rol m_prod+1
-        clc
-        adc th_sprtab
-        sta sp_tab
-        lda m_prod+1
-        adc th_sprtab+1
-        sta sp_tab+1
- .endif
         ldy #7
         lda (sp_tab),y
         beq ?out                     ; no bonus behind this sprite
@@ -472,19 +323,8 @@
 ;--------------------------------------------------------------
 ; pl_armset -- P_GiveArmor's other half: Y = the bonus id give_bonus just
 ;   applied (5 = the +1 armour bonus, 6 = green, 7 = blue) -> pl_armt.
-;   The POINTS are give_bonus's business (BN_AMT/BN_MAX already give DOOM's
-;   100/200 caps and refuse a green suit at 100+); this is only the TYPE, which
-;   is what pl_armsub reads to decide the share -- 1/3 green, 1/2 blue.
-;   An armour BONUS keeps the type it finds: "if (!armortype) armortype = 1".
-;   Parked at PLARM_BASE (the tail en_ovkill's move freed in the ENGIB block):
-;   folding all of P_GiveWeapon into wp_give needed the bytes here, and this is
-;   the coldest thing in the block -- three armour pickups a level.
 ;--------------------------------------------------------------
 plarm_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org PLARM_BASE
- .endif
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_armset
         tya
@@ -498,12 +338,6 @@ plarm_resume = *
 ?out    rts
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > PLARM_END+1
-        ert 'pl_armset outgrew PLARM_BASE..END (memory_map.inc)'
-    .endif
- .endif
         org plarm_resume
 
     .if * > GB_END+1

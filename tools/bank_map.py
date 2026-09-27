@@ -229,8 +229,7 @@ def v(text):
 #   $020000  SND_EXT is bank $02 (sound.asm `sf_rd lda.l SND_EXT`, bank byte
 #            patched per voice); MENU_SRVRAM is VRAM (menu.asm stores
 #            #[MENU_SRVRAM>>16] into BCB_DST_ADDR+2). MENU_SRXDL too.
-#   $040000  WEAP_EXT is bank $04 (load_weapons: ll_bank = WEAP_EXT_BANK);
-#            TITLE_VRAM is VRAM (automap.asm: BCB_SRC_ADDR+2).
+#   $040000  WEAP_EXT is bank $04 (load_weapons: ll_bank = WEAP_EXT_BANK).
 #   $05xxxx  CMAP_EXT is bank $05 (lights.asm lt_init: #[CMAP_EXT>>16] ->
 #            zp_cm+2, a long pointer); WI_VRAM $050000 is VRAM.
 #   $06xxxx  SND region 1 is bank $06 (sound_tables.inc SND_RBK1, same lda.l);
@@ -378,8 +377,15 @@ REGIONS = [
     # sector of the two ranges into PREn_BASE + (sec - PREn_SEC)*128 (pre_map),
     # so its size is the sector count, whatever the sectors hold.
     R('PRE0_BASE',  'PRE0_BASE', 'PRE0_CNT*128',
-      'SDRAM level cache range 0: level slots + texture/sprite pools',
+      'SDRAM level cache range 0: the level slots',
       'atr_layout.inc sectors x 128; diskio.asm pre_map', span=True),
+    R('POOL_SD',    'LVL_TEXSD_C', 'POOL_SECTORS*128',
+      'the DEPACKED tex+spr pool (inflate816.asm at boot; POOL_PAK_SECT on disk)',
+      'atr_layout.inc POOL_SECTORS x 128 = the UNPACKED span; diskio.asm load_textures',
+      span=True),
+    R('MENU_BOUNCE', 'MENU_BOUNCE', 'MENU_BNC_CH*4096',
+      'menu depack bounce, BOOT ONLY (menu.asm mn_binf/mn_dist)',
+      'atr_layout.inc; dead once menu_boot hands the rows to VRAM', span=True),
     R('PRE1_BASE',  'PRE1_BASE', 'PRE1_CNT*128',
       'SDRAM level cache range 1: things/dtab/los/sprcol, HUD, PAL, SFX, weapons',
       'atr_layout.inc sectors x 128; diskio.asm pre_map', span=True),
@@ -388,8 +394,9 @@ REGIONS = [
       'atr_layout.inc chunks x 4 KB, 32 sectors a chunk; MUS_BYTES of it is song',
       span=True),
     R('WIMAP_BANK', 'WIMAP_BANK*$10000', 'WIM_CHUNKS*4096',
-      'E2/E3 intermission world maps (load_music; wi_bgsel spr_fcopy sf_src)',
-      'atr_layout.inc chunks x 4 KB; pack_wi.py wimaps.bin, one map per 32 KB'),
+      'intermission world maps, 320x200 + SR list (load_music; wi_bgfetch)',
+      'atr_layout.inc chunks x 4 KB; pack_wi.py wimaps.bin, one map per bank',
+      span=True),
     R('SPRCOL_EXT', 'SPRCOL_BANK*$10000+SPRCOL_EXT', 'FTAB_EXT-SPRCOL_EXT',
       'T4 sprite column tables (spr_ctcol [zp],y)',
       'implied: pack_things.py FTAB_OFF = FTAB_EXT-SPRCOL_EXT, the coltab run pads to it'),
@@ -408,6 +415,8 @@ VIEWS = [
     ('LVL_TEXSD_C', 'pool.tex home: seg_draw + tex_sdram, paint.asm lda.l SMC'),
     ('LVL_SPRSD_C', 'sprpool.bin home: spr_fcopy sf_src'),
 ]
+VIEW_HOMES = ('PRE', 'POOL_SD')      # regions a view may land in: the cache
+                                     #   ranges, or the depacked pool itself
 
 # Invariants the map leans on. (lhs, op, rhs, fatal, why). A fatal one means a
 # stream writes past the region priced for it -- an overrun, and --check fails.
@@ -430,7 +439,10 @@ CHECKS = [
     ('WEAP_EXT+WEAP_CHUNKS*4096', '>=', 'SKY_EXT+SKY_BYTES', True,
      'load_weapons streams the whole sky blob (sky_clip reads its offset table at the end)'),
     ('MUS_BYTES', '<=', 'MUS_CHUNKS*4096', False, 'the songs fit the chunks load_music streams'),
-    ('PRE0_BASE+PRE0_CNT*128', '==', 'PRE1_BASE', False, 'cache range 1 starts where range 0 ends'),
+    ('PRE0_BASE+PRE0_CNT*128', '==', 'LVL_TEXSD_C', False,
+     'the depacked pool sits where cache range 0 ends'),
+    ('LVL_TEXSD_C+POOL_SECTORS*128', '==', 'PRE1_BASE', False,
+     'cache range 1 starts where the depacked pool ends'),
     ('PRE1_BASE+PRE1_CNT*128', '==', 'PRE_END', False, 'PRE_END is the end of range 1'),
     ('PK_IDX/$10000', '==', 'MAP_SEG_BANK', False, 'PK_* are hard 24-bit; their ert assumes MAP_SEG_BANK'),
     ('FRAC_EXT/$10000', '==', 'MAP_EXT_BANK', False, 'FRAC_EXT is spelled as bank $01'),
@@ -442,19 +454,19 @@ CHECKS = [
 # (tag, first sector, sectors per unit, units). Per-level blocks name the level.
 ATR_BLOCKS = [
     ('LVL', 'LVL_SEC1', 'LVL_SECTORS', 'NUM_LEVELS'),
-    ('POOL', 'POOL_SEC', 'POOL_SECTORS', '1'),
+    ('POOL', 'POOL_SEC', 'POOL_PAK_SECT', '1'),
     ('THG', 'THG_SEC1', 'THG_SECTORS', 'NUM_LEVELS'),
     ('DTB', 'DTB_SEC1', 'DTB_SECTORS', 'NUM_LEVELS'),
     ('LOS', 'LOS_SEC1', 'LOS_SECTORS', 'NUM_LEVELS'),
     ('SPRC', 'SPRC_SEC1', 'SPRC_SECTORS', 'NUM_LEVELS'),
-    ('HUD', 'HUD_SEC1', 'HUD_CHUNKS*32', '1'),
+    ('HUD', 'HUD_SEC1', 'HUD_PAK_SECT', '1'),
     ('PAL', 'PAL_SEC1', 'PAL_SECTORS', 'PAL_COUNT'),
-    ('SND', 'SND_SEC1', 'SND_CHUNKS*32', '1'),
-    ('WEAP', 'WEAP_SEC1', 'WEAP_CHUNKS*32', '1'),
-    ('MENU', 'MENU_SEC1', 'MENU_CHUNKS*32', '1'),
+    ('SND', 'SND_SEC1', 'SND_PAK_SECT', '1'),
+    ('WEAP', 'WEAP_SEC1', 'WEAP_PAK_SECT', '1'),
+    ('MENU', 'MENU_SEC1', 'MENU_DISK_SECT', '1'),
     ('FIN', 'FIN_SEC1', 'FIN_ATRCHUNKS*32', '1'),
-    ('MUS', 'MUS_SEC1', 'MUS_CHUNKS*32', '1'),
-    ('WIM', 'WIM_SEC1', 'WIM_CHUNKS*32', '1'),
+    ('MUS', 'MUS_SEC1', 'MUS_PAK_SECT', '1'),
+    ('WIM', 'WIM_SEC1', 'WIM_PAK_SECT', '1'),
     ('SAVE', 'SAVE_SEC1', 'SAVE_SECTORS', 'SAVE_SLOTS'),
 ]
 CACHE = [('PRE0_BASE', 'PRE0_SEC', 'PRE0_CNT'), ('PRE1_BASE', 'PRE1_SEC', 'PRE1_CNT')]
@@ -548,7 +560,7 @@ def view_problems(regions):
     out = []
     for sym, what in VIEWS:
         addr = v(sym)
-        home = [r for r in regions if r.name.startswith('PRE') and r.base <= addr <= r.hi]
+        home = [r for r in regions if r.name.startswith(VIEW_HOMES) and r.base <= addr <= r.hi]
         out.append((sym, addr, what, home[0] if home else None))
     return out
 

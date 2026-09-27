@@ -151,7 +151,7 @@ def main():
         A(f'  {kind:5} {ln.bank:02X}:{ln.run:04X} {str(ln.proc)[:20]:20} {pf[:20]:20} '
           f'{bank:02X}:{addr:04X} {str(t.proc)[:20]:20}  {ln.src.strip()[:60]}')
     txt = '\n'.join(L)
-    out = os.path.join(code_map.ROOT, 'bench', 'code_xref_resident.txt' if resident
+    out = os.path.join(code_map.ROOT, 'tools', 'tests', 'out', 'code_xref_resident.txt' if resident
                        else 'code_xref.txt')
     with open(out, 'w', encoding='utf-8') as f:
         f.write(txt + '\n')

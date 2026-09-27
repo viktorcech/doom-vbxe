@@ -181,7 +181,6 @@ class Wad:
         """path = the IWAD; pwads = PWADs layered over it (last one wins).
 
         The overlay is DOOM's own -file rule: a PWAD's lumps are appended and
-        looked up first, so GALAXIA.WAD's E1M1 replaces the IWAD's while every
         texture, sprite and sound still comes out of the IWAD -- which is what
         a map WAD expects, since it ships none of those."""
         self.path = path
@@ -461,7 +460,8 @@ class Wad:
             if len(newsec) != orig or tail:
                 print(f'  {mapname}: sector merge {orig} -> {len(newsec)}{tail}')
             sectors = newsec
-            for sd in sides:
+            side_rawsec = [sd.sector for sd in sides]   # the WAD's own sector per
+            for sd in sides:                            #   sidedef (pack_map._sndgraph)
                 sd.sector = remap[sd.sector]
         # ---- The DOOR WELD is gone (2026-08-18, same day it went in). It capped
         # a map at 32 working doors and shipped the excess permanently open,
@@ -473,6 +473,7 @@ class Wad:
         # doors.asm, and wadconv.py's own check) instead of quietly welding.
         md = MapData(mapname.upper(), verts, lines, sides, sectors,
                      things, segs, ssectors, nodes, remapped, hexen, dropped)
+        md.side_rawsec = side_rawsec
         return md
 
 
@@ -497,6 +498,11 @@ class MapData:
     # ACS_Execute above all, i.e. the scripted half of the level.
     hexen: bool = False
     dropped: dict = field(default_factory=dict)
+    # sidedef -> the sector it names IN THE WAD, before load_map's identical-row
+    # merge. The merge folds rooms that are nowhere near each other into one
+    # row, which is lossless for drawing and wrong for anything that asks
+    # "which sectors TOUCH" -- P_RecursiveSound (pack_map._sndgraph).
+    side_rawsec: list = field(default_factory=list)
 
     def bounds(self):
         xs = [v.x for v in self.vertices]

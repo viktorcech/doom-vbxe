@@ -45,7 +45,8 @@ _PROJ = os.path.dirname(_HERE)
 # packers need the source at BUILD time, and a build that dies because the tree
 # is spelled the other way is a build nobody can run. doomspecs.py imports
 # SRC_DIR from here so the two never drift apart.
-SRC_DIRS = (os.path.join(_PROJ, '_pomocne', '_doomsrc'),
+SRC_DIRS = (os.path.join(_PROJ, '_doomsrc'),                 # 2026-09-21: moved to the root
+            os.path.join(_PROJ, '_pomocne', '_doomsrc'),
             os.path.join(_PROJ, 'DOOM-master', 'linuxdoom-1.10'))
 SRC_DIR = next((d for d in SRC_DIRS if os.path.isfile(os.path.join(d, 'info.c'))),
                SRC_DIRS[0])

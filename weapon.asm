@@ -1,43 +1,7 @@
-;==============================================================
-; weapon.asm -- the player's weapon: DOOM's psprite state machine (p_pspr.c)
 ;--------------------------------------------------------------
-; What it is, and what it is not
-;   DOOM does not put the gun in the world. It keeps two "player sprites" --
-;   ps_weapon and ps_flash -- each with its own state, tic counter and screen
-;   offset (psp->sx/sy), and R_DrawPSprite paints them over the finished 3D view.
-;   This file is that machine: the SAME states from info.c, the SAME tic
-;   durations, the SAME raise/lower/bob arithmetic. What it does NOT do is the
-;   hitscan (A_GunShot -> P_LineAttack): there is nothing to shoot at yet, so
-;   firing spends ammo, animates, flashes and sounds, and no bullet travels.
-;
-; Timing -- why the machine is ticked, not stepped once per frame
-;   DOOM runs psprites at 35 Hz. This port's frame rate is 3-10 fps, so stepping
-;   one state per frame would stretch a 4-tic muzzle flash over a second. Instead
-;   wp_think turns the frame's VBLANKs (dt_vbl, from frame_dt) into DOOM TICS
-;   (TIC_Q8 = 35/50 in Q8, remainder carried in wp_tacc) and runs the machine that
-;   many times -- so every duration in the table below is DOOM's own number and
-;   the animation is right on a stock 800XL and on a Rapidus alike. Same model
-;   the doors and the lifts already use.
-;
-; ENTERING a state is what runs its action -- P_SetPsprite, not the tic countdown:
-;   states with 0 tics fall straight through to the next one, and an action that
-;   sets a new state (A_WeaponReady -> downstate, A_Raise -> readystate,
-;   P_FireWeapon -> atkstate) enters it in the SAME tic. That is why the chaingun
-;   fires the moment its atkstate is reached and why the trigger has DOOM's 4-tic
-;   delay and not a state's worth of extra lag. wp_enter is that do-while loop;
-;   it is re-entrant (the hop guard and the state id ride the stack), because an
-;   action legitimately calls it again.
-;
-; Drawing
-;   Every frame's screen position is precomputed by tools/pack_weap.py, so
-;   draw_weapon only adds the live offsets (the raise/lower slide sy-WEAPONTOP,
-;   and the sway if WP_SWAY is on), scales the frame with the view window and
-;   clips it to that window -- one BLT_BSTENCIL rectangle, index 0 transparent.
-;   The flash goes down after the gun, exactly like R_DrawPlayerSprites' psprite
-;   order. See the block comment above draw_weapon for the scale and the clip.
-;==============================================================
-
-; ---- state table indices (mirrors info.c; see WS_FRM/DUR/ACT/NXT below) ------
+; weapon.asm -- the player's weapon: DOOM's psprite state machine (p_pspr.c), same
+;   states, tics and raise/lower/bob arithmetic.
+;--------------------------------------------------------------
 WS_NULL       equ 0                  ; S_NULL: nothing drawn (the idle flash)
 WS_PUNCH      equ 1                  ; fist
 WS_PUNCHDOWN  equ 2
@@ -131,16 +95,9 @@ WA_GUNFLASH   equ 7                  ; A_GunFlash: light the flash psprite WITHO
                                      ;   firing (S_MISSILE1 and S_BFG2 -- "later"
                                      ;   arrived 2026-08-28)
 WA_BFGSND     equ 8                  ; A_BFGsound: S_BFG1's whole job is the
-                                     ;   charge-up noise. No ammo, no flash, no
-                                     ;   shot -- the 20 tics it holds ARE the tell
-                                     ;   that a BFG is about to go off
+                                     ;   charge-up noise.
 WA_FIREBFG    equ 9                  ; A_FireBFG: 40 cells and the spray. NOT
-                                     ;   WA_FIRE, because wp_fire_a is the
-                                     ;   hitscan skeleton (one round, en_gunshot,
-                                     ;   a muzzle flash) and A_FireBFG shares none
-                                     ;   of it. 8 and 9 are ADJACENT so wp_action
-                                     ;   can send both to the BFG block on one
-                                     ;   compare -- that run has no bytes spare.
+                                     ;   WA_FIRE, because wp_fire_a is the ...
 WP_HOPS       equ 8                  ; zero-tic states chained in one go, cap
 
         org WEAPON_BASE
@@ -150,18 +107,9 @@ WP_HOPS       equ 8                  ; zero-tic states chained in one go, cap
 ;   start is not a weapon change, so no raise animation). From init_level.
 ;   DOOM's P_SetupPsprites brings up player->readyweapon, and readyweapon SURVIVES
 ;   the exit: G_PlayerFinishLevel drops the powers and the cards and nothing else.
-;   So this does not re-arm the pistol -- it keeps wp_cur and just looks up that
-;   weapon's readystate. load_things seeds wp_cur = WP_PISTOL at BOOT (once), which
-;   is what makes the very first level start with DOOM's kit.
-;   2026-08-03: MOVED to the WPWLOAD block ($8500) with wp_wload -- it is cold
-;   (once per level) and the packed $F280 block needed the bytes for the
-;   weapon-switch copy hook in wp_lower.
 ;--------------------------------------------------------------
 wpi_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WPWLOAD_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_init
         lda wp_cur                   ; the ready weapon's frames must be IN the
@@ -196,17 +144,8 @@ wpi_resume = *
 ; wp_wload -- A = weapon id (WP_*): make that weapon's psprite frames resident
 ;   in the VRAM slot (WEAP_SLOT), copying its whole run (gun + flash frames,
 ;   contiguous by pack_weap.py) from the Rapidus SRAM master (WEAP_EXT) through
-;   the MEMAC-A window. Worst case is the shotgun: 83 pages ~= 21 KB ~= 15 ms
-;   on the slow VBXE bus -- hidden inside the raise animation (16 tics), and
-;   the one tic that runs it draws nothing anyway: every rest frame is fully
-;   clipped at WEAPONBOTTOM (fully lowered = invisible, like DOOM).
-;   SAFE HERE because wp_think runs before render_world and the previous
-;   frame's last blit was waited out by swap_buffers -- the blitter is idle,
-;   so the MEMAC bank can be borrowed and handed back. The sound IRQ reads
-;   samples with lda.l (no MEMW), so it may interrupt the copy freely.
+;   the MEMAC-A window.
 ;   Uses zp_ptr as the 24-bit source (read_ext's pattern: [zp],y works in
-;   emulation mode) and zp_tsrc as the window cursor -- both are loader/frame
-;   scratch, nothing holds them live across wp_think.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_wload
@@ -223,31 +162,33 @@ wpi_resume = *
         sta zp_ptr+2
         lda wpl_np,x                 ; 256-byte pages to move
         sta wp_wn
- .if 1                                ; DRAC_PLAN 3b: 16 KB window
+                                      ; DRAC_PLAN 3b: 16 KB window
         lda #<MEMW16
         sta zp_tsrc
         lda #>[MEMW16+[[WEAP_SLOT_BK0&3]<<12]]
         sta zp_tsrc+1
- .else
-        lda #<MEMW
-        sta zp_tsrc
-        lda #>MEMW
-        sta zp_tsrc+1
- .endif
         lda #BANK_EN | WEAP_SLOT_BK0
         sta wp_wbk
         sta VBXE_BANK_SEL
-?page   ldy #0
+                                      ; 2026-09-22 (rapidus-bus-timing): the window is
+        stz zp_savex                 ;   written through [zp_tsrc],y (bank byte
+                                      ; 2026-09-22 (65816-style: a byte sweep read as words):
+?page   ldy #0                       ;   two bytes a pass into the window
+        rep #$20
+        .LONGA ON
 ?b      lda [zp_ptr],y
-        sta (zp_tsrc),y
+        sta [zp_tsrc],y
+        iny
         iny
         bne ?b
+        sep #$20
+        .LONGA OFF
         inc zp_ptr+1
         bne ?ns
         inc zp_ptr+2                 ; the run crossed a 64 KB SRAM bank
 ?ns     inc zp_tsrc+1
         lda zp_tsrc+1
- .if 1                                ; DRAC_PLAN 3b: 16 KB window
+                                      ; DRAC_PLAN 3b: 16 KB window
         cmp #>[MEMW16+$4000]
         bne ?nw
         lda #>MEMW16                 ; page filled: the next 16 KB page
@@ -258,15 +199,6 @@ wpi_resume = *
         adc #4
         sta wp_wbk
         sta VBXE_BANK_SEL
- .else
-        cmp #>(MEMW+$1000)
-        bne ?nw
-        lda #>MEMW                   ; window filled: next VBXE 4 KB bank
-        sta zp_tsrc+1
-        inc wp_wbk
-        lda wp_wbk
-        sta VBXE_BANK_SEL
- .endif
 ?nw     dec wp_wn
         bne ?page
         lda #BANK_EN | BANK_OVERHEAD ; hand the window back to the XDL/BCB bank
@@ -275,11 +207,7 @@ wpi_resume = *
         sta zp_ptr+2                 ;   whole engine treats it as a constant
                                      ;   (init_level seeds it ONCE -- seg_draw,
                                      ;   enemy*, infight, collision all read
-                                     ;   [zp_ptr],y assuming it). Leaving $04/$05
-                                     ;   here made the AI chew weapon pixels as
-                                     ;   monster state from the first weapon
-                                     ;   switch on: random grunts + a stuttering
-                                     ;   frame loop, picture mostly intact.
+                                     ;   [zp_ptr],y assuming it).
         rts
 .endp
         .endseg
@@ -298,12 +226,7 @@ wpl_sb  dta [WPL_SRC0>>16],[WPL_SRC1>>16],[WPL_SRC2>>16],[WPL_SRC3>>16]
 wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
         dta WPL_NPG4,WPL_NPG5,WPL_NPG6,WPL_NPG7
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WPWLOAD_END+1
-        ert 'wp_init/wp_wload outgrew WPWLOAD_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wpi_resume
 
 ;--------------------------------------------------------------
@@ -312,7 +235,6 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_think
- .if 1
         lda dt_vbl
         beq ?none                    ; same VBLANK as the last frame: no tic
         sta m_a                      ; m_a = dt_vbl as a word
@@ -372,52 +294,6 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
         dec wp_tics                  ;   view falling -- one clock, one rate
         bne ?tic
 ?none   rts
- .else
-        lda dt_vbl
-        beq ?none                    ; same VBLANK as the last frame: no tic
-        sta m_a                      ; m_b:m_a = dt_vbl * TIC_Q8 -- the canonical
-        lda #0                       ;   shift-add (see the note in wp_scale:
-        sta m_b                      ;   ONE shift of the multiplier per pass,
-        lsr m_a                      ;   the `ror m_a` at the bottom, so the
-        ldx #8                       ;   first bit is shifted out up here)
-?mul    bcc ?nadd
-        clc
-        lda m_b
-        adc #TIC_Q8
-        sta m_b
-?nadd   ror m_b
-        ror m_a
-        dex
-        bne ?mul
-        clc                          ; carry the Q8 fraction to the next frame
-        lda m_a
-        adc wp_tacc
-        sta wp_tacc
-        lda m_b
-        adc #0
-        cmp #TIC_MAX+1               ; a level-load hitch must not spin the machine
-        bcc ?ok
-        lda #TIC_MAX
-?ok     sta wp_tics
-        cmp #0                       ; STA sets no flags: without this the Z here
-        beq ?none                    ;   came from the CMP above (never equal, by
-                                     ;   construction), so a frame that earned
-                                     ;   ZERO tics fell into ?tic and the dec/bne
-                                     ;   ran it 256 times. Invisible until now
-                                     ;   because the old test probed wp_phase,
-                                     ;   which 256 tics advance by 256*4 = 0 mod
-                                     ;   256. It needs dt_vbl = 1, i.e. a frame
-                                     ;   that took a single VBLANK -- reachable on
-                                     ;   a Rapidus with the view window small.
-?tic    jsr wp_tic
-        jsr en_tick                  ; the same DOOM tic drives the death frames
-        jsr en_slide                 ;   (enemy.asm), P_XYMovement's friction on
-        jsr ai_tick                  ;   a corpse a blast pushed (enemy_ai.asm),
-        jsr pl_dthink                ;   the monsters' RUN states, and the dead
-        dec wp_tics                  ;   view falling -- one clock, one rate
-        bne ?tic
-?none   rts
- .endif
 .endp
         .endseg
 
@@ -427,11 +303,7 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_tic
         jsr pw_tic                   ; P_PlayerThink's tail: the POWERS count down
-                                     ;   one per tic and pw_tic passes the call on
-                                     ;   to fl_tic (the palette-flash counters) --
-                                     ;   this is the port's only 35 Hz clock, and
-                                     ;   the flash block has no byte left for a
-                                     ;   second jsr of its own
+                                     ;   one per tic and pw_tic passes the call on ...
     .if WP_SWAY
         jsr wp_bobcalc               ; the bob ramp only feeds the sway
     .endif
@@ -450,7 +322,7 @@ wpl_np  dta WPL_NPG0,WPL_NPG1,WPL_NPG2,WPL_NPG3
         bne ?done
         ldy wp_fstate
         lda WS_NXT,y
-        jmp wp_fenter
+        bra wp_fenter
 ?done   rts
 .endp
         .endseg
@@ -469,9 +341,7 @@ wpf_resume = *
         lda WS_DUR,y
         sta wp_ftic
         jmp wp_flight                ; ... and the state's extralight: retarget
-                                     ;   process_seg's lt_seg call (lights.asm,
-                                     ;   the muzzle flash -- transitions only,
-                                     ;   never a per-frame cost)
+                                     ;   process_seg's lt_seg call (lights.asm, ...
 .endp
         .endseg
 
@@ -488,7 +358,7 @@ wpf_resume = *
         bcc ?no                      ; dry -> wp_checkammo queued a switch
         ldx wp_cur
         lda wi_atk,x
-        jmp wp_enter
+        bra wp_enter
 ?no     rts
 .endp
         .endseg
@@ -514,23 +384,11 @@ wpf_resume = *
         sta wp_stic
         lda WS_ACT,y
         beq ?tics                    ; WA_NONE
- .if 1
         phx                          ; [hops]
         phy                          ; [hops][state]
         jsr wp_action                ; Y = the state entered; may re-enter
         ply
         plx
- .else
-        txa                          ; [hops]
-        pha
-        tya                          ; [hops][state]
-        pha
-        jsr wp_action                ; Y = the state entered; may re-enter
-        pla
-        tay
-        pla
-        tax
- .endif
         cpy wp_state
         bne ?out                     ; the action moved on: it set the tics
 ?tics   lda wp_stic
@@ -554,25 +412,22 @@ wpf_resume = *
 .proc wp_action
         lda WS_ACT,y
         cmp #WA_READY
-        bne ?l1
-        jmp wp_ready
+        beq wp_ready 
+        ;bra wp_ready
 ?l1     cmp #WA_LOWER
-        bne ?l2
-        jmp wp_lower
+        beq wp_lower 
+        ;bra wp_lower
 ?l2     cmp #WA_RAISE
         bne ?l3
         jmp wp_raise
 ?l3     cmp #WA_REFIRE
-        bne ?l4
-        jmp wp_refire_a
+        beq wp_refire_a 
+        ;bra wp_refire_a
 ?l4     cmp #WA_FIRE
         beq ?fire
         cmp #WA_PUNCH                ; A_Punch rides the same skeleton as a
         beq ?fire                    ;   trigger pull: en_gunshot's WP_FIST
-                                     ;   branch rolls 2*(P_Random()%10+1) with
-                                     ;   the berserk x10, en_shoot gates it on
-                                     ;   MELEERANGE (en_melee), no ammo, no
-                                     ;   flash -- wp_fire_a already does all
+                                     ;   branch rolls 2*(P_Random()%10+1) with ...
         cmp #WA_GUNFLASH             ;   of that off the WP_FIST row.
         bne ?bfg                     ; A_GunFlash: the flash psprite only. The
         ldx wp_cur                   ;   rocket lights it a state BEFORE it fires
@@ -581,7 +436,12 @@ wpf_resume = *
         jmp wp_fenter
 ?bfg    cmp #WA_BFGSND               ; 8 (A_BFGsound) and 9 (A_FireBFG) are the
         bcc ?out                     ;   only codes above WA_GUNFLASH, so ONE
-        jmp wp_bfgact                ;   compare hands both to the BFG block
+                                      ; 2026-09-22 idiom: wp_bfgact inlined (the tail jmp
+        cmp #WA_BFGSND               ;   went: -3): 9 = A_FireBFG, else A_BFGsound =
+        jne wp_fire_bfg              ;   S_StartSound and NOTHING else
+        lda #SFX_BFG
+        sta snd_pending
+        rts
 ?fire   jmp wp_fire_a                ;   ($FD72), which tells them apart
 ?out    rts
 .endp
@@ -594,7 +454,6 @@ wpf_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_ready
- .if 1
         jsr wp_sawidl                ; the saw's idle putter
         lda wp_pending
         cmp #WP_NONE
@@ -617,31 +476,6 @@ wpf_resume = *
     .else
         rts                          ; the sway is off in this build (WP_SWAY)
     .endif
- .else
-        jsr wp_sawidl                ; the saw's idle putter (the annex: this
-        lda wp_pending               ;   run ends 9 B short of ENLFIND_BASE)
-        cmp #WP_NONE
-        beq ?fire
-        ldx wp_cur                   ; put the current weapon away
-        lda wi_down,x
-        jmp wp_enter
-?fire   lda TRIG0
-        and #1
-        bne ?up
-        lda wp_down
-        bne ?bob                     ; still held from the last shot
-        lda #1
-        sta wp_down
-        jmp wp_firewep
-?up     lda #0
-        sta wp_down
-?bob                                 ; psp->sx/sy: only A_WeaponReady writes them
-    .if WP_SWAY
-        jmp wp_bobapply
-    .else
-        rts                          ; the sway is off in this build (WP_SWAY)
-    .endif
- .endif
 .endp
         .endseg
 
@@ -713,10 +547,7 @@ wpr2_resume = *
         .endseg
 
 wpr_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WPRAISE_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_raise
         lda wp_sy
@@ -733,12 +564,7 @@ wpr_resume = *
         jmp wp_enter
 .endp
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WPRAISE_END+1
-        ert 'wp_raise outgrew WPRAISE_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wpr_resume
 
 ;--------------------------------------------------------------
@@ -750,9 +576,7 @@ wpr_resume = *
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_fire_a
         jsr en_gunshot               ; A_GunShot -> P_LineAttack (enemy.asm). FIRST:
-                                     ;   it clobbers A/X/Y and nothing is live yet
-                                     ;   (and it raises ai_noise for every weapon
-                                     ;   -- P_NoiseAlert, see enemy.asm)
+                                     ;   it clobbers A/X/Y and nothing is live yet ...
         ldx wp_cur
         lda wi_ammo,x
         bmi ?nospend                 ; am_noammo
@@ -769,11 +593,17 @@ wpr_resume = *
         ldy en_hit                   ; A_Saw: the buzz turns into sfx_sawhit
         beq ?q                       ;   when the blade bites (p_pspr.c)
         lda #SFX_SAWHIT
-?q      jsr ai_noisealert            ; snd_dispatch starts it after the frame --
-        jmp ?cry                     ;   and it IS P_NoiseAlert (enemy_ai.asm)
+                                      ; 2026-09-22 (drac030 inline): ai_noisealert
+?q      sta snd_pending              ; snd_dispatch starts it after the frame --
+        lda #NOISE_FR
+        sta ai_noise
+        bra ?cry                     ;   and it IS P_NoiseAlert (enemy_ai.asm)
 ?fist   ldy en_hit
         beq ?cry                     ; whiff: queue nothing, and leave whatever
-        jsr ai_noisealert            ;   the frame already queued alone
+                                      ; 2026-09-22 (drac030 inline): ai_noisealert
+        sta snd_pending
+        lda #NOISE_FR
+        sta ai_noise
 ?cry                                 ; (the cry rides VOICE B now -- snd_dispatch
                                      ;  starts it on its own POKEY channel, so it
                                      ;  no longer displaces the weapon's sound)
@@ -892,9 +722,6 @@ wpr_resume = *
 ;   (p_inter.c: one if dropped by an enemy, two if it was placed in the map --
 ;   clipammo[] = 10 bullets / 4 shells / 20 cells / 1 rocket, so 20/8/40/2) and
 ;   becomes the pending weapon, so the gun in hand goes down and the new one
-;   comes up. A = bonus id (16..21, see BN_* in sprites.asm). Weapons with no art
-;   still bank their ammo -- they are simply never switched to.
-;   Called from pickup_bonus.
 ;--------------------------------------------------------------
 ;   MOVED to the DROP block (enemy_ai.asm, DROP_BASE) 2026-07-31: the dropped-
 ;   weapon half-ammo test pushed this segment past WEAPON_END, and wp_give runs
@@ -902,22 +729,14 @@ wpr_resume = *
 ; wp_give's three tables, parked at WPGTAB_BASE: pure data read with ,x once per
 ; weapon pickup, and the block itself is full to the byte again.
 wpg_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WPGTAB_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 wi_ofbonus dta WP_SHOTGUN, WP_CHAINGUN, WP_MISSILE, WP_PLASMA, WP_BFG, WP_CHAINSAW
 wi_give dta 0, 20, 8, 20, 2, 40, 40, 0               ; 2 clips of wi_ammo
 wi_amax dta 0, 200, 50, 200, 50, 255, 255, 0         ; DOOM maxammo (cells 300
                                                      ;   clipped: PSTATE is a byte)
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WPGTAB_END+1
-        ert 'wp_give tables outgrew WPGTAB_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wpg_resume
 
 ;--------------------------------------------------------------
@@ -1113,10 +932,7 @@ WS_ACT                               ; ---- action -------------------------
 ; memory_map.inc). Read with `lda WS_NXT,y` exactly like the three above -- the
 ; only thing the move changes is the address the assembler puts on it.
 wsn_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WSNXT_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 WS_NXT
         dta WS_NULL
@@ -1144,12 +960,7 @@ WS_NXT
         dta WS_BFG2,WS_BFG3,WS_BFG4,WS_BFG
         dta WS_BFGFLASH2,WS_NULL
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WSNXT_END+1
-        ert 'WS_NXT outgrew WSNXT_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ; ---- per-state extralight (the muzzle flash, 2026-08-31) --------------------
 ; The fifth column: 0 everywhere except the flash states, which carry DOOM's
@@ -1158,10 +969,7 @@ WS_NXT
 ; memory_map.inc). MISFLASH2 has no action in DOOM and so KEEPS Light1: the
 ; absolute 2 here encodes exactly that. wp_flight reads it on every flash
 ; transition; nothing reads it per frame, so win2 is the right price.
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WSLIGHT_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 WS_LIGHT
         dta 0                                              ; NULL
@@ -1179,25 +987,15 @@ WS_LIGHT
         dta 2,2                                            ; PLSFLASH1/2 (L1,L1)
         dta 0,0,0,0,0,0,0                                  ; bfg 63..69
         dta 2,4                                            ; BFGFLASH1/2 (L1,L2)
- .if 1                                ; DRAC_PLAN 3a: WS_LIGHT is in segment D0
+                                      ; DRAC_PLAN 3a: WS_LIGHT is in segment D0
     .if * != WS_LIGHT + WS_BFGFLASH2 + 1
         ert 'WS_LIGHT is not exactly one byte per state (WS_BFGFLASH2 is the last id)'
     .endif
- .else
-    .if * != WSLIGHT_BASE + WS_BFGFLASH2 + 1
-        ert 'WS_LIGHT is not exactly one byte per state (WS_BFGFLASH2 is the last id)'
-    .endif
- .endif
     .if [WS_PISFLASH != 16] | [WS_SGFLASH1 != 29] | [WS_CHFLASH1 != 37] | [WS_MISFLASH1 != 52] | [WS_PLSFLASH1 != 61] | [WS_BFGFLASH1 != 70]
         ert 'the WS_* state ids moved -- rewrite WS_LIGHT to match (weapon.asm)'
     .endif
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WSLIGHT_END+1
-        ert 'WS_LIGHT outgrew WSLIGHT_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wsn_resume
 
 ;==============================================================
@@ -1205,19 +1003,9 @@ WS_LIGHT
 ; real weapon now: the BFG (6) stopped mirroring the pistol on 2026-08-28, when
 ; pack_weap.py gave it frames, so all eight entries of all eight arrays mean
 ; what they say.
-;   PARKED AT WITAB_BASE ($B594). Pure data read with ,x and ,y, once or twice
-; per trigger pull, so any RAM does -- and the $F280 block went 32 B over
-; WEAPON_END the moment the BFG arrived (nine states x four columns, plus four
-; more WEAP_TAB records, plus the two new actions). The GROUP moved whole:
-; these are parallel arrays on one index and splitting them is how a table
-; drifts out of step. Same move, and the same reason, as wp_give's three
-; tables going to WPGTAB_BASE.
 ;==============================================================
 wit_resume = *
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-        org WITAB_BASE
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 wp_bit  dta 1,2,4,8,16,32,64,128     ; 1<<wp: PS_WEAPONS is DOOM's wp_* bitfield
 wi_ammo dta $FF, PS_BULLETS, PS_SHELLS, PS_BULLETS   ; weaponinfo[].ammo, and
@@ -1234,37 +1022,15 @@ wi_flash dta 0, WS_PISFLASH, WS_SGFLASH1, WS_CHFLASH1
         dta WS_MISFLASH1, WS_PLSFLASH1, WS_BFGFLASH1, 0   ; the saw has none
 wi_sfx  dta SFX_PUNCH,  SFX_PISTOL, SFX_SHOTGN, SFX_PISTOL
         dta SFX_RLAUNC, SFX_PLASMA, SFX_BFG,    SFX_SAWFUL
-        ; The rocket fires sfx_rlaunc now, the original's launch (info.c
-        ; seesound): since the missile flies visibly (proj.asm) the impact
-        ; half -- sfx_barexp, MT_ROCKET's deathsound -- plays when the sprite
-        ; ARRIVES, from pj_burst. The fist row is the CONNECT thump: wp_fire_a
-        ; only queues it when en_hit says the swing landed (a whiff is silent,
-        ; like A_Punch), and the saw row flips to SFX_SAWHIT on contact.
+        ; The rocket fires sfx_rlaunc now, the original's launch (info.c ...
 wi_prio dta WP_PLASMA, WP_CHAINGUN, WP_SHOTGUN, WP_PISTOL, WP_CHAINSAW
         dta WP_MISSILE, $FF
                                      ; P_CheckAmmo's fallback order, p_pspr.c:
                                      ;   plasma, chaingun, shotgun, pistol,
                                      ;   chainsaw, missile, bfg, fist.
-                                     ; THE BFG IS DELIBERATELY NOT IN THIS LIST,
-                                     ;   though it has art now. DOOM guards its
-                                     ;   entry with `ammo[am_cell] > 40`; this
-                                     ;   scan only asks whether the counter is
-                                     ;   NONZERO, so without that guard it would
-                                     ;   hand the BFG back on one cell,
-                                     ;   wp_checkammo's `cmp #BFGCELLS` would
-                                     ;   refuse it on the next A_WeaponReady, and
-                                     ;   the two would swap the gun in and out
-                                     ;   forever. The direction that matters works
-                                     ;   either way: a BFG that runs dry still
-                                     ;   falls back to the plasma from here.
 WI_NPRIO equ * - wi_prio
         .endseg
- .if 1                                ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
- .else
-    .if * > WITAB_END+1
-        ert 'weaponinfo[] outgrew WITAB_BASE..END (memory_map.inc)'
-    .endif
- .endif
+                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wit_resume
 
 WEAP_TAB                             ; 7 B per frame: u24 vram, w, h, ax, ay
@@ -1280,37 +1046,6 @@ WEAP_TAB                             ; 7 B per frame: u24 vram, w, h, ax, ay
 ; A_BFGSpray (781). Out of the $F280 block because that one is packed to the
 ; byte and this is the coldest code in the file: S_BFG1..S_BFG4 hold 20+10+10+20
 ; tics, so nothing here runs more than about once a second.
-;
-; THE BALL FLIES, on the machinery proj.asm already runs for the rocket and the
-; plasma: en_bfg2 below is en_rocket2 with one word changed. It flies as ITSELF
-; -- info.c MT_BFG spawnstate S_BFGSHOT = BFS1, deathstate S_BFGLAND = BFE1 --
-; packed one flight frame + three burst frames, the same cut the rocket's MISL
-; and the plasma's PLSS/PLSE already take.
-;   Two builds were wrong before this one, and both are worth remembering: the
-; first resolved the whole shot on the trigger tic, so there was nothing to see
-; at all ("nevidno luc"); the second borrowed the plasma's sprite to have
-; SOMETHING to draw, and a BFG that fires a plasma bolt is not a reduction, it
-; is a lie ("bfg striela plazmu! to je zle!"). The frames cost 42 B of every
-; level's things blob and exactly one level -- E2M2, whose 725-subsector prefix
-; has beaten that slot before -- cannot pay it; there pack_things.py stores $FF
-; and the shot lands at once.
-;
-; WHAT SURVIVES WHOLE is the thing that makes a BFG a BFG -- the spray. DOOM
-; fires forty P_AimLineAttacks over ANG90 in front of the ball and hurts
-; everything they find, and ANG90 IS this port's field of view: SCREEN_HALF is
-; the focal length of a 90 degree FOV, so the fan the spray sweeps and the 160
-; byte-columns of the view are the same fan. Ray i is therefore column 2 + 4i
-; and nothing has to be converted. Each ray is en_shoot, which already does
-; P_AimLineAttack + P_DamageMobj's work: the nearest VISIBLE shootable thing in
-; that column takes the roll, dies if it runs out, yells if it does not. A
-; monster wide enough to span several rays takes several of them, which is what
-; DOOM's independent rays do too.
-;
-; WHAT IT COSTS. Forty en_shoots, each a walk of the frame's vissprite list
-; (sp_n <= 40) with an en_seen clip test per candidate. That is the most
-; expensive thing the player can ask for in one tic -- and it is asked for at
-; most once a second, behind a 30-tic wind-up, which is exactly the shape of
-; the shot in DOOM.
 ;==============================================================
 bfg_resume = *
         org BFGFIRE_BASE
@@ -1343,11 +1078,11 @@ bfg_resume = *
         lda #1
         sta hud_dirty                ; the cell counter moved
         lda #SFX_BFG                 ; P_FireWeapon's P_NoiseAlert (p_pspr.c:256)
-        jsr ai_noisealert            ;   -- every trigger pull wakes the room
-        ; ---- the aim state en_gunshot sets up for every other weapon. The BFG
-        ;      does not go through it (nothing there fits A_FireBFG), so the
-        ;      three flags and the aim cell are set here instead, dead centre:
-        ;      P_SpawnPlayerMissile autoaims and takes no spread.
+                                      ; 2026-09-22 (drac030 inline): ai_noisealert
+        sta snd_pending
+        lda #NOISE_FR
+        sta ai_noise
+        ; ---- the aim state en_gunshot sets up for every other weapon.
         stz en_hit
         stz en_melee                 ; not a melee swing
         stz pf_mel                   ;   gate stays open
@@ -1358,7 +1093,7 @@ bfg_resume = *
         ldy #SCREEN_HALF+1
         sty en_ch
         jsr bfg_dmgroll              ; what the BALL does where it lands
-        jmp en_bfg2                  ; ...and off it goes
+        bra en_bfg2                  ; ...and off it goes
 .endp
         .endseg
 
@@ -1366,11 +1101,6 @@ bfg_resume = *
 ; bfg_dmgroll -- the ball's DIRECT hit, p_map.c PIT_CheckThing:
 ;       damage = ((P_Random()&7)+1) * mo->info->damage
 ;   and MT_BFG's damage is 100 (info.c:2038), so 100..800.
-;   THE ONE NUMBER THAT HAD TO BEND: en_dmg is a byte. 100 and 200 survive
-;   whole; everything from 300 up caps at 255, which changes the outcome for
-;   nothing in episodes 1-3 except the two final bosses -- and they are exactly
-;   what the SPRAY is for, forty rays of 15..120 each landing on top of this.
-;   -> A = the roll.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc bfg_dmgroll
@@ -1413,12 +1143,6 @@ bfg_resume = *
 ;   BFG's own sprites and its own deathsound, which doubles as the flag: pj_hit
 ;   reads pj_bsnd to know what landed -- SFX_BAREXP means the rocket and its
 ;   A_Explode, SFX_RXPLOD means this and its forty rays. info.c:2033 gives
-;   MT_BFG sfx_rxplod and the rocket launcher already brought that lump in, so
-;   the flag costs nothing.
-;   The frames are BFS1 A in flight and BFE1 A/B/C bursting (info.c S_BFGSHOT /
-;   S_BFGLAND), cut to one + three the way the rocket's MISL and the plasma's
-;   PLSS/PLSE are. $FF means the level's things blob could not afford them --
-;   only E2M2 -- and then the shot lands at once, like a level with no MISL.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pj_bspawn
@@ -1500,16 +1224,14 @@ spray_resume = *
         sta bfg_dmg                  ;   leaves the byte
         dex
         bne ?r
-        lda bfg_dmg
+                                      ; 2026-09-22 idiom: A IS bfg_dmg (the loop's last
         rts
 .endp
         .endseg
 
 bfg_col dta 0                        ; the sweep cursor, in byte-columns
 bfg_dmg dta 0                        ; bfg_roll's accumulator -- en_shoot clobbers
-                                     ;   en_t, so the sum cannot live there (the
-                                     ;   same reason en_pel exists for the
-                                     ;   shotgun's pellet count)
+                                     ;   en_t, so the sum cannot live there (the ...
     .if * > BFGSPRAY_END+1
         ert 'wp_bfgspray outgrew BFGSPRAY_BASE..END (memory_map.inc)'
     .endif
@@ -1555,8 +1277,8 @@ WE_AY   equ 6
         jsr wp_one
 ?flash  ldy wp_fstate
         lda WS_FRM,y
-        bmi ?out
-        jmp wp_one
+        bpl wp_one 
+        ;bra wp_one
 ?out    rts
 .endp
         .endseg
@@ -1566,8 +1288,7 @@ WE_AY   equ 6
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_one
- .if 1
-  .if 1                               ; THE BFG STRIPE (2026-09-15): in 8 bits 8i
+                                      ; THE BFG STRIPE (2026-09-15): in 8 bits 8i
         rep #$20                     ;   WRAPS from index 32 on -- the BFG's four
         .LONGA ON                    ;   frames, 32..35, and nothing else -- so
         and #$00FF                   ;   `8i >= i` stopped holding, C came out 0,
@@ -1579,21 +1300,6 @@ WE_AY   equ 6
         sbc m_a                      ; 7i
         adc #WEAP_TAB-1              ; ---- 16-bit A: the record (vram24, w, h,
         sta zp_ptr                   ;   ax, ay) as three words and a byte
-  .else
-        sta m_a                      ; index*7 = *8 - *1 ...
-        asl
-        asl
-        asl
-        sec
-        sbc m_a                      ; ... which leaves C=1 (8i >= i), and that
-        adc #<[WEAP_TAB-1]           ;   is the +1 of a 16-bit add of WEAP_TAB-1
-        sta zp_ptr
-        lda #>[WEAP_TAB-1]
-        adc #0
-        sta zp_ptr+1
-        rep #$20                     ; ---- 16-bit A: the record (vram24, w, h,
-        .LONGA ON                    ;   ax, ay) as three words and a byte
-  .endif
         lda (zp_ptr)
         sta wp_ent
         ldy #2
@@ -1673,7 +1379,7 @@ WE_AY   equ 6
         bcc ?yy
         beq ?yy
         lda vw_x1
-        sec
+                                      ; 2026-09-22 idiom: C = 1 already -- the not-taken
         sbc wp_x
         jcc wp_no
         inc @
@@ -1745,156 +1451,7 @@ WE_AY   equ 6
         jcc wp_no
         inc @
         sta wp_h
-?go     jmp wp_blit
- .else
-        sta m_a                      ; index*7 = *8 - *1
-        asl
-        asl
-        asl
-        sec
-        sbc m_a
-        clc
-        adc #<WEAP_TAB
-        sta zp_ptr
-        lda #0
-        adc #>WEAP_TAB
-        sta zp_ptr+1
-        ldy #6                       ; vram24, w, h, ax, ay
-?cp     lda (zp_ptr),y
-        sta wp_ent,y
-        dey
-        bpl ?cp
-        ; ---- source steps: skip 2^k pixels across and 2^k rows down ---------
-        lda wp_ent+WE_W
-        sta wp_sty
-        lda #0
-        sta wp_sty+1
-        lda #1
-        sta wp_stx
-        ldx vw_sh
-        beq ?nok
-?ksh    asl wp_sty
-        rol wp_sty+1
-        asl wp_stx
-        dex
-        bne ?ksh
-?nok
-        ; ---- X: every vw_tab window is centred on column 80 -----------------
-        clc
-        lda wp_ent+WE_AX
-        adc wp_bx                    ; psp->sx: the sway, 0 unless WP_SWAY
-        sec
-        sbc #SCREEN_HALF
-        jsr wp_asr                   ; (ax - 80 + bob) >> k, sign kept
-        clc
-        adc #SCREEN_HALF
-        sta wp_x
-        lda wp_ent+WE_W
-        jsr wp_ceil
-        sta wp_w
-        lda vw_x0                    ; left clip
-        sec
-        sbc wp_x
-        bcc ?xr
-        beq ?xr
-        cmp wp_w
-        bcc ?lok
-        jmp wp_no                    ; entirely left of the window
-?lok    sta m_a
-        lda wp_w
-        sec
-        sbc m_a
-        sta wp_w
-        lda vw_x0
-        sta wp_x
-        lda m_a                      ; src += skipped columns * SRC_STEPX
-        ldx vw_sh
-        beq ?cs1
-?csh    asl
-        dex
-        bne ?csh
-?cs1    sta m_a
-        lda #0
-        sta m_a+1
-        jsr wp_srcadd
-?xr     clc                          ; right clip
-        lda wp_x
-        adc wp_w
-        sbc #0                       ; C=1 unless the add wrapped: last column
-        cmp vw_x1
-        bcc ?yy
-        beq ?yy
-        lda vw_x1
-        sec
-        sbc wp_x
-        bcs ?rok
-        jmp wp_no
-?rok    clc
-        adc #1
-        sta wp_w
-        ; ---- Y: hang the gun from the window's bottom row -------------------
-?yy     lda wp_sy                    ; the raise/lower slide, 0 when up,
-        sec                          ;   plus the vertical sway (also 0 unless
-        sbc #WEAPONTOP               ;   WP_SWAY) -- both move the gun DOWN
-        clc
-        adc wp_by
-        sta m_a
-        sec
-        lda #VIEW_HEIGHT             ; rows from the frame's top row to the
-        sbc wp_ent+WE_AY             ;   bottom of the FULL-SIZE view
-        sec
-        sbc m_a                      ;   ... minus the slide
-        bcs ?vis
-        jmp wp_no                    ; slid out of sight
-?vis    bne ?vok
-        jmp wp_no
-?vok    jsr wp_shr
-        sta m_a
-        lda vw_y1                    ; y = vw_y1 + 1 - that, scaled
-        sec
-        sbc m_a
-        bcs ?yok
-        jmp wp_no
-?yok    clc
-        adc #1
-        sta wp_y
-        lda wp_ent+WE_H
-        jsr wp_ceil
-        sta wp_h
-        lda vw_y0                    ; top clip
-        sec
-        sbc wp_y
-        bcc ?yb
-        beq ?yb
-        cmp wp_h
-        bcc ?tok
-        jmp wp_no                    ; entirely above the window
-?tok    sta m_a
-        lda wp_h
-        sec
-        sbc m_a
-        sta wp_h
-        lda vw_y0
-        sta wp_y
-        jsr wp_rowskip               ; src += skipped rows * SRC_STEPY
-?yb     clc                          ; bottom clip -- the ceil above can overshoot
-        lda wp_y                     ;   by a row, and a LOWERED tall frame (the
-        adc wp_h                     ;   shotgun pump is 135 rows) runs off the
-        bcs ?cut                     ;   screen entirely, so the carry counts
-        sbc #0                       ; last row
-        cmp vw_y1
-        bcc ?go
-        beq ?go
-?cut    lda vw_y1
-        sec
-        sbc wp_y
-        bcs ?bok
-        jmp wp_no
-?bok    clc
-        adc #1
-        sta wp_h
-?go     jmp wp_blit
- .endif
+?go     bra wp_blit
 .endp
         .endseg
 
@@ -1915,48 +1472,44 @@ WE_AY   equ 6
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_blit
- .if 1                                ; THE BLUR SPHERE (2026-09-15): R_DrawPSprite
+                                      ; THE BLUR SPHERE (2026-09-15): R_DrawPSprite
         lda PW_INVIS                 ;   draws both psprites as SHADOW while
         ora PW_INVIS+1               ;   powers[pw_invisibility] runs. wp_shadow
         jne wp_shadow                ;   decides the blink and comes back to
- .else                                ;   `plain` for its off half
-        ;nothing
- .endif
 plain
- .if 1
-        rep #$20                     ; ---- 16-bit A: SRC (low word), STEPY
+                                     ; 2026-09-22 (rapidus-bus-timing): DST mid+bank and
+        ldx wp_y                     ;   WIDTH join the SRC/STEPY words in the one
+        lda row_lo,x                 ;   16-bit block -- four single bus bytes fewer
+        clc                          ; DST = row(y) + x, into the back buffer
+        adc wp_x
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR      ; [6] DST lo
+        lda zback_hi
+        xba
+        lda row_hi,x
+        adc #0                       ; [7] mid + the carry, [8] the back buffer
+        rep #$20                     ; ---- 16-bit A
         .LONGA ON
-        lda wp_ent+WE_VRAM
+        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
+        lda wp_ent+WE_VRAM           ; [0-1] SRC lo/mid
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        lda wp_sty
+        lda wp_sty                   ; [3-4] SRC_STEPY
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
+        lda wp_w                     ; [12-13] WIDTH = (w-1) & $FF, high byte 0 -- the
+        dec @                        ;   byte dec's value for every w (the word read
+        and #$00FF                   ;   drags wp_h in above it)
+        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
         sep #$20
         .LONGA OFF
         lda wp_ent+WE_VRAM+2
         sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
         lda wp_stx
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda wp_w
-        dec @
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
-        stz MEMW+MEMW_HD_OFF+BCB_WIDTH+1
         lda wp_h
         dec @
         sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        ldx wp_y                     ; DST = row(y) + x, into the back buffer
-        lda row_lo,x
-        clc
-        adc wp_x
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        lda row_hi,x
-        adc #0
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        lda zback_hi
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
         lda #BLT_BSTENCIL            ; index 0 = transparent
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
-        jsr blitw_hard  
- .if 1
+        jsr blitw_hard
         stz VBXE_BL_ADR0             ; <VRAM_BCB_HUD = 0 and its bank byte too
         lda #>VRAM_BCB_HUD
         sta VBXE_BL_ADR1
@@ -1964,63 +1517,9 @@ plain
     .if [VRAM_BCB_HUD & $FF] != 0 || [VRAM_BCB_HUD >> 16] != 0
         ert 'VRAM_BCB_HUD moved off a page in bank 0: put the lda #< / #>>16 back'
     .endif
- .else
-        lda #<VRAM_BCB_HUD
-        sta VBXE_BL_ADR0
-        lda #>VRAM_BCB_HUD
-        sta VBXE_BL_ADR1
-        lda #[VRAM_BCB_HUD>>16]
-        sta VBXE_BL_ADR2
- .endif
         lda #1
         sta VBXE_BL_START
         rts
- .else
-        lda wp_ent+WE_VRAM
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR
-        lda wp_ent+WE_VRAM+1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+1
-        lda wp_ent+WE_VRAM+2
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_ADDR+2
-        lda wp_sty
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY
-        lda wp_sty+1
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPY+1
-        lda wp_stx
-        sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
-        lda wp_w
-        sec
-        sbc #1
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH
-        lda #0
-        sta MEMW+MEMW_HD_OFF+BCB_WIDTH+1
-        lda wp_h
-        sec
-        sbc #1
-        sta MEMW+MEMW_HD_OFF+BCB_HEIGHT
-        ldx wp_y                     ; DST = row(y) + x, into the back buffer
-        lda row_lo,x
-        clc
-        adc wp_x
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR
-        lda row_hi,x
-        adc #0
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+1
-        lda zback_hi
-        sta MEMW+MEMW_HD_OFF+BCB_DST_ADDR+2
-        lda #BLT_BSTENCIL            ; index 0 = transparent
-        sta MEMW+MEMW_HD_OFF+BCB_CTRL
-        jsr blitter_wait
-        lda #<VRAM_BCB_HUD
-        sta VBXE_BL_ADR0
-        lda #>VRAM_BCB_HUD
-        sta VBXE_BL_ADR1
-        lda #[VRAM_BCB_HUD>>16]
-        sta VBXE_BL_ADR2
-        lda #1
-        sta VBXE_BL_START
-        rts
- .endif
 .endp
         .endseg
 
@@ -2028,36 +1527,6 @@ plain
 ; wp_shadow -- R_DrawPSprite's shadow draw (r_things.c:716), wp_blit's other
 ;   half while the blur sphere runs: the gun and its flash are not painted,
 ;   they DARKEN what is behind them -- the spectre's FUZZ_OR (spr_draw.asm).
-;
-;   WHY NOT spr_shadow's ONE BCB. The spectre is drawn per COLUMN over each
-;   column's opaque crop, so AND $00 / XOR FUZZ_OR / BLT_OR ORs a constant into
-;   exactly the pixels it covers. A psprite is one RECTANGLE whose index 0 is
-;   the transparency, and the blitter tests for zero AFTER the masks --
-;   c = (src AND and) XOR xor, skipped when c = 0 (alt-src vbxe.cpp
-;   RunBlitterRow) -- so a constant c darkens the whole rectangle, and
-;   c = src AND FUZZ_OR is the texture noise spr_draw.asm already rejected. A
-;   silhouette with a constant needs a MASK, and the blitter builds it itself
-;   in the scratch, packed wp_w bytes a row:
-;       F0  COPY      AND $00  XOR F   scratch = F everywhere
-;       F1  BSTENCIL  AND $FF  XOR 0   opaque texel s -> scratch = s
-;       F2  XOR       AND $FF  XOR F   c = s^F, skipped where s = F:
-;                                        transparent   F ^ (0^F) = 0
-;                                        opaque        s ^ (s^F) = F
-;                                        s = F         skipped, stays F
-;       F3  OR        AND $FF  XOR 0   back buffer |= scratch; 0 is skipped
-;   F = FUZZ_OR. None of the four can go: a gated pass writes a BITWISE
-;   function of the texel, and an opaque $10 differs from a transparent $00 in
-;   bit 4 alone -- only a fill plus two gated passes turn "s != 0" into a
-;   constant in bits 0-2. F1/F2 read the art with the clipped source address
-;   and the view-size steps wp_one resolved for the plain blit, so every view
-;   size and every clip gives the silhouette the plain blit would have painted.
-;
-;   ONE CHAIN in slots 1..4 of the HUD page (BLT_NEXT), one start. Slot 0 is
-;   hud_blit's and stays untouched: its AND $FF / XOR $00, which hud_blit never
-;   writes, survive for the status bar. Chained BCBs are fetched as the blitter
-;   reaches them, so the slots are written only AFTER blitw_hard -- the flash's
-;   chain must not rewrite the gun's while it runs. The scratch is WIPE_START
-;   (memory_map.inc). Native only: draw_weapon's chain.
 ;--------------------------------------------------------------
 WFZ_F0  equ MEMW+MEMW_HD_OFF+1*BCB_SIZE ; the chain's four slots in the window
 WFZ_F1  equ MEMW+MEMW_HD_OFF+2*BCB_SIZE
@@ -2077,27 +1546,43 @@ WFZ_SCR equ WIPE_START                  ; the mask (SHTGD's 57x115 = 6,555 B top
         and #8                       ; below that bit 3 IS the blink, 8 on 8 off
         jeq wp_blit.plain            ; the off half: the gun as it always was
 ?fz     jsr blitw_hard               ; the running chain fetches as it goes
-        ldx #4*BCB_SIZE-1
+                                      ; 2026-09-22 (rapidus-bus-timing): the 84 template
+        rep #$20                     ;   bytes as 42 bus WORDS (the second byte of each
+        .LONGA ON                    ;   does not wait); 84 is even, X stays < 128
+        ldx #4*BCB_SIZE-2
 ?cp     lda wfz_tmpl,x               ; the four BCBs' constant bytes
-        sta WFZ_F0,x
+        sta.l WFZ_F0,x               ; (long,x: no dummy read of the window)
+        dex
         dex
         bpl ?cp
-        rep #$20                     ; ---- 16-bit A: F1/F2's SRC low word, STEPY
-        .LONGA ON
-        lda wp_ent+WE_VRAM
-        sta WFZ_F1+BCB_SRC_ADDR
-        sta WFZ_F2+BCB_SRC_ADDR
-        lda wp_sty
-        sta WFZ_F1+BCB_SRC_STEPY
-        sta WFZ_F2+BCB_SRC_STEPY
-        sep #$20
         .LONGA OFF
+        sep #$20
+    .if [4*BCB_SIZE] & 1
+        ert 'wp_shadow copies the template as words: 4*BCB_SIZE must be even'
+    .endif
+        lda wp_sty                   ; F1/F2 bytes 0-5 as three words each: B =
+        xba                          ;   SRC_STEPY lo, A = the SRC bank -> [2-3]
         lda wp_ent+WE_VRAM+2
+        rep #$20                     ; ---- 16-bit A
+        .LONGA ON
         sta WFZ_F1+BCB_SRC_ADDR+2
         sta WFZ_F2+BCB_SRC_ADDR+2
-        lda wp_stx
-        sta WFZ_F1+BCB_SRC_STEPX
-        sta WFZ_F2+BCB_SRC_STEPX
+        lda wp_ent+WE_VRAM           ; [0-1] SRC lo/mid
+        sta WFZ_F1+BCB_SRC_ADDR
+        sta WFZ_F2+BCB_SRC_ADDR
+        lda wp_h                     ; the word read: B = wp_stx (the next byte),
+        .LONGA OFF                   ;   the low byte becomes SRC_STEPY hi -> [4-5]
+        sep #$20
+        lda wp_sty+1
+        rep #$20
+        .LONGA ON
+        sta WFZ_F1+BCB_SRC_STEPY+1
+        sta WFZ_F2+BCB_SRC_STEPY+1
+        .LONGA OFF
+        sep #$20
+    .if wp_stx <> wp_h+1
+        ert 'wp_shadow reads wp_h as a word to get wp_stx into B'
+    .endif
         lda wp_w                     ; the scratch's row stride IS the width...
         sta WFZ_F0+BCB_DST_STEPY
         sta WFZ_F1+BCB_DST_STEPY
@@ -2169,7 +1654,7 @@ asrx                                 ; entry with X = vw_sh > 0
         beq ?d
 ceilx   clc                          ; entry with X = vw_sh > 0
         adc wp_msk,x
-        jmp wp_shr.shrx              ; (X untouched: straight into the shifts)
+        bra wp_shr.shrx              ; (X untouched: straight into the shifts)
 ?d      rts
 .endp
         .endseg
@@ -2177,7 +1662,6 @@ wp_msk  dta 0,1,3
 
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_srcadd                      ; wp_ent's 24-bit VRAM address += m_a (16b)
- .if 1
         rep #$21                     ; ---- 16-bit A, C=0: the low word in one add
         .LONGA ON
         lda wp_ent+WE_VRAM
@@ -2189,25 +1673,11 @@ wp_msk  dta 0,1,3
         adc #0
         sta wp_ent+WE_VRAM+2
         rts
- .else
-        clc
-        lda wp_ent+WE_VRAM
-        adc m_a
-        sta wp_ent+WE_VRAM
-        lda wp_ent+WE_VRAM+1
-        adc m_a+1
-        sta wp_ent+WE_VRAM+1
-        lda wp_ent+WE_VRAM+2
-        adc #0
-        sta wp_ent+WE_VRAM+2
-        rts
- .endif
 .endp
         .endseg
 
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wp_rowskip                     ; src += m_a (dest rows) * SRC_STEPY
- .if 1
         stz m_a+1                    ; m_a = the rows (a byte), m_b = SRC_STEPY:
         rep #$20                     ;   umul16 does the 8x16 shift-add (~90
         .LONGA ON                    ;   cycles against the 8-pass loop's ~200),
@@ -2215,42 +1685,16 @@ wp_msk  dta 0,1,3
         sta m_b
         sep #$20
         .LONGA OFF
-        jsr umul16                   ; m_prod = rows * SRC_STEPY
+        phx                          ; umul16 no longer keeps X (2026-09-23)
+        jsr umul16
+        plx
         rep #$20
         .LONGA ON
         lda m_prod
         sta m_a
         sep #$20
         .LONGA OFF
-        jmp wp_srcadd
- .else
-        lda wp_sty                   ; shift a COPY: the blit still needs the step
-        sta wp_t
-        lda wp_sty+1
-        sta wp_t+1
-        lda #0
-        sta m_b
-        sta m_b+1
-        ldx #8
-?l      lsr m_a
-        bcc ?n
-        clc
-        lda m_b
-        adc wp_t
-        sta m_b
-        lda m_b+1
-        adc wp_t+1
-        sta m_b+1
-?n      asl wp_t
-        rol wp_t+1
-        dex
-        bne ?l
-        lda m_b
-        sta m_a
-        lda m_b+1
-        sta m_a+1
-        jmp wp_srcadd
- .endif
+        bra wp_srcadd
 .endp
         .endseg
 
@@ -2393,10 +1837,7 @@ wfz_tmpl                             ; wp_shadow's chain, HUD page slots 1..4.
         beq ?same
         sta fl_shown
         jsr xdl_att                  ; the XDL's overlay mode|palette byte, into
-                                     ;   BOTH lists (xdl.asm). Safe mid-frame:
-                                     ;   the XDL is re-fetched from VRAM every
-                                     ;   frame, which is the same reason
-                                     ;   swap_buffers may repoint it whenever.
+                                     ;   BOTH lists (xdl.asm).
 ?same   rts
 .endp
         .endseg
@@ -2407,20 +1848,11 @@ wfz_tmpl                             ; wp_shadow's chain, HUD page slots 1..4.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc fl_init
- .if 1
         stz fl_dmg
         stz fl_bonus
         lda #$FF
         sta fl_shown
         rts
- .else
-        lda #0
-        sta fl_dmg
-        sta fl_bonus
-        lda #$FF
-        sta fl_shown
-        rts
- .endif
 .endp
         .endseg
 
