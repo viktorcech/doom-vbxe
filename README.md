@@ -35,6 +35,10 @@ with `pillow` and `numpy`, and PowerShell.
 
 After that, `.\build_atr.ps1` rebuilds incrementally.
 
+## License
+
+Free software under the GNU GPL v2 (see [LICENSE](LICENSE)). DOOM game data is not included and remains © id Software.
+
 ## Credits
 
 DOOM © id Software, 1993. Atari port: **w1k**.
