@@ -4,7 +4,7 @@
 These sets used to be retyped in every tool that needed them -- pack_map.py
 (_doors), pack_things.py (SPEC), _verify_spec_audit.py, _dbg_wad_doors.py --
 and they had already started to drift. They are all verified against id's own
-source in _pomocne/_doomsrc (p_doors.c EV_VerticalDoor, p_spec.c
+source in _doomsrc (p_doors.c EV_VerticalDoor, p_spec.c
 P_CrossSpecialLine, p_switch.c P_UseSpecialLine, p_plats.c / p_floor.c); this
 module is that shared definition, not a new opinion.
 

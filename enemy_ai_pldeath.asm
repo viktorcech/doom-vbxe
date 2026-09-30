@@ -99,8 +99,7 @@ pldq_resume = *
         sta m_b
         lda.l TRGX_SIN_HI,x
         sta m_b+1
-        jsr smul32                   ; vy*sin
-        rep #$20
+        jsr smul32                   ; vy*sin (2026-09-29: 8-bit in, 16-bit OUT)
         .LONGA ON
         lda m_prod
         sta pd_p
@@ -116,8 +115,8 @@ pldq_resume = *
         lda.l TRGX_COS_HI,x
         sta m_b+1
         jsr smul32                   ; vx*cos
-        rep #$21
         .LONGA ON
+        clc
         lda m_prod                   ; fwd = vx*cos + vy*sin (the low words only
         adc pd_p                     ;   carry into the high one)
         lda m_prod+2
@@ -133,7 +132,6 @@ pldq_resume = *
         lda.l TRGX_SIN_HI,x
         sta m_b+1
         jsr smul32                   ; vx*sin
-        rep #$20
         .LONGA ON
         lda m_prod
         sta pd_p
@@ -149,7 +147,6 @@ pldq_resume = *
         lda.l TRGX_COS_HI,x
         sta m_b+1
         jsr smul32                   ; vy*cos
-        rep #$20
         .LONGA ON
         sec                          ; side = vx*sin - vy*cos: > 0 = on the right
         lda pd_p

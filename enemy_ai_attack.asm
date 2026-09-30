@@ -12,9 +12,9 @@
         jsr ai_get
         sta ai_k
         tax
-        lda mk_atk,x                 ; 0 = this kind has no attack the port can
-        bne ?can                     ;   do (projectile-only: HEAD/BOSS/SKUL)
-        clc                          ;   -- ?nope is out of branch range now
+        lda mk_atk,x                 ; 0 = this kind has no attack at all (the
+        bne ?can                     ;   barrel) -- ?nope is out of branch range
+        clc
         rts
 ?can
         lda #>TH_MODE                ; --- reactiontime-- (A_Chase's first line)
@@ -95,7 +95,11 @@
 .proc ai_hurt
         sty ai_t
         jsr aif_retal
-        lda #>TH_MODE
+        lda #>TH_FLY                 ; MF_SKULLFLY: the momentum goes and the
+        jsr ai_get                   ;   flinch never happens (p_inter.c:793/895)
+        beq ?grnd
+        jsr ai_flyhit
+?grnd   lda #>TH_MODE
         jsr ai_get
         and #255-AIM_RTMASK          ; reactiontime = 0
         ldx en_painr
@@ -197,9 +201,11 @@
         bne ?mel
         sec                          ; no meleestate: fire more
         sbc #128
-?mel    cpx #MK_WSND                 ; MT_CYBORG, MT_SPIDER: dist >>= 1
+?mel    cpx #MK_SKUL                 ; MT_SKULL, MT_CYBORG, MT_SPIDER: dist >>= 1
+        beq ?half
+        cpx #MK_WSND
         bcc ?one
-        cmp #$8000
+?half   cmp #$8000
         ror @
 ?one    cmp #$8000                   ; dist < 0: P_Random() < dist never holds
         bcs ?point
@@ -355,6 +361,10 @@
 ;     1 A_PosAttack   pistol, ((P_Random()%5)+1)*3
 ;     2 A_SPosAttack  shotgun, THREE of the same roll
 ;     3 A_TroopAttack claw (P_Random()%8+1)*3 in melee range, else the fireball
+;     4 A_HeadAttack  bite (P_Random()%6+1)*10, silent, else BAL2
+;     5 A_BruisAttack claw (P_Random()%8+1)*10, else BAL7
+;     6 A_CyberAttack the rocket    7 A_SargAttack (P_Random()%10+1)*4
+;     8 A_SkullAttack the charge (ai_skull, below)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_fire
@@ -370,16 +380,29 @@
         bcc ?hitscan                 ; 1 or 2: POSS / SPOS
         cmp #7
         beq ?sarg                    ; 7: demon -- melee range only
+        jcs ai_skull                 ; 8: lost soul -- A_SkullAttack, the charge
+        cmp #4
+        beq ?head                    ; 4: cacodemon -- A_HeadAttack
         cmp #6
-        beq ?throw                   ; 6: cyberdemon -- A_CyberAttack is nothing
-                                     ;   BUT P_SpawnMissile.
-        bcc ?claw                    ; 3/4/5: imp / CACODEMON / baron -- one shape
-                                     ;   (2026-08-20: this used to be four
-                                     ;   compares picking 3 and 5 out of a range
-                                     ;   with the demon in the middle.
-;   WHAT ?claw SERVES (the three melee-then-missile actions):
-;   3: imp / 5: baron -- A_BruisAttack is A_TroopAttack's
-                                     ;   shape exactly (same melee gate, same ...
+        bcc ?claw                    ; 3/5: imp / baron -- A_BruisAttack is
+                                     ;   A_TroopAttack's shape exactly
+?throw  jmp ball_spawn               ; 6: cyberdemon (A_CyberAttack is nothing
+                                     ;   BUT P_SpawnMissile), and every claw or
+                                     ;   bite out of reach. The ball flies, hits
+                                     ;   and bursts in ball.asm.
+?out    rts                          ; (here, behind the jmp: in reach of the top)
+?head   lda ai_ad+1                 ; 4: A_HeadAttack -- the imp's shape with two
+        bne ?throw                   ;   numbers changed: (P_Random()%6+1)*10,
+        lda ai_ad                    ;   and NO sound (sfx_claw is the imp's and
+        cmp #60                      ;   the baron's alone)
+        bcs ?throw
+        lda RANDOM
+?m6     cmp #6
+        bcc ?d6
+        sbc #6                       ; (cmp left C=1: no sec)
+        bra ?m6
+?d6     inc @
+        bra ?x3                      ; ...* the kind's damage byte (10, ai_cdmg)
 ?sarg   lda ai_ad+1                  ; 7: demon -- melee range only
         bne ?out
         lda ai_ad
@@ -405,8 +428,6 @@
                                      ;   en_plr_hurt queues the player's own
                                      ;   grunt (sfx_plpain) on the way through,
                                      ;   and there is ONE sound slot.
-?throw  jmp ball_spawn               ; P_SpawnMissile: the ball flies, hits and
-                                     ;   bursts in ball.asm.
 ?hitscan
         jsr aif_block                ; PTR_ShootTraverse's thing half: does the
                                      ;   bullet reach what it was aimed at, or
@@ -427,7 +448,7 @@
         lda ai_t
         sta en_snd_th
                                      ;   (STEREO: ai_t is the one firing)
-?out    rts                          ;   plays attacksound on -- S_StartSound
+        rts                          ;   plays attacksound on -- S_StartSound
                                      ;   (actor, ...) -- and snd_dispatch starts
                                      ;   it on a channel of its own, so now BOTH
                                      ;   are heard, exactly as they are in DOOM.
@@ -525,6 +546,9 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_refire
+        lda #>TH_FLY                 ; a lost soul still in the air: S_SKULL_ATK4
+        jsr ai_get                   ;   -> ATK3, the loop only its flight ends
+        bne ?fly                     ;   (pack_atk pins that shape)
         jsr ai_atk_tics              ; the tics byte again -- ai_atk_next spent
         and #AT_REFIRE               ;   its copy on the AT_LAST test, and this
         beq ?no                      ;   runs once per attack PASS, not per tic
@@ -532,6 +556,10 @@ ai_amode dta 0                       ; the working copy of TH_MODE
         cmp #10                      ;   pass in 25 keeps firing without even
         bra ai_refire2               ;   asking whether the target is still there
 ?no     clc
+        rts
+?fly    lda #1                       ; ai_atk_next's own +1 lands on state 2
+        sta ai_awst
+        sec
         rts
 .endp
         .endseg
@@ -641,3 +669,243 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 .endp
         .endseg
 
+
+;==============================================================
+; THE LOST SOUL's CHARGE (2026-09-30) -- A_SkullAttack (ai_skull), P_XYMovement
+;   with MF_SKULLFLY (ai_flyall/ai_fly), and P_DamageMobj's hit on a flying one
+;   (ai_flyhit). TH_FLY is MF_SKULLFLY, TH_FVX/TH_FVY the momentum as a HALF-tic
+;   step: the flight moves SKULLSPEED a tic in two P_TryMove halves, as p_mobj.c
+;   splits a move above MAXMOVE/2. Like every monster here it keeps to the floor.
+;==============================================================
+;--------------------------------------------------------------
+
+;--------------------------------------------------------------
+; ai_skull -- A_SkullAttack, ai_fire's arm for mk_atk 8: ai_t launches itself.
+;   IN: ai_tx/ai_ty = the target, ai_ad/ai_ax/ai_ay = P_AproxDistance and the
+;   |legs| (ai_pdist). Each half step = round(|leg| * SKULLSPEED/2 / dist),
+;   signed like its leg: the aim of P_AproxDistance, within ~6 % of the speed.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc ai_skull
+        lda #MK_SKATK                ; S_StartSound (actor, attacksound)
+        jsr snd_qp_ai
+        lda #1                       ; actor->flags |= MF_SKULLFLY
+        ldx #>TH_FLY
+        jsr ai_put
+        inc ai_flyn                  ; ai_tick's sweep has something to fly
+        lda ai_t
+        jsr en_thing.en_th2w         ; sp_ptr = its record; 16-bit
+        .LONGA ON
+        sec                          ; the legs' SIGNS, target - thing (ai_pdist
+        lda ai_tx                    ;   kept only their sizes)
+        sbc (sp_ptr)
+        sta ai_dx
+        ldy #2
+        sec
+        lda ai_ty
+        sbc (sp_ptr),y
+        sta ai_dy
+        lda ai_ad                    ; the divisor of both legs
+        sta m_den
+        sep #$20
+        .LONGA OFF
+        beq ?zero                    ; (Z of the word load) on top of its target:
+        ldx #0                       ;   no momentum, the next tic lands it
+        jsr ?leg                     ; the x leg...
+        ldx #>TH_FVX
+        jsr ai_put
+        ldx #2                       ; ...and the y leg (ai_ay/ai_dy are +2)
+        jsr ?leg
+?puty   ldx #>TH_FVY
+        jmp ai_put
+?zero   ldx #>TH_FVX                 ; A = 0 (the whole word was), and ai_put
+        jsr ai_put                   ;   hands it back unchanged
+        bra ?puty
+
+;   X = 0 / 2 -> A = that leg's signed half step. m_den = the distance.
+?leg    phx                          ; umul16w and udiv24 keep no X
+        rep #$20
+        .LONGA ON
+        lda ai_ax,x
+        sta m_a
+        lda #MK_SKSPD/2
+        sta m_b
+        jsr umul16w                  ; m_prod = |leg| * the half step (< 2^20)
+        lda m_den                    ; + dist/2, rounding to nearest. lsr's carry
+        lsr @                        ;   (dist odd) rides into the add: + ceil,
+        adc m_prod                   ;   which rounds the same way
+        sta m_prod
+        bcc ?nc
+        inc m_prod+2                 ; (the word: m_prod+3 is 0 and stays 0)
+?nc     jsr udiv24.ud_w16            ; m_quot = that / dist; 8-bit out
+        .LONGA OFF
+        plx
+        lda m_quot                   ; <= SKULLSPEED/2: one byte
+        bit ai_dx+1,x                ; the leg's sign
+        bpl ?pos
+        eor #$FF
+        inc @
+?pos    rts
+.endp
+        .endseg
+    .if ai_ay != ai_ax+2 || ai_dy != ai_dx+2
+        ert 'ai_skull indexes the y leg at +2 -- ai_ax/ai_ay, ai_dx/ai_dy moved'
+    .endif
+
+;--------------------------------------------------------------
+; ai_flyall -- from ai_tick, while ai_flyn says something launched: ai_fly every
+;   thing with MF_SKULLFLY. The sweep RECOUNTS ai_flyn, so a flight that ended
+;   any way at all (landed, died, a new level) stops the sweep by itself.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc ai_flyall
+        stz ai_flyn
+        ldx #0
+?lp     lda.l EXT_BASE+TH_FLY,x
+        bne ?one
+?nx     inx
+        cpx ai_lim                   ; the level's n_things, rounded up (0 = 256)
+        bne ?lp
+        rts
+?one    stx ai_fi
+        stx ai_t
+        inc ai_flyn
+        jsr ai_fly
+        ldx ai_fi
+        bra ?nx
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; ai_fly -- one tic of P_XYMovement for ai_t, which has MF_SKULLFLY.
+;   No momentum: it slammed into something last tic -> spawnstate (p_mobj.c:
+;   124). Else two halves, each PIT_CheckThing first (a thing in the way takes
+;   ((P_Random()%8)+1)*damage and the flight ends at once, p_map.c:275), then
+;   the rest of P_TryMove (ai_step); a wall zeroes the momentum.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc ai_fly
+        jsr ai_ismon                 ; P_KillMobj clears MF_SKULLFLY: dead or
+        beq ?off                     ;   dying, the flag just goes
+        lda #>TH_KIND                ; coll_mon sizes the probe by ai_k
+        jsr ai_get
+        sta ai_k
+        lda #>TH_FVX
+        jsr ai_get
+        sta ai_t2
+        lda #>TH_FVY
+        jsr ai_get
+        ora ai_t2
+        bne ?go                      ; momx == momy == 0 falls into the landing
+?land   lda #0                       ; MF_SKULLFLY off, and P_SetMobjState
+        ldx #>TH_FLY                 ;   (spawnstate): the RUN cycle's first
+        jsr ai_put                   ;   image for S_SKULL_STND's tics, then
+        lda #>TH_MODE                ;   A_Chase again
+        jsr ai_get
+        and #255-AIM_ATK
+        ldx #>TH_MODE
+        jsr ai_put
+        lda #0
+        ldx #>TH_WST
+        jsr ai_put
+        lda #MK_SKSTND
+        ldx #>TH_WTIC
+        jsr ai_put
+        jmp ai_setrow
+?off    lda #0
+        ldx #>TH_FLY
+        jmp ai_put
+?go     lda #2
+        sta ai_fn
+?half   lda #>TH_FVX                ; the half step, sign-extended to the word
+        jsr ai_get                   ;   ai_step adds
+        sta ai_sx
+        ora #$7F                     ; $FF for a minus step...
+        bmi ?xn
+        lda #0                       ; ...$00 for a plus one
+?xn     sta ai_sx+1
+        lda #>TH_FVY
+        jsr ai_get
+        sta ai_sy
+        ora #$7F
+        bmi ?yn
+        lda #0
+?yn     sta ai_sy+1
+        lda ai_t                     ; PIT_CheckThing at the half's end point
+        sta sol_self
+        jsr en_thing.en_th2w         ; 16-bit, C = 0 (en_th2w's own proof)
+        .LONGA ON
+        lda (sp_ptr)
+        adc ai_sx
+        sta coll_cx
+        ldy #2
+        clc
+        lda (sp_ptr),y
+        adc ai_sy
+        sta coll_cy
+        sep #$20
+        .LONGA OFF
+        lda #$FF                     ; en_solid names a THING blocker in sol_i and
+        sta sol_i                    ;   tests the player before any: $FF = him
+        jsr en_solid
+        bne ?hit
+        jsr ai_move.ai_step          ; P_TryMove's lines, heights and the commit
+        beq ?wall                    ;   (its own en_solid is clear, by the above)
+        dec ai_fn
+        bne ?half
+        rts
+?wall   lda #0                       ; "else mo->momx = mo->momy = 0": the next
+        ldx #>TH_FVX                 ;   tic finds no momentum and lands it
+        jsr ai_put
+        ldx #>TH_FVY
+        jmp ai_put
+?hit    lda RANDOM                   ; ((P_Random()%8)+1) * MT_SKULL damage
+        and #7
+        inc @
+        sta m_a
+        ldy #MK_SKDMG
+        jsr ai_mul
+        ldx sol_i
+        cpx #$FF
+        bne ?thing
+        ldx ai_t                     ; the player: P_DamageMobj (player, skull,
+        phx                          ;   skull) -- the attacker +1 for
+        inx                          ;   P_DeathThink's turn
+        stx pl_src
+        jsr en_plr_hurt
+        plx
+        stx ai_t
+        jmp ?land                    ; (the landing sits at the top, out of reach)
+?thing  stx ai_vt                    ; a thing: aif_dmg (a decoration is not
+        jsr aif_dmg                  ;   shootable and takes nothing)
+        jmp ?land
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; ai_flyhit -- ai_hurt's arm for a victim with MF_SKULLFLY (ai_t): P_DamageMobj
+;   zeroes its momentum (the next tic lands it) and skips the painstate -- so
+;   no A_Pain either: en_hurt_snd's roll and the sound it queued are taken back.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc ai_flyhit
+        lda #0
+        ldx #>TH_FVX
+        jsr ai_put
+        ldx #>TH_FVY
+        jsr ai_put
+        lda en_painr
+        beq ?out
+        stz en_painr
+        lda #$FF                     ; en_snd_q's "the monster said nothing"
+        sta en_snd_q
+?out    rts
+.endp
+        .endseg
+
+        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+ai_flyn dta 0                        ; things with MF_SKULLFLY at the last sweep
+                                     ;   (+ launches since): 0 = ai_tick skips
+ai_fi   dta 0                        ; ai_flyall's sweep index
+ai_fn   dta 0                        ; ai_fly: halves left this tic
+        .endseg

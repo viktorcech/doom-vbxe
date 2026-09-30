@@ -44,7 +44,7 @@ format and draw_weapon do not change at all.
   python pack_weap.py            -> build/assets/weap/weap.bin  (SRAM master)
                                     build/assets/weap/weap.tab  (per-frame record)
                                     weap_tables.inc             (WPF_*/slot/copy equs)
-                                    _pomocne/preview/*.png        (preview, needs PIL)
+                                    tools/tests/out/*.png        (preview, needs PIL)
 """
 import os
 import struct
@@ -57,7 +57,7 @@ from pack_things import darkest_nonzero
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJ = os.path.dirname(_HERE)
 OUT = os.path.join(_PROJ, 'build', 'assets', 'weap')
-PNG = os.path.join(_PROJ, '_pomocne', 'preview')
+PNG = os.path.join(_HERE, 'tests', 'out')
 OUT_INC = os.path.join(_PROJ, 'weap_tables.inc')
 
 VIEW_HEIGHT = 168                 # rows the 3D view owns; the bar starts at 168
@@ -257,7 +257,7 @@ def preview(wt, fr, proj):
     (160x200 stretched back to 640x400), with the status-bar rows marked.
 
     OFF unless WEAP_PNG=1 is in the environment: the build runs this packer
-    every time and nobody wants _pomocne/preview/ refilled on every build."""
+    every time and nobody wants tools/tests/out/ refilled on every build."""
     if os.environ.get('WEAP_PNG') != '1':
         return
     try:

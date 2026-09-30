@@ -45,9 +45,9 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         jsr ep_paint
         lda #MENU_SKTICS
         sta ep_tic
-        stz ep_arm                   ; the key that picked NEW GAME is still
-                                     ;   down: it must come up before this menu
-                                     ;   takes a press of its own
+        lda #MN_REST                 ; the key that picked NEW GAME is down: the
+        sta ep_arm                   ;   controls rest before this menu takes a
+                                     ;   press of its own
 ?loop   jsr ep_vsync
         dec ep_tic                   ; skullAnimCounter (m_menu.c:1836-1839)
         bne ?nb
@@ -60,12 +60,15 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         jsr ep_skull
 ?nb     jsr ep_press
         bcs ?act
-        lda #1
-        sta ep_arm                   ; everything released -> arm the next press
-        bne ?loop                    ; (always)
-?act    lda ep_arm
-        beq ?loop                    ; still held: one press = one action
-        stz ep_arm
+        lda ep_arm                   ; at rest: a frame less to wait
+        beq ?loop
+        dec @
+        sta ep_arm
+        bra ?loop
+?act    ldx #MN_REST                 ; a press counts when the controls had
+        lda ep_arm                   ;   rested: not while held, not in the
+        stx ep_arm                   ;   bounce of a contact
+        bne ?loop
         lda TRIG0
         lsr
         bcc ?sel                     ; fire = select
@@ -303,7 +306,7 @@ ep_lvl  dta EPI_FIRST1, EPI_FIRST2, EPI_FIRST3
 ep_sel  dta 0                        ; itemOn
 ep_sk   dta 0                        ; which skull frame
 ep_tic  dta 0                        ; skullAnimCounter
-ep_arm  dta 0                        ; 0 = a key is down and must come up first
+ep_arm  dta 0                        ; frames the controls still rest (MN_REST)
                                      ; (ep_move: the cursor's new row rides the
                                      ;  stack across ep_erase now -- see ?mv)
 ep_it   dta 0

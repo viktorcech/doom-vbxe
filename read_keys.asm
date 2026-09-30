@@ -43,6 +43,9 @@ rk_resume = *
         ldy #10                       ; 10 = 'T': flat walls on/off (fast frame)
         cmp #KEY_T
         beq ?edge
+        iny                           ; 11 = '8': the gamma, DOOM's F11 (2026-09-28)
+        cmp #KEY_8
+        beq ?edge
         ldy #256-3                    ; any other key: no toggle down (0, after the iny)
 ?wkh    iny
         iny
@@ -65,7 +68,8 @@ rk_resume = *
         jsr vw_bigger                 ; 2 = '=' -> one step bigger
         bra ?ret
 ?not2   cpy #8                        ; slot 10 = 'T' (Y is slot-2 here)
-        bne ?wkey
+        bcc ?wkey                     ; below it: a weapon
+        bne ?gam                      ; above it: slot 11, the gamma
         lda tex_flat                  ; flip the runtime flat-walls switch --
         eor #1                        ;   seg_draw's resolve reads it per seg
         sta tex_flat
@@ -74,6 +78,8 @@ rk_resume = *
         tya                           ;   ('1' = fist .. '7' = the BFG, DOOM's
         jsr wp_select                 ;   own keys); wp_select ignores what the
         bra ?ret                      ;   player does not own
+?gam    jsr gm_next                   ; usegamma + 1, its palettes and its line
+        bra ?ret
 ?vsm    jsr vw_smaller
 ?ret    jmp mn_key.mnk_rk             ; tail-call: ESC (menu.asm) on kb_sk, which tail-calls
                                       ;   vw_frame -- the border repaint after a

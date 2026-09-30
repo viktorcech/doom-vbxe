@@ -222,16 +222,17 @@ snda_resume = *
 ;--------------------------------------------------------------
 ; snd_irq -- Timer-1 handler: ONE 4-bit sample for every live voice, then the
 ;   timer is switched off if that emptied the mixer. The OS enters it with CLD +
-;   JMP (VIMIRQ) and does NOT save anything, hence the pha/pla; X is saved too
-;   (it walks the voices) but Y is never touched.
+;   JMP (VIMIRQ) and does NOT save anything, hence the pha/pla.
+;   2026-09-29 (drac030): X AND Y are pushed at full width -- the body's
+;   sep #$30 clears both high bytes of the code it interrupted.
 ;--------------------------------------------------------------
 .proc snd_irq
-        rep #$10                     ; X 16-BIT FIRST, and push it at that width
-        phx                          ;   (2026-08-14). An interrupt INHERITS M/X
-                                     ;   from the interrupted code, so a handler ...
-        sep #$30                     ; 8-bit A/X/Y for the body, as before
-        pha
-        lda IRQST_R
+        rep #$10                     ; X/Y 16-bit first, pushed at that width
+        phx
+        phy
+        sep #$30                     ; 8-bit A/X/Y for the body
+        pha                          ; DBR is always 0 (no plb anywhere since
+        lda IRQST_R                  ;   UDQ_VARS): the absolute operands are bank 0
         and #$01
         beq ?mine                    ; bit0 = 0 -> Timer-1, ours
         lda PORTB                    ; foreign IRQ. snd_old_irq points INTO THE
@@ -241,10 +242,12 @@ snda_resume = *
         sta IRQEN_R                  ;   under $E000-$FFFF and, never acking, came
         jmp ?out                     ;   straight back -- the freeze the 2026-08-07
                                      ;   trace caught parked here.
-?chain  pla                          ; A back (one byte: the `pha` above ran with
-        rep #$10                     ;   M pinned 8-bit in either mode), then X
-        plx                          ;   AT THE WIDTH `phx` PUSHED IT. THAT MIRROR
-        sep #$10                     ;   IS THE WHOLE FIX (2026-08-29).
+?chain
+        pla                          ; A (one byte), then Y and X at the width
+        rep #$10                     ;   they were pushed; the OS chain gets
+        ply                          ;   8-bit X/Y
+        plx
+        sep #$10
         jmp (snd_old_irq)
 ?mine
         stz IRQEN_R                  ; ack Timer-1: drop bit 0, then restore it.
@@ -317,9 +320,11 @@ snda_resume = *
                                       ; 2026-09-22 idiom: snd_disarm inlined (-12; its
         stz POKMSK_R                 ;   live body is these two stz -- see the proc)
         stz IRQEN_R
-?out    pla                          ; A ...
-        rep #$10                     ; ... then X at the FULL width the entry
-        plx                          ;     pushed it
+?out
+        pla                          ; A ...
+        rep #$10                     ; ... then Y and X at the FULL width the
+        ply                          ;     entry pushed them
+        plx
         rti                          ; (RTI's pulled P puts the real widths back)
 .endp
 

@@ -8,7 +8,7 @@
 ;   is x in 256..511 -- but the ORDER is now Lo,Lo,Hi,Hi so that the low bytes
 ;   are one contiguous 512-byte table (SQ1L) and the high bytes another (SQ1H).
 ;   That is what lets pt_dy address them with a patched base (see gen_qs.py and
-;   _pomocne/mads-src/math/fmulu_8x8.asm). qsmul (math.asm) is untouched: it
+;   the fmulu_8x8 multiply). qsmul (math.asm) is untouched: it
 ;   still indexes each 256-byte page with Y.
 ;   Page-aligned so `lda QSqr*,Y` never pays the cross-page +1 cycle.
 ;==============================================================

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """DOOM DS* sound lumps -> one Rapidus-resident 4-bit sample blob + MADS tables.
 
-The Atari plays digitized SFX the way the wolf3d port does (w3d/src/sound.asm,
-HW-verified): a POKEY Timer-1 IRQ at ~3959 Hz (PAL, AUDF1 = 15) writes one 4-bit
+The Atari plays digitized SFX like this
+(HW-verified): a POKEY Timer-1 IRQ at ~3959 Hz (PAL, AUDF1 = 15) writes one 4-bit
 sample per interrupt into an AUDCn as a volume-only DAC. Two samples pack into a
 byte (hi nibble first), so ONE voice costs ~1980 B/s. Since 2026-08-06 there are
 SND_NV = 4 of those voices, one per POKEY channel, summed in POKEY itself -- the
@@ -257,6 +257,10 @@ SFX = [
     #     BFG went off -- so it is not one of the lumps that can be dropped.
     #     APPENDED, like every entry since the intermission's.
     ('BFG',    'DSBFG',    1),        # A_BFGsound: the 20-tic wind-up
+    # --- 2026-09-30, A_SkullAttack. The LOST SOUL's charge plays MT_SKULL's
+    #     attacksound at the launch (p_enemy.c:1431). APPENDED, like every
+    #     entry since the intermission's; pack_things MK_SKATK reads its id.
+    ('SKLATK', 'DSSKLATK', 1),        # the lost soul launches itself
 ]
 
 

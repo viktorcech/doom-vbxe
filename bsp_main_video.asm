@@ -1,18 +1,5 @@
 ;--------------------------------------------------------------
 ; Part of bsp_main.asm (icl in place): VBXE + framebuffer bring-up.
-;--------------------------------------------------------------
-; detect_vbxe -- C clear if found (base $D600 only)
-;--------------------------------------------------------------
-.proc detect_vbxe
-        lda VBXE_VCTL                ; CORE_VERSION read
-        cmp #CORE_FX_1XX
-        beq ?ok
-        sec
-        rts
-?ok     clc
-        rts
-.endp
-
 ;==============================================================
 ; setup_memac -- MEMAC-A 4K window at MEMW, CPU access, bank $0A
 ;==============================================================
@@ -21,6 +8,7 @@
         lda #MEMW_HI | MC_CPU | MC_16K
         sta VBXE_MEMAC_CTL
         stz VBXE_MEMAC_B
+        stz VBXE_IRQ_CTL             ; the blitter's IRQ off: nothing here takes it
                                       ; 2026-09-22 (drac030 RELOAD): A = the MEMAC_CTL value, the same byte
         ert [MEMW_HI|MC_CPU|MC_16K]<>[BANK_EN|BANK_OVERHEAD]
         sta VBXE_BANK_SEL
@@ -47,41 +35,7 @@ xdlstg_resume = *
 ; lines. It is also built TWICE, so the flip is a store to VBXE_XDLA1 rather
 ; than a poke into one entry -- see swap_buffers and the header over there.
 
-;==============================================================
-; setup_palette -- A = VBXE palette index (0..3): install the 256 colours now in
-;   the staging buffer (MAP_PLAYPAL) into it. Format v2: the framebuffer holds
-;   real PLAYPAL indices (texture pixels + flat-colour indices), so a whole
-;   palette goes down at once. CB write commits a colour and advances CSEL.
-;==============================================================
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc setup_palette
-        sta VBXE_PSEL
-        stz VBXE_CSEL
-        lda #<MAP_PLAYPAL
-        sta zp_ptr
-        lda #>MAP_PLAYPAL
-        sta zp_ptr+1
-        ldx #0                       ; 256 entries
-?lp     ldy #0
-        lda (zp_ptr),y
-        sta VBXE_CR
-        iny
-        lda (zp_ptr),y
-        sta VBXE_CG
-        iny
-        lda (zp_ptr),y
-        sta VBXE_CB                  ; commit, advances CSEL
-        lda zp_ptr                   ; ptr += 3
-        clc
-        adc #3
-        sta zp_ptr
-        bcc ?nc
-        inc zp_ptr+1
-?nc     inx
-        bne ?lp                      ; 256 iterations (X wraps 255->0)
-        rts
-.endp
-        .endseg
+; (setup_palette is lights.asm gm_apply since 2026-09-28)
 
 ;==============================================================
 ; setup_bcbs -- upload the vline + clear BCB templates to VRAM
@@ -123,6 +77,13 @@ xdlstg_resume = *
                                       ; 2026-09-22 (vbxe-blitter: templates): bg_blit's
         lda #BG_COLOUR               ;   fill colour, once -- it was stored per blit
         sta MEMW+MEMW_VL_OFF+BCB_XOR ;   (emulation mode here: 8-bit stores only)
+        stz ZFRONT                   ; triple-buffer flip state (2026-08-11):
+        stz FRM_PAR                  ;   the XDL boots showing A, no publish
+        stz XDLA_PEND                ;   pending, fuzz frame parity "even" --
+                                     ;   zeroed HERE (boot-only, runs long
+                                     ;   before urom_init arms rom_nmi)
+        stz ptm_last                 ; paint_col's memo = 0 = the ASSEMBLED bake
+        stz ptm_last+1               ;   (paint.asm; PAINT_VARS is random at boot)
         jmp setup_chains             ; prefill the two column-chain buffers
                                      ; (tw_lastsrc = $FF "scratch holds nothing"
                                      ;  went with the expander cache 2026-08-14)
@@ -136,13 +97,9 @@ xdlstg_resume = *
 setchn_resume = *
         org SETCHN_BASE
 .proc setup_chains
-        stz ZFRONT                   ; triple-buffer flip state (2026-08-11):
-        stz FRM_PAR                  ;   the XDL boots showing A, no publish
-        stz XDLA_PEND                ;   pending, fuzz frame parity "even" --
-                                     ;   zeroed HERE (boot-only, runs long
-                                     ;   before urom_init arms rom_nmi)
-        stz ptm_last                 ; paint_col's memo = 0 = the ASSEMBLED bake
-        stz ptm_last+1               ;   (paint.asm; PAINT_VARS is random at boot)
+                                     ; (2026-09-28: the five boot-time stz that
+                                     ;   opened this proc are setup_bcbs' now --
+                                     ;   the slots' DST_STEPY patch needed the room)
                                      ; 2026-09-22 (rapidus-bus-timing): the prefill
         stz zp_savex                 ;   writes the window through [zp_tsrc],y (bank
         stz zp_tsrc                  ;   byte 0): a (dp),y store dummy-reads it first
@@ -203,6 +160,12 @@ setchn_resume = *
         ldy #BCB_CTRL                ; provisionally chained; only ptc_fire's
         lda #BLT_COPY|BLT_NEXT       ;   terminator ever clears the bit (and
         sta [zp_tsrc],y              ;   re-arms it on the next fire)
+        ldy #BCB_DST_STEPY           ; 2026-09-28: the painter's links run BOTTOM-UP
+        lda #<[$2000-SCREEN_WIDTH]   ;   (paint.asm): DST_STEPY = -160, 13 bits
+        sta [zp_tsrc],y
+        iny
+        lda #>[$2000-SCREEN_WIDTH]
+        sta [zp_tsrc],y
     .else
 ?cp     lda bcb_twall_tmpl,y
         sta [zp_tsrc],y

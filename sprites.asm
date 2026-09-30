@@ -169,8 +169,12 @@ sr_resume = *
 ;	clc
         adc th_things
         sta sp_ptr
+        ldy #6
+        lda (sp_ptr),y               ; (the sprite id, the flags)
+        and #F_DROP<<8
+        bne ?drop                    ; a body with its drop beside it
                                      ; 2026-09-22 (65816-windows): spr_proj past its
-        jsr spr_proj.spj_w16         ;   rep, still 16-bit (this sep and that rep were
+?proj   jsr spr_proj.spj_w16         ;   rep, still 16-bit (this sep and that rep were
         .LONGA OFF                   ;   an empty pair)
 
 ?skip   inc sp_i
@@ -181,6 +185,14 @@ sr_resume = *
         cmp sp_last
         bne ?loop
         rts
+?drop   .LONGA ON
+        sep #$20
+        .LONGA OFF
+        jsr spr_ditem
+        rep #$20
+        .LONGA ON
+        bra ?proj
+        .LONGA OFF
 .endp
         .endseg
 
@@ -261,19 +273,15 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         jsr screenx_signed.sx_w16    ; m_xs = centre column (unclamped, signed)
         .LONGA ON                    ; x1 = centre - (leftoffset*hs)>>8: both
         lda sp_hs                    ;   operands as words in the window sx_w16
-        sta m_b                      ;   returns in (sp_left's word read drags
-        lda sp_left                  ;   sp_top in: masked, then sign-extended)
-        and #$00FF
-        cmp #$0080
-        bcc ?lp2
-        ora #$FF00
-?lp2    sta m_a
-        .LONGA OFF
-        sep #$20
-
-        jsr smul32
-	rep #$20
-	.LONGA ON
+        sta m_a                      ;   returns in (sp_left's word read drags
+        lda sp_left                  ;   sp_top in: masked, then sign-extended
+        and #$00FF                   ;   as (x ^ $80) - $80 (2026-09-29): N is
+        eor #$0080                   ;   the operand's sign for sm_w16)
+        sec
+        sbc #$0080
+        sta m_b
+        jsr smul32.sm_w16            ; (16-bit in and out)
+        .LONGA ON
         sec
         lda m_xs
         sbc m_prod+1
@@ -353,9 +361,7 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         sta m_a
 
         lda sp_scale
-        sta m_b
-	sep #$20
-	.LONGA OFF
+        sta m_b                      ; 2026-09-29: A = m_b, N its sign (track_calc's entry)
         jsr track_calc               ; m_prod[0..2] = horizon - world*scale (Q8),
                                      ;   returned 16-bit
         .LONGA ON                    ; screen row of texture row 0, the two
@@ -410,8 +416,8 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         ldx sp_xa
                                       ; 2026-09-15: the window pair rides A:B (top
 ?snap   lda solid_arr,x              ;   low, bottom high) -- ONE 16-bit store into
-        bne ?closed                  ;   the pool, ONE 16-bit compare against the
-        lda ytopc_arr,x              ;   first column's pair, the pointer step a
+        bne ?solid                   ;   the pool, ONE 16-bit compare against the
+?win    lda ytopc_arr,x              ;   first column's pair, the pointer step a
         cmp ybotc_arr,x              ;   16-bit inc/inc. ~83 cycles a column, was
         beq ?open                    ;   ~96; the bytes written are the same
         bcs ?closed                  ; top > bot -> nothing open in this column
@@ -419,6 +425,11 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         lda ybotc_arr,x              ; window bottom -> B, top back to A
         xba
         bra ?put
+?solid  lda.l SSCL_LO,x              ; closed by a wall FARTHER than this sprite
+        cmp sp_scale                 ;   (an earlier leaf's, e.g. a pillar's other
+        lda.l SSCL_HI,x              ;   face): the sprite gets the window that
+        sbc sp_scale+1               ;   wall closed (r_things.c R_DrawSprite
+        bcc ?win                     ;   skips a seg with scale < spr->scale)
 ?closed lda #255                     ; 255/255 = fully covered by nearer geometry
         xba
         lda #255

@@ -27,9 +27,9 @@ WI_NAMESZ    equ 3072    ; bytes a name slot takes in VRAM (and is copied)
 WI_LVA       equ $033500  ; the finished level's name
 WI_LVB       equ $034100  ; the next one's
 ;   --- the message line at 320 (strip.asm): its SDRAM bank from
-;       WIMAP_BANK, the directory lo/hi/width at +0/+64/+128 ---
+;       WIMAP_BANK, the directory lo/hi/width at +0/+72/+144 ---
 MSG_BK       equ 6
-MSG_STRIDE   equ 64
+MSG_STRIDE   equ 72
 MSG_WMAX     equ 242    ; the widest line, px
 WI_NLUMPS    equ 81
 WI_LEVELS    equ 27

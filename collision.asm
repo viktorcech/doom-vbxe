@@ -121,13 +121,10 @@ cdh_w16                              ; (coll_seg jumps in here already 16-bit)
         stz coll_t                   ; dx = 0 -> px*dx = 0 (two word stz's)
         stz coll_t+2
         bra ?ty
-?tx     sta m_b                      ; (A = dx, just tested)
+?tx     sta m_a                      ; (A = dx, just tested)
         lda coll_px
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr smul32
-        rep #$20
+        sta m_b                      ; 2026-09-29: A = m_b, N its sign -> sm_w16, 16-bit out
+        jsr smul32.sm_w16
         .LONGA ON
         lda m_prod
         sta coll_t
@@ -135,14 +132,12 @@ cdh_w16                              ; (coll_seg jumps in here already 16-bit)
         sta coll_t+2
 ?ty     lda coll_dy
         beq ?tdone                   ; dy = 0 -> py*dy = 0, nothing to add
-        sta m_b                      ; (A = dy)
+        sta m_a                      ; (A = dy)
         lda coll_py
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr smul32
-        rep #$21                     ; C=0
+        sta m_b
+        jsr smul32.sm_w16
         .LONGA ON
+        clc
         lda coll_t
         adc m_prod
         sta coll_t
@@ -203,13 +198,10 @@ cdh_w16                              ; (coll_seg jumps in here already 16-bit)
         stz coll_cr
         stz coll_cr+2
         bra ?cry
-?crx    sta m_b                      ; (A = dy, the bne's)
+?crx    sta m_a                      ; (A = dy, the bne's)
         lda coll_px
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr smul32
-        rep #$20
+        sta m_b
+        jsr smul32.sm_w16
         .LONGA ON
         lda m_prod
         sta coll_cr
@@ -217,13 +209,10 @@ cdh_w16                              ; (coll_seg jumps in here already 16-bit)
         sta coll_cr+2
 ?cry    lda coll_dx
         beq ?crdone
-        sta m_b                      ; (A = dx)
+        sta m_a                      ; (A = dx)
         lda coll_py
-        sta m_a
-        sep #$20
-        .LONGA OFF
-        jsr smul32
-        rep #$20
+        sta m_b
+        jsr smul32.sm_w16
         .LONGA ON
         sec
         lda coll_cr
@@ -668,10 +657,7 @@ cbsp_resume = *
         sta m_a
         lda coll_ax
         sta m_b
-        sep #$20
-        .LONGA OFF
-        jsr smul32
-        rep #$20
+        jsr smul32.sm_w16
         .LONGA ON
         lda m_prod
         sta coll_cr
@@ -681,10 +667,7 @@ cbsp_resume = *
         sta m_a
         lda coll_ay
         sta m_b
-        sep #$20
-        .LONGA OFF
-        jsr smul32
-        rep #$20
+        jsr smul32.sm_w16
         .LONGA ON
         sec
         lda coll_cr

@@ -11,7 +11,7 @@ XEX at its 16-bit address, and the boot loader would store that in BANK 0.
 So this runs right after mads, BEFORE split_menu_ovl.py, and:
   * finds the segment blocks -- the listing marks them "01,AAAA-EEEE>" -- and
     takes them out of the XEX;
-  * writes build/b1code.bin (the 64 KB bank image) + build/b1code.map (the
+  * writes build/assets/code/b1code.bin (the 64 KB bank image) + b1code.map (the
     used ranges) for the simulators and tools;
   * puts the bytes back as STAGED chunks: a segment at B1STAGE holding
     [dst lo, dst hi, len lo, len hi] + payload, then an INIT segment to
@@ -32,7 +32,8 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import code_map                                                 # noqa: E402
 
-BUILD = os.path.join(ROOT, 'build')
+B1BIN = code_map.img('build', 'assets', 'code', 'b1code.bin')
+B1MAP = code_map.img('build', 'assets', 'code', 'b1code.map')
 
 
 def equ(name):
@@ -45,7 +46,7 @@ def equ(name):
 
 
 def lab(name):
-    for line in open(os.path.join(BUILD, 'doom_bsp.lab'), encoding='latin-1'):
+    for line in open(code_map.LAB, encoding='latin-1'):
         p = line.split()
         if len(p) == 3 and p[2].upper() == name.upper():
             return int(p[0], 16), int(p[1], 16)
@@ -67,17 +68,18 @@ def xex_blocks(data):
 
 
 def main():
-    xex = sys.argv[1] if len(sys.argv) > 1 else os.path.join(BUILD, 'doom_bsp.xex')
+    xex = sys.argv[1] if len(sys.argv) > 1 else code_map.XEX
+    os.makedirs(os.path.dirname(B1BIN), exist_ok=True)
     blocks = xex_blocks(open(xex, 'rb').read())
-    marks = code_map._listing_blocks(os.path.join(BUILD, 'doom_bsp.lst'))
+    marks = code_map._listing_blocks(code_map.LST)
     b1 = [(lo, hi, bk) for lo, hi, bk in marks if bk]
     img = bytearray(0x10000)
     used = []
     if not b1:
         # nothing assembled into the bank: leave the XEX alone, but keep the
         # image files honest (empty) for the tools that read them
-        open(os.path.join(BUILD, 'b1code.bin'), 'wb').write(img)
-        json.dump([], open(os.path.join(BUILD, 'b1code.map'), 'w'))
+        open(B1BIN, 'wb').write(img)
+        json.dump([], open(B1MAP, 'w'))
         print('split_b1: no bank segment in the listing')
         return
     # Walk the listing's blocks against the XEX in order. A bank-0 listing
@@ -144,9 +146,8 @@ def main():
     for lo, hi, data in out_blocks:
         buf += struct.pack('<HH', lo, hi) + data
     open(xex, 'wb').write(buf)
-    open(os.path.join(BUILD, 'b1code.bin'), 'wb').write(img)
-    json.dump([[lo, hi] for lo, hi in runs],
-              open(os.path.join(BUILD, 'b1code.map'), 'w'))
+    open(B1BIN, 'wb').write(img)
+    json.dump([[lo, hi] for lo, hi in runs], open(B1MAP, 'w'))
     total = sum(hi - lo + 1 for lo, hi in runs)
     print(f'split_b1: {len(used)} segment blocks, {total} B into bank $01 '
           f'({len(runs)} runs) -> {len(chunks) // 2} staged chunks at ${stage:04X}')

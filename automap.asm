@@ -4,28 +4,11 @@
 ;--------------------------------------------------------------
 ; am_mark -- r_segs.c:398, `linedef->flags |= ML_MAPPED`: the seg about to be
 ;   drawn belongs to a line the player has now SEEN, so the automap may draw it.
-;   IT IS NOT CALLED. process_seg's one `jsr seg_len` is RETARGETED here and
+;   INLINED in process_seg since 2026-09-15 (seg_draw.asm, beside the seg's
+;   length); the proc itself had no caller and went on 2026-09-28 with seg_len.
 ;--------------------------------------------------------------
 am_resume = *
         org AMMARK_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc am_mark
-        rep #$30                     ; 16-bit A + X (native mode, see above)
-        lda rs_segi                  ; A = seg index
-        asl                          ;   ... x2: AMSEG is a u16 array
-        tax
-        lda.l AMSEG_EXT,x            ; A = &AMSEEN[this seg's linedef], bank $03
-        tax
-        sta.l AM_BANK0,x             ; ...and store it INTO that slot: any
-                                     ;   non-zero value means SEEN, and the
-                                     ;   address is one, so no constant is needed
-        sep #$10                     ; X back to 8 bits; A stays 16-bit, which is
-        jmp seg_len.seg_len16        ;   what seg_len opens with (2026-09-15)
-.endp
-        .endseg
-    .if * > AMMARK_END+1
-        ert 'am_mark outgrew AMMARK_BASE..END (memory_map.inc)'
-    .endif
 
 ;--------------------------------------------------------------
 ; sg_amout / sg_amin -- BUG FIX 2026-09-15: the SEEN marks go into the save.

@@ -59,9 +59,9 @@ def segments(blob):
     return out
 
 
-def main():
-    xex = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'build',
-                                                             'doom_bsp.xex')
+def overlays():
+    """[(staging address, which source, byte offset in menu.bin)], and the
+    shared reserve's (offset, chunks). tools/vbxe_reloc.py reads it too."""
     off = equ('menu_syms.inc', 'MENU_OVL_OFF')
     # ALL the overlay chunks pack_menu.py reserved, not just the two that stream
     # into consecutive banks: the automap's is a stream of its own (menu.asm's
@@ -103,6 +103,12 @@ def main():
             # two share one mn_ld_tab row.
             (equ('memory_map.inc', 'EPIOVL_STAGE'), 'm_episode.asm',
              equ('menu_syms.inc', 'MENU_LVCH') * CHUNK)]
+    return ovls, off, nch
+
+
+def main():
+    xex = sys.argv[1] if len(sys.argv) > 1 else code_map.XEX
+    ovls, off, nch = overlays()
     shared = sum(1 for _s, _w, o in ovls if off <= o < off + nch * CHUNK)
     if shared > nch:
         sys.exit('split_menu_ovl: %d overlays in the shared reserve, only %d '
@@ -124,7 +130,7 @@ def main():
     # -- "did f_finale.asm lose its two-address org?" -- pointing nowhere.
     # The listing knows which blocks are bank $01 ("01,AAAA-EEEE>"); split_b1.py
     # reads the same marks. Drop them and the parking address is unique again.
-    marks = code_map._listing_blocks(os.path.join(ROOT, 'build', 'doom_bsp.lst'))
+    marks = code_map._listing_blocks(code_map.LST)
     b1 = {(lo, hi) for lo, hi, bk in marks if bk}
     for i, (stage, who, o) in enumerate(ovls):
         hits = [s for s in segments(blob)
@@ -145,7 +151,8 @@ def main():
         del blob[hdr:tail]                       # ...and out of the XEX
         print('  %-12s overlay %4d B: $%04X block -> menu.bin +%d (chunk %d)'
               % (who, len(code), stage, o, o // CHUNK))
-    open(binp, 'wb').write(menu)
+    # pack_menu.py's menu.bin + THIS image's overlays: the image's own file
+    open(code_map.img('build', 'assets', 'menu', 'menu.bin'), 'wb').write(menu)
     open(xex, 'wb').write(blob)
 
 

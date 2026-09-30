@@ -4,13 +4,13 @@
 ; addresses hold whichever level is loaded. Per-level values -- counts, root
 ; node, spawn point -- are read from the header (MAP_H*) at runtime.
 ; RAM BUDGET: see the RAM-BUDGET block at the top of memory_map.inc.
-; LOW  $4000-$4B5E (2910 B, 23 sectors)
-; HIGH $D800-$D98C (396 B, 4 sectors) -- RAM under the OS ROM
+; LOW  $4000-$4B66 (2918 B, 23 sectors)
+; HIGH $D800-$D994 (404 B, 4 sectors) -- RAM under the OS ROM
 ; EXT  $07:0100-$07:4890 (18320 B, 144 sectors) -- Rapidus SRAM bank (VERTS+SEGOFF+SSECT);
 ;      MAP_VERTS/MAP_SSECT below are OFFSETS inside that bank, read via
 ;      65816 [zp],y long indirect with zp+2 = MAP_EXT_BANK. (NODES
 ;      moved to the SEG bank 2026-08-18, SSECT in from HIGH -- E2/E3.)
-; SEG  $03:0100-$03:E085 (57221 B, 448 sectors) -- the seg records, in a bank
+; SEG  $03:0100-$03:F391 (62097 B, 486 sectors) -- the seg records, in a bank
 ;      of their own (bank $01 is 40 KB full). MAP_SEGS is an OFFSET inside
 ;      bank MAP_SEG_BANK; readers use [zp_sptr],y, zp_sptr+2 set once
 ;      by init_level. This is what freed $4C00-$85FF of ordinary RAM.
@@ -25,7 +25,7 @@ MAP_SEG_BANK equ $03
 MAP_LOW_SECT equ 23
 MAP_HI_SECT  equ 4
 MAP_EXT_SECT equ 144
-MAP_SEG_SECT equ 448
+MAP_SEG_SECT equ 486
 
 ; ---- runtime header fields (per level) ----
 MAP_HNVERT   equ $4000
@@ -55,12 +55,12 @@ MAP_HSECS    equ $401F      ; SEG_FRONT of the secret exit ($FF = none); the
 ; ---- section bases ----
 MAP_VERTS    equ $0100
 MAP_SEGS     equ $0100
-MAP_TEXADDRLO  equ $4730
-MAP_TEXADDRMID equ $4792
-MAP_TEXADDRHI  equ $47F4
-MAP_TEXWMASK   equ $4856
-MAP_TEXH       equ $48B8
-MAP_TEXDOM     equ $491A
+MAP_TEXADDRLO  equ $4738
+MAP_TEXADDRMID equ $479A
+MAP_TEXADDRHI  equ $47FC
+MAP_TEXWMASK   equ $485E
+MAP_TEXH       equ $48C0
+MAP_TEXDOM     equ $4922
 MAP_TEXSWMATE  equ $073A3C   ; rows 6-8: EXT bank, lda.l
 MAP_TEXIXLO    equ $073A9E
 MAP_TEXIXHI    equ $073B00
@@ -75,10 +75,12 @@ MAP_HSCRTEX    equ $401A
 MAP_DOORS    equ $D800
 MAP_DSND     equ $D8B0      ; soundorg pairs, 4 B a door
 MAP_DOORLOCK equ $D960
-MAP_YBITS    equ $497C
-MAP_YIDXLO   equ $4AAD
-MAP_YIDXHI   equ $4AE8
-MAP_YVAL     equ $4B23
+MAP_DOORX    equ $D98C      ; [4] seg addresses USE is refused through
+DOORX_N      equ 4
+MAP_YBITS    equ $4984
+MAP_YIDXLO   equ $4AB5
+MAP_YIDXHI   equ $4AF0
+MAP_YVAL     equ $4B2B
 MAP_SECTORS  equ $4020
 MAP_SSECT    equ $2D74      ; EXT-bank offset (2026-08-18: was HIGH)
 MAP_NODES    equ $8729      ; SEG-bank offset (2026-08-18: was EXT; zp_nodeptr+2 = MAP_SEG_BANK)
@@ -99,6 +101,7 @@ MAP_LIGHTS   equ $86AB      ; SEG-bank offset (lights.asm)
 ;          line's flags with the seen slot's own X and a constant
 ;          delta of $0DC8. bit0 ML_SECRET (draw as a solid
 ;          WALL), bit1 ML_DONTDRAW, bit2 teleporter.
+MAP_SEGLEN   equ $E085      ; u16 per seg: its exact length, stored texels
 MAP_AMSEG    equ $4D30
 MAP_AMSKIP   equ $603C
 MAP_AMSEEN   equ $616D
@@ -127,7 +130,7 @@ MAP_NMTX     equ 8
 
 ; ---- capacities (assembly-time array sizes / asserts) ----
 MAP_NVERTS   equ 1626
-MAP_NSECTORS equ 226
+MAP_NSECTORS equ 227
 MAP_NSEGS    equ 2438
 MAP_NSSECT   equ 818
 MAP_NNODES   equ 817

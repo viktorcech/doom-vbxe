@@ -5,14 +5,14 @@
 ;==============================================================
 ; PUFF (2026-08-05) -- P_SpawnPuff, "ked strelim do steny, nic nevidno".
 ;==============================================================
-PF_TICS  equ 6                       ; one PUFF frame: DOOM's 4 tics at 35 Hz is
-                                     ;   5.7 VBLANKs at 50 -- the same tic->VB
-                                     ;   conversion pj_rspawn's 8/6/4 -> 11/9/6 uses
+PF_TICS  equ 40                      ; 2026-09-30: one PUFF image = DOOM's 4 tics, in
+                                     ;   TENTHS of a 35 Hz tic (a 50 Hz VBLANK is 7)
+                                     ;   so the images change exactly on DOOM's time
 
 PF_MAX   equ 7                       ; A_FireShotgun's pellet count -- SEVEN puffs
                                      ;   is what the spread LOOKS like; one can
                                      ;   only ever show a single hole
-PF_TBLD  equ 11                      ; BLUD's 8 tics at 35 Hz -> VBLANKs at 50
+PF_TBLD  equ 80                      ; BLUD's 8 tics, in tenths of a tic
 
 pfv_resume = *
         org PFVAR_BASE               ; the state, out of the code block: seven
@@ -24,11 +24,13 @@ pf_lvl  dta $FF                      ; the level the two ids below belong to
 pf_id   dta $FF                      ; PUFF A's sprtab id (things header +24)
 pf_bid  dta $FF                      ; BLUD C's, first of C/B/A (+25)
 pf_mel  dta 0                        ; 1 = the shot was a punch or a saw
-pf_ttl  dta 0                        ; VBLANKs left on the current frame
+pf_ttl  dta 0                        ; tenths of a tic left on the current image
 pf_tic  dta PF_TICS                  ; ...and how many each frame gets
 pf_n    dta 0                        ; how many of the seven are live
 pf_i    dta 0                        ; the spawn/draw cursor
 pf_lat  dta a(0)                     ; one pellet's lateral offset at the wall
+pf_aim  dta 0                        ; 2026-09-29: 1 = the trace ran down the
+                                     ;   bullet's own ray (zp_sin/zp_cos swapped)
 pf_ss   dta a(0)                     ; ONE leaf for all of them: they land within
                                      ;   ~50 units of each other on the same wall, ...
 pf_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
@@ -54,6 +56,9 @@ pf_resume = *
         ldy #12                      ;   A never moves, so it comes out here
         jsr use_side
         sta sh_sa
+        lda #4                       ; 2026-09-30 (6502-loops-tables-smc): K = 4
+        sta USE_K                    ;   for every step, set ONCE -- nothing in the
+                                     ;   loop writes USE_K (only use_seg_hit does)
         lda #SH_REF                  ; the count lives in MEMORY: smul_14 (under
         sta sh_n                     ;   sh_setb) eats X
 ?ref    rep #$21                     ; ---- 16-bit A, C=0: mid = (lo + hi) / 2 in
@@ -65,8 +70,6 @@ pf_resume = *
         sep #$20
         .LONGA OFF
         jsr sh_setb                  ; shorten the ray to mid...
-        lda #4
-        sta USE_K
         ldx #8
         ldy #12
         jsr use_side                 ; ...and ask which side of the seg it ends
@@ -83,14 +86,20 @@ pf_resume = *
         sta sh_lo+1
 ?rnx    dec sh_n
         bne ?ref
-        lda sh_lo                    ; the last CLEAR length: just in FRONT of
-        sta sh_d                     ;   the wall, where a sprite is still drawn
-        lda sh_lo+1
-        sta sh_d+1
-        jsr sh_dist
-                                    ; sh_end takes 16-bit (its rep is idempotent)
-        sec
+        rep #$20                     ; 2026-09-29: 4 units before the last clear
+        .LONGA ON                    ;   length (p_map.c "position a bit closer"):
+        sec                          ;   the point and its leaf are in FRONT of
+        lda sh_lo                    ;   the wall
+        sbc #4
+        bcs ?far
+        lda #0
+?far    sta sh_d
+        jsr sh_dist                  ; 2026-09-30 (65816-windows): entered 16-bit,
+                                     ;   no sep -- its ldx #2 is width-free and its
+                                     ;   rep idempotent; it returns 16-bit, and
+        sec                          ;   sh_end takes that (its rep is idempotent)
         jmp sh_end                   ; C=1: a wall was found
+        .LONGA OFF
 .endp
         .endseg
 ; the seven pellets' impact points, parked with sh_refine: the puff block itself
@@ -122,32 +131,101 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pf_shot
         lda pf_on
-        bne ?out                     ; one already showing: let it finish (ONE
+        bne ?busy                    ; one already showing: let it finish (ONE
                                      ;   instance -- see the .else side)
         lda en_hit
         beq ?wall
         jmp pf_gore                  ; it hit a THING: blood, or a puff if that
                                      ;   thing does not bleed (p_map.c:1005)
+?busy   rts
 ?wall   lda pf_id
-        bmi ?out                     ; the level packed no PUFF frames
-        lda #SH_NBULL
+        bmi ?busy                    ; the level packed no PUFF frames
+        stz pf_aim
+        lda wp_cur
+        cmp #WP_SHOTGUN
+        beq ?view                    ; seven pellets: the view ray, spread below
+        ; 2026-09-29: ONE bullet is traced down ITS OWN ray (P_LineAttack takes
+        ;   the shot's angle): (cos, sin) + t * (-sin, cos), t = tan of en_col's
+        ;   angle. The view's pair rides the stack across the trace.
+        lda en_col
+        sec
+        sbc #SCREEN_HALF-8           ; 0..16
+        asl
+        tay
+        rep #$20
+        .LONGA ON
+        lda pf_tan,y
+        beq ?view16                  ; dead centre: the view ray IS the bullet's
+        sta pf_lat
+        lda zp_sin
+        pha
+        lda zp_cos
+        pha
+        sta m_a
+        lda pf_lat
+        sta m_b
+        .LONGA OFF
+        sep #$20
+        jsr smul_14                  ; t*cos (16-bit out, A = m_res)
+        .LONGA ON
+        pha
+        lda zp_sin
+        sta m_a
+        lda pf_lat
+        sta m_b
+        .LONGA OFF
+        sep #$20
+        jsr smul_14                  ; t*sin
+        .LONGA ON
+        eor #$FFFF
+        sec
+        adc zp_cos                   ; cos' = cos - t*sin
+        sta zp_cos
+        pla
+        clc
+        adc zp_sin                   ; sin' = sin + t*cos
+        sta zp_sin
+        inc pf_aim                   ; (8-bit cell, its neighbour is rewritten below)
+?view16 .LONGA OFF
+        sep #$20
+?view   lda #SH_NBULL
         ldx pf_mel
         beq ?rng                     ; a punch or a saw only reaches MELEERANGE
         lda #SH_NMELEE
 ?rng    jsr sh_trace                 ; en_bx/en_by = where the bullet stopped
-        bcs ?hitwall                 ; C=0: nothing in reach
+        lda pf_aim                   ; (lda / rep / pla / sta keep C)
+        beq ?traced
+        rep #$20
+        .LONGA ON
+        pla
+        sta zp_cos
+        pla
+        sta zp_sin
+        .LONGA OFF
+        sep #$20
+?traced bcs ?hitwall                 ; C=0: nothing in reach
 ?out    rts
 ?hitwall
         jsr gun_match                ; P_ShootSpecialLine: the wall this bullet
                                      ;   stopped on may be a 46 (E1M2's secret door) ...
-?go     ldx #1
-        lda wp_cur
+?go     lda wp_cur
         cmp #WP_SHOTGUN
-        bne ?n1
-        ldx #PF_MAX
-?n1     stx pf_n
+        beq ?shot
+        lda #1                       ; one bullet: the puff IS the traced point
+        sta pf_n
+        rep #$20
+        .LONGA ON
+        lda en_by
+        sta pf_py
+        sta pf_rec+2
+        lda en_bx
+        sta pf_px
+        bra ?rec
+        .LONGA OFF
+?shot   ldx #PF_MAX
+        stx pf_n
         stx pf_i
-?pel    jsr en_aimcol                ; the same roll the pellet itself took
+?pel    jsr en_aimcol                ; a pellet's roll off the view ray
         lda en_col
         sec
         sbc #SCREEN_HALF-8           ; 0..16
@@ -173,15 +251,11 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         sep #$20
         .LONGA OFF
         jsr smul_14
-                                    ; 2026-09-22 (65816-windows): smul_14 returns 16-bit
-        sep #$20
-        ldx pf_i
-        dex
-        txa
-        asl
-        tax                          ; X = the pellet's slot * 2
-        rep #$20
-        .LONGA ON
+        .LONGA ON                    ; smul_14 returns 16-bit
+        lda pf_i                     ; 2026-09-30 (65816-windows): X = slot * 2 in
+        dec @                        ;   the 16-bit A smul_14 left, no sep/rep pair.
+        asl @                        ;   The 8-bit X takes the low byte only, so
+        tax                          ;   the high byte (pf_lat) is harmless; pf_i >= 1
         sec                          ; px = impact_x - lat*sin
         lda en_bx
         sbc m_res
@@ -195,8 +269,8 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         phx                          ; (smul_14 eats X)
         jsr smul_14
         plx
-                                    ; 2026-09-22 (65816-windows): smul_14 returns 16-bit,
-        clc                          ;   and that rep also cleared C
+                                    ; smul_14 returns 16-bit; its C is the rounding
+        clc                          ;   add's carry-out, so it is set here
         .LONGA ON
         lda en_by                    ; py = impact_y + lat*cos
         adc m_res
@@ -204,18 +278,18 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         sep #$20
         .LONGA OFF
         dec pf_i
-        bne ?pel 
-        ;jmp ?pel                     ; (out of branch range)
-?allset rep #$20
-        .LONGA ON
+        bne ?pel
+        rep #$20                     ; 2026-09-30 (6502-cycles-layout): the pellets
+        .LONGA ON                    ;   fall through here (no bra over the single
+                                     ;   shot), which reuses its loads (65816-windows)
+        lda en_by                    ; the LEAF comes off the traced impact point
+        sta pf_rec+2
+        lda en_bx
+?rec    sta pf_rec                   ; (the single shot joins here, 16-bit, A = en_bx)
         sec                          ; they hang at eye - 9, level: the height the
         lda zp_pz                    ;   missiles fly at, and the shot is level too
         sbc #9
         sta pf_rec+4
-        lda en_bx                    ; the LEAF comes off the traced impact point
-        sta pf_rec
-        lda en_by
-        sta pf_rec+2
         sep #$20
         .LONGA OFF
         ldx #5                       ; PUFF A/B/C/D, so it dies on frame 5
@@ -251,7 +325,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         bmi ?out
         ldx #5                       ; PUFF A/B/C/D
         ldy #PF_TICS
-        bne ?arm                     ; (always: PF_TICS is 6)
+        bne ?arm                     ; (always: PF_TICS is 40)
 ?blood  lda pf_bid
         bmi ?out
         ldy en_dmg                   ; P_SpawnBlood's damage gate
@@ -334,11 +408,41 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pf_frameb
         jsr pj_frameb
-        lda current_level            ; a new level: forget the puff and learn
-        cmp pf_lvl                   ;   this level's PUFF id
-        beq ?same
-        sta pf_lvl
-        lda #0
+        lda current_level
+        cmp pf_lvl
+        bne ?newlvl                  ; 2026-09-30 (6502-cycles-layout): a new level
+                                     ;   (rare) out of line, the frame falls through
+        lda pf_on
+        bne ?tick
+        rts
+?tick   lda dt_vbl                  ; elapsed, in tenths of a 35 Hz tic: 7 per
+        cmp #255/7+1                 ;   VBLANK. From 37 up that passes 255 and
+        bcs ?gone                    ;   outlives blood's 3 x 80, the longest chain
+        asl                          ; dt*8 - dt = dt*7 <= 252 (the *8 may wrap;
+        asl                          ;   the difference is exact modulo 256)
+        asl
+        sec
+        sbc dt_vbl
+?eat    cmp pf_ttl                   ; 2026-09-30 DOOM's clock: an image ends when its tics
+        bcc ?stay                    ;   run out, and a long frame may end several
+        sbc pf_ttl                   ; C=1: spend the image's rest, keep the
+        inc pf_on                    ;   remainder for the next one
+        ldx pf_on
+        cpx pf_lst
+        bcs ?gone                    ; the last image ran out: S_NULL
+        inc pf_rec+6                 ; every chain here is packed CONSECUTIVE
+        ldx pf_tic
+        stx pf_ttl
+        bra ?eat
+?stay   eor #$FF                     ; ttl -= elapsed (6502-idioms: the bcc's C=0), so
+        adc pf_ttl                   ;   ~e + ttl = ttl - e - 1; inc @ adds the 1
+        inc @                        ;   back (the result is >= 1: e < ttl)
+        sta pf_ttl
+        rts
+?gone   stz pf_on
+        rts
+?newlvl sta pf_lvl                   ; forget the puff and learn this level's
+        lda #0                       ;   PUFF and BLUD ids
         sta pf_on
         sta.l EXT_BASE+TH_HPL+TH_NOTHING     ; sentinel 253: health 0 so en_shoot skips
         sta.l EXT_BASE+TH_HPL+$100+TH_NOTHING ;  it, state 0 so spr_dyn draws it live,
@@ -348,27 +452,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
         sta pf_id
         lda THINGS_BASE+25
         sta pf_bid
-?same   lda pf_on
-        beq ?out
-        sec                          ; this drawn frame ate dt_vbl VBLANKs
-        lda pf_ttl
-        sbc dt_vbl
-        sta pf_ttl
-        bcc ?adv                     ; ran past, or out exactly -> next frame
-        beq ?adv
-        lda dt_vbl                    ; ...and one image per DRAWN frame once the
-        cmp #4                       ;   frames get long (the .else side's note)
-        bcc ?out
-?adv    inc pf_on
-        lda pf_on
-        cmp pf_lst
-        bcs ?gone                    ; the last frame ran out: S_NULL
-        inc pf_rec+6                 ; every chain here is packed CONSECUTIVE
-        lda pf_tic
-        sta pf_ttl
-?out    rts
-?gone   stz pf_on
-        rts
+        rts                          ; pf_on = 0: nothing to tick
 .endp
         .endseg
 
@@ -378,6 +462,11 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_chased
+        lda bl_on                    ; 2026-09-30 (6502-cycles-layout + 6502-idioms
+        ora pj_any                   ;   jsr/rts -> jmp): nothing flying and no puff
+        ora pf_on                    ;   (the usual leaf, 35 a frame) -> the monsters
+        jeq spr_chase                ;   alone as a tail call, no taken branch.
+                                     ;   spr_chase never writes these three.
         jsr spr_chase                ; the monsters (enemy_ai.asm) ...
         lda bl_on                    ; --- spr_chaseb (ball.asm) INLINED: the
         beq ?cb_out                  ;   imp's fireball, when it is in this leaf
@@ -433,9 +522,9 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ?one    lda sp_n
         cmp #VIS_MAX
         bcs ?out
-        ldx pf_i
-        dex
-        txa
+        lda pf_i                     ; 2026-09-30 (65816-idioms): X = (pf_i-1)*2 via
+                                     ;   dec @, not ldx/dex/txa (A dies below)
+        dec @
         asl
         tax
         rep #$20                     ; ---- 16-bit A: the pellet's x, y into the

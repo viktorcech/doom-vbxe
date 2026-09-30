@@ -1,6 +1,7 @@
 ;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): P_KillMobj's dropped ammo, give_bonus,
-;   spr_take/drop.
+; Part of enemy_ai.asm (icl in place): P_KillMobj's dropped item -- marked
+;   (en_dropmark), drawn (spr_ditem), handed over (spr_drop) -- give_bonus,
+;   spr_take.
 ;--------------------------------------------------------------
 
 ;--------------------------------------------------------------
@@ -32,6 +33,58 @@
 ?out    rts
 .endp
         .endseg
+
+;--------------------------------------------------------------
+; spr_ditem -- sp_ptr = a body's record, sp_i = the thing, its F_DROP set:
+;   P_KillMobj's item (p_inter.c:756, MT_CLIP / MT_SHOTGUN) as a pseudo thing
+;   at the body's place. BEFORE the body: equal scales, the first sorts in
+;   front. Keeps sp_ptr and sp_i.
+;--------------------------------------------------------------
+        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc spr_ditem
+        lda sp_n
+        cmp #VIS_MAX-3               ; the body's slot stays its own
+        bcs ?out
+        ldx sp_i
+        lda.l EXT_BASE+TH_KIND,x
+        ldy #0
+        cmp #MK_POSS
+        beq ?k
+        iny
+?k      lda THINGS_BASE+38,y         ; pack_things' header: CLIP A, SHOT A
+        cmp #$FF
+        beq ?out                     ; the level packed none
+        sta dr_rec+6
+        lda #TH_NOTHING
+        sta sp_i
+        phx
+        rep #$20
+        .LONGA ON
+        lda (sp_ptr)
+        sta dr_rec
+        ldy #2
+        lda (sp_ptr),y
+        sta dr_rec+2
+        ldy #4
+        lda (sp_ptr),y
+        sta dr_rec+4
+        pei (sp_ptr)
+        lda #dr_rec
+        sta sp_ptr
+        jsr spr_proj.spj_w16
+        .LONGA OFF                   ; (it returns 8-bit)
+        pla
+        sta sp_ptr
+        pla
+        sta sp_ptr+1
+        plx
+        stx sp_i
+?out    rts
+.endp
+        .endseg
+        .segment D0
+dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
+        .endseg                      ;   sprite id, flags 0
 
 ;--------------------------------------------------------------
 ; en_seen -- X = vissprite. Z=0 if the thing is actually VISIBLE in the centre

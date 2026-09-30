@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack a map's wall textures into the VBXE-VRAM form the engine blits from.
 
-Phase 1 of textured walls on Atari (mechanism = wolf3d textures.asm: column-major
+Phase 1 of textured walls on Atari (column-major
 textures in VRAM, one BCB per column, SRC_STEPY=1, ZOOMY magnify ladder). Emits,
 per map, into build/assets/textures/:
 
@@ -45,12 +45,10 @@ OUT_DIR = os.path.join(os.path.dirname(_HERE), 'build', 'assets', 'textures')
 #
 # THREE, NOT FOUR (2026-08-01). VBXE has four palettes and palette 0 is also the
 # one it maps ordinary GTIA colours through -- and a WARM reset does not put it
-# back (Altirra's core only refills it in ColdReset, _pomocne/alt-src
+# back (Altirra's core only refills it in ColdReset, alt-src
 # .../vbxe.cpp:226-227). So filling all four left the machine with a black
-# screen after RESET until a power cycle. wolfenstein3d-vbxe hit the same thing
-# and answered it the simple way (src/vbxe_init_cold.asm:70, "Palette 1 picked
-# so we don't clobber the ANTIC PF/BAK colors that share palette 0"), so this
-# port does too: palette 0 is never written, and the fourth slot -- the milder
+# screen after RESET until a power cycle. So
+# palette 0 is never written, and the fourth slot -- the milder
 # of DOOM's two damage reds -- is what pays for it. FL_REDSPLIT still picks
 # between "low" and "high", both now land on the same palette.
 PAL_SLOTS = (0, 5, 10)

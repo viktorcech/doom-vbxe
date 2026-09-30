@@ -38,7 +38,7 @@ level can exist at all:
      base RAM is only what is read with plain absolute addressing.
   3. FIXED CAPACITIES + a runtime HEADER. Every section is padded to the largest
      level in the build, so MAP_VERTS/MAP_SEGS/... are the same addresses for
-     every level (wolf3d does the same). What DOES vary per level -- counts, root
+     every level. What DOES vary per level -- counts, root
      node, spawn point, door/yoff/texture counts -- now comes from the header at
   The texture TABLE moved into the blob too (it used to be an icl'd .inc, i.e.
   one level's table hard-wired into the XEX).
@@ -198,6 +198,8 @@ LOW_LIMIT = 0x4C00                   # first byte the LOW region may NOT touch.
                                      # shrank to $4000-$4BFF and $4C00-$85FF is
                                      # ordinary free RAM. tools/ram_map.py
                                      # RESERVED must match this constant.
+DOORX_N = 4                          # MAP_DOORX: the door faces a DENY byte
+                                     #   cannot name (_doors), a seg address each
 HI_LIMIT = 0xDA00                    # 2026-08-29: was $E300 (USERAY_BASE). The
                                      # THINGS blob's second piece lives at
                                      # $DA00-$E2FF now (memory_map.inc
@@ -433,7 +435,8 @@ def _seg_layout(caps):
     """The SEG bank's ($03) section offsets -- ONE definition, so pack() and
     emit_map_syms() cannot drift apart. MAP_SEGS is $0100 and not 0 on purpose:
     see the note by `segs =` in emit_map_syms.
-    -> (segs, amseg, amskip, amseen, amflg, segmid, mtx, lights, end)"""
+    -> (segs, amseg, amskip, amseen, amflg, segmid, mtx, lights, nodes,
+        seglen, end)"""
     segs = 0x0100
     amseg = segs + caps.segs * SEG_SIZE
     amskip = amseg + caps.segs * 2
@@ -448,8 +451,37 @@ def _seg_layout(caps):
     # pointer's bank byte, so the move costs one immediate; bank $03 sits at
     # ~35 KB of 64 even on E2M7 with them in.
     nodes = lights + caps.lights * LIGHT_SIZE
+    # SEGLEN (2026-09-28): the seg's exact length, a u16 per seg, LAST so that
+    # nothing before it moves. process_seg read it off an octagonal estimate
+    # (max - max/8 + min/2) that is 12.5 % short on every axis-aligned seg --
+    # 73 % of E1's -- so their textures were stretched by a seventh and the
+    # right eighth of every door fell off the wall.
+    seglen = nodes + caps.nodes * NODE_SIZE
     return (segs, amseg, amskip, amseen, amflg, segmid, mtx, lights, nodes,
-            nodes + caps.nodes * NODE_SIZE)
+            seglen, seglen + caps.segs * 2)
+
+
+def _seglen(md):
+    """SEGLEN: |v2 - v1| per seg, in the units calc_u's track runs in -- STORED
+    texels, i.e. world units halved under HALF_W, as SEGOFF is. Rounded to the
+    nearest, never 0 (a seg of one unit still spans a texel).
+
+    Bits 15/14 carry r_segs.c's FAKE CONTRAST (2026-09-28): a seg whose ends
+    share their x (a vertical line on the map) is lit one lightnum brighter,
+    one whose ends share their y one darker -- bit 15 = brighter, 14 = darker.
+    process_seg takes them off before it uses the length."""
+    from pack_textures import HALF_W
+    out = bytearray()
+    for sg in md.segs:
+        a, b = md.vertices[sg.v1], md.vertices[sg.v2]
+        n = math.hypot(b.x - a.x, b.y - a.y) / (2 if HALF_W else 1)
+        n = max(1, min(0x3FFF, int(n + 0.5)))
+        if a.y == b.y:
+            n |= 0x4000
+        elif a.x == b.x:
+            n |= 0x8000
+        out += struct.pack('<H', n)
+    return bytes(out)
 
 
 def _midtex(md, segmid_tex, table):
@@ -779,7 +811,7 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
             b = _bbox_with_things(n.bbox[side], tbb.get(n.child[side]))
             node_bytes += struct.pack('<hhhh', b[0], b[1], b[2], b[3])
 
-    doors, dsnd, doorlock = _doors(md)
+    doors, dsnd, doorlock, doorx = _doors(md)
     ndoors = struct.unpack_from('<H', doors, 0)[0]
     ybits, yidx_lo, yidx_hi, yval = _yoffs(md, segtex, table)
     lights = _lights(md)
@@ -854,7 +886,10 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
     # (same size, and zp_ptr+2 is the EXT bank byte init_level seeds anyway).
     high = (pad(doors[2:], 4, caps.doors)                  # count lives in the header
             + pad(dsnd, 4, caps.doors)                     # the soundorg pair
-            + pad(doorlock, 1, caps.doors))                # 1 B lock per door record
+            + pad(doorlock, 1, caps.doors)                 # 1 B lock per door record
+            + struct.pack('<%dH' % DOORX_N,                # the refused segs' addresses
+                          *[_seg_layout(caps)[0] + i * SEG_SIZE for i in doorx]
+                          + [0] * (DOORX_N - len(doorx))))
     # EXT region (2026-07-28, the all-of-episode-1 rework): VERTS + NODES moved
     # into Rapidus SRAM bank $01 ($01:0000-$07:FFFF, 448 KB fast SRAM -- see
     # Altirra rapidus.cpp). E1M6 alone overflows the $4000 map slot by ~5 KB and
@@ -928,8 +963,9 @@ def pack(md, wt, caps, next_level=0, xpool=None, next_secret=0):
            # thinkers pushed it past TH_HPL and en_init ate the last eight; the
            # SEG bank uses 15 KB of 64, so here it cannot collide with anything.
            + pad(lights, LIGHT_SIZE, caps.lights)
-           + pad(node_bytes, NODE_SIZE, caps.nodes))       # from EXT, 2026-08-18
-    assert len(seg) == _seg_layout(caps)[9] - _seg_layout(caps)[0], \
+           + pad(node_bytes, NODE_SIZE, caps.nodes)        # from EXT, 2026-08-18
+           + pad(_seglen(md), 2, caps.segs))
+    assert len(seg) == _seg_layout(caps)[10] - _seg_layout(caps)[0], \
         'the SEG blob and _seg_layout disagree'
     return low, high, ext, seg, tex_blob, table
 
@@ -990,8 +1026,8 @@ def emit_map_syms(caps):
     doors = MAP_LOAD_HI                         # HIGH: doors ONLY (2026-08-18 --
     dsnd = doors + caps.doors * 4               #   SSECT joined the EXT bank,
     doorlock = dsnd + caps.doors * 4            #   E2M7's 818 x 4 B blew $E300).
-    high_end = doorlock + caps.doors            #   Two 4 B door records, not one
-                                                #   of 8: see _doors.
+    doorx = doorlock + caps.doors               #   Two 4 B door records, not one
+    high_end = doorx + DOORX_N * 2              #   of 8: see _doors.
 
     # EXT base $0100, NOT 0 (2026-08-31, phaeron's Rapidus review): the Rapidus
     # can remap $01:0000-$00FF onto page zero (its 65C816 abs,X/abs,Y MyDOS
@@ -1020,7 +1056,7 @@ def emit_map_syms(caps):
     # wall would fire unrelated switches. One page of slack costs nothing in a
     # 64 KB bank and keeps every real seg address non-zero.
     (segs, amseg, amskip, amseen, amflg, segmid, mtx, lights, nodes,
-     seg_end) = _seg_layout(caps)
+     seglen, seg_end) = _seg_layout(caps)
 
     if low_end > LOW_LIMIT:
         sys.exit(f'LOW map region ends at ${low_end:04X}, limit ${LOW_LIMIT:04X} '
@@ -1133,6 +1169,8 @@ def emit_map_syms(caps):
          f'MAP_DOORS    equ ${doors:04X}',
          f'MAP_DSND     equ ${dsnd:04X}      ; soundorg pairs, 4 B a door',
          f'MAP_DOORLOCK equ ${doorlock:04X}',
+         f'MAP_DOORX    equ ${doorx:04X}      ; [{DOORX_N}] seg addresses USE is refused through',
+         f'DOORX_N      equ {DOORX_N}',
          f'MAP_YBITS    equ ${ybits:04X}',
          f'MAP_YIDXLO   equ ${yidxlo:04X}',
          f'MAP_YIDXHI   equ ${yidxhi:04X}',
@@ -1158,6 +1196,7 @@ def emit_map_syms(caps):
          f';          line\'s flags with the seen slot\'s own X and a constant',
          f';          delta of ${amflg - amseen:04X}. bit0 ML_SECRET (draw as a solid',
          ';          WALL), bit1 ML_DONTDRAW, bit2 teleporter.',
+         f'MAP_SEGLEN   equ ${seglen:04X}      ; u16 per seg: its exact length, stored texels',
          f'MAP_AMSEG    equ ${amseg:04X}',
          f'MAP_AMSKIP   equ ${amskip:04X}',
          f'MAP_AMSEEN   equ ${amseen:04X}',
@@ -1546,6 +1585,33 @@ def _doors(md):
     # door 32 and up past Y's 255 and the read wraps to the wrong door -- which
     # is what stopped DOORS_NMAX growing past 32 on the engine side. At 4 B the
     # index reaches door 63.
+    # ...and THE FACES A DENY BYTE CANNOT NAME: a door refused from two
+    # sectors (E3M4's 113) or from the very sector it opens from (E3M6's blue
+    # door, in a corner of one room). Their segs go on a list of their own,
+    # which use_refused (doors.asm) compares the crossed seg with.
+    from pack_things import SPEC, F_USE
+    refuse = []
+    for li, ld in enumerate(md.linedefs):
+        if NO_SIDEDEF in (ld.right, ld.left):
+            continue
+        sec = (md.sidedefs[ld.right].sector, md.sidedefs[ld.left].sector)
+        for side in (0, 1):                 # the side the player stands on
+            here, there = sec[side], sec[1 - side]
+            if here == there or there not in door_sectors:
+                continue
+            if here == deny[there] or locks[there] & 0x20:
+                continue                    # refused already
+            if side == 0 and (ld.special in MANUAL_DOOR or (
+                    ld.tag and SPEC.get(ld.special, (0,))[0] & F_USE)):
+                continue                    # DOOM opens it / switch_match fires
+            if ld.special in GUN_DOOR:
+                continue                    # gun_seg_p stops the ray there
+            refuse += [i for i, sg in enumerate(md.segs)
+                       if sg.linedef == li and sg.side == side]
+    if len(refuse) > DOORX_N:
+        print(f'  {md.name}: {len(refuse)} door faces refuse USE beyond the DENY '
+              f'byte, MAP_DOORX holds {DOORX_N} -- the rest open')
+        refuse = refuse[:DOORX_N]
     out = bytearray(struct.pack('<H', len(door_sectors)))
     snd = bytearray()
     for ds, oc in door_sectors.items():
@@ -1567,7 +1633,7 @@ def _doors(md):
         xs, ys = [x for x, _ in pxy], [y for _, y in pxy]
         snd += struct.pack('<hh', (min(xs) + max(xs)) // 2, (min(ys) + max(ys)) // 2)
         assert len(snd) // 4 <= 64, 'the plat soundorg index * 4 must fit a byte'
-    return out, bytes(snd), bytes(locks[ds] for ds in door_sectors)
+    return out, bytes(snd), bytes(locks[ds] for ds in door_sectors), refuse
 
 
 def _start(md):

@@ -10,15 +10,13 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
 ;==============================================================
-; pl_kick -- move_player's ?slide calls this INSTEAD of pl_latch and it ends by
-;   jumping to pl_latch, so the call site is the size it always was (that block
-;   ends flush at MNKEY_BASE with one spare byte).
+; pl_kick -- move_player's ?slide: what is left of a shove joins mv_dx/mv_dy.
 ;==============================================================
         org PLKICK1_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pl_kick
         lda pl_kd
-        jeq pl_latch                 ; (a plain beq when pl_latch is in reach)
+        beq ?out
         lsr                          ; an eighth of what is left, the taper
         lsr                          ;   en_slide spends a corpse's slide with
         lsr
@@ -27,7 +25,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         stz thr_d+1
         bra pl_kick2
 ?stop   stz pl_kd
-?out    jmp pl_latch
+?out    rts
 .endp
         .endseg
     .if * > PLKICK1_END+1
@@ -94,9 +92,8 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         adc ai_sy
         sta mv_dy
         .LONGA OFF
-                                      ; 2026-09-22 (65816-windows): past the callee's rep,
-        jmp pl_latch.plt_w16     ;   still 16-bit (this sep and that rep were an empty pair)
-        .LONGA OFF
+        sep #$20
+        rts
 .endp
         .endseg
     .if * > PLKICK5_END+1

@@ -159,10 +159,18 @@
         jsr en_row
                                     ; 2026-09-22 (65816-windows): en_row returns 16-bit
         sep #$20
+        lda RANDOM                   ; P_KillMobj (p_inter.c:726): the first row
+        and #3                       ;   runs P_Random() & 3 tics short, one tic
+        sta en_t                     ;   at least
         ldy #7
-        lda [zp_ptr],y               ; the first row's tics
-        and #$3F                     ; bits 6/7 are the A_Explode / last flags
-        sta en_t
+        lda [zp_ptr],y               ; its tics (bits 6/7 are the A_Explode /
+        and #$3F                     ;   last flags)
+        sec
+        sbc en_t
+        beq ?min
+        bcs ?tok
+?min    lda #1
+?tok    pha                          ; (over the TH_STATE store)
         stz zp_ptr                   ; <TH_STATE = 0 (page-aligned: ert)
         lda #>TH_STATE
         sta zp_ptr+1
@@ -174,7 +182,7 @@
         sta [zp_ptr],y
         lda #>TH_TICS
         sta zp_ptr+1
-        lda en_t
+        pla
         sta [zp_ptr],y
         rts                          ; the chain runs; A_BossDeath waits for its
                                      ;   LAST frame, which is bd_at's job now

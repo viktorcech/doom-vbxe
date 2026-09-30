@@ -2,7 +2,7 @@
 """Monster pain / death state chains and sounds, read out of DOOM's info.c.
 
 Companion to doomspecs.py: where that one owns the linedef specials, this one
-owns what a monster DOES when it is shot. Both read _pomocne/_doomsrc so the
+owns what a monster DOES when it is shot. Both read _doomsrc so the
 port and the original game cannot drift apart.
 
 info.c is machine-readable as it ships:
@@ -39,17 +39,9 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJ = os.path.dirname(_HERE)
 
-# WHERE THE C IS. _pomocne/_doomsrc is the checkout every comment in this repo
-# names; DOOM-master/ is the same linuxdoom-1.10 tree unpacked in the project
-# root (2026-08-28). Either one serves, whichever is actually there -- the
-# packers need the source at BUILD time, and a build that dies because the tree
-# is spelled the other way is a build nobody can run. doomspecs.py imports
-# SRC_DIR from here so the two never drift apart.
-SRC_DIRS = (os.path.join(_PROJ, '_doomsrc'),                 # 2026-09-21: moved to the root
-            os.path.join(_PROJ, '_pomocne', '_doomsrc'),
-            os.path.join(_PROJ, 'DOOM-master', 'linuxdoom-1.10'))
-SRC_DIR = next((d for d in SRC_DIRS if os.path.isfile(os.path.join(d, 'info.c'))),
-               SRC_DIRS[0])
+# WHERE THE C IS: _doomsrc, linuxdoom-1.10 (the packaged EXE carries the same
+# folder, make_exe.py). doomspecs.py imports SRC_DIR from here.
+SRC_DIR = os.path.join(_PROJ, '_doomsrc')
 SRC = os.path.join(SRC_DIR, 'info.c')
 
 # mobjinfo fields this port cares about, by the comment id.c writes after them.
@@ -315,7 +307,7 @@ def doom():
         if not os.path.exists(SRC):
             raise FileNotFoundError(
                 f'{SRC} missing -- the DOOM source tree is the authority for '
-                f'monster states; check out _pomocne/_doomsrc')
+                f'monster states; check out _doomsrc')
         _cache = Info(open(SRC, encoding='latin-1').read())
     return _cache
 

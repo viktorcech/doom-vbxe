@@ -124,34 +124,6 @@ SPEED = {
     7: 2, 8: 2,                                  # EV_BuildStairs(build8) = FLOORSPEED/4
     87: 2,                                       # perpetualRaise = PLATSPEED (35)
 }                                                # 9 (the donut) is per-HALF: see _donut
-# ---- PER-MAP overrides of the above (2026-08-25) ---------------------------
-# The port's PLAYER is the odd one out in the whole timing model: SPD is 24
-# units per FRAME (memory_map.inc), not per unit of time, so his real speed is
-# 24*fps -- 240 u/s running at 5 fps, against DOOM's 583. Every mover above is
-# DOOM-exact (measured: mv_step returns 35 u/s at any frame rate), which means
-# every mover is effectively ~2.4x faster than DOOM RELATIVE TO THE MAN, and a
-# crossing DOOM gives you plenty of time for can become impossible.
-# E3M1 is the one that actually bites. Six W1 37 lines drop a chain of stepping
-# stones 40 units to the nukage below, and ONE of the six -- linedef 52, tag 4,
-# a 286-unit slab -- takes 1.14 s to go while the runner covers 274. He misses
-# it by TWELVE UNITS, every time, on the level's main route. The other five
-# clear it, so this is not "the port is too slow", it is one slab on one map.
-# Halving that map's 37s (17.5 u/s) buys 549 units running and still leaves 274
-# WALKING, so the crossing keeps DOOM's own rule that you must run it. The whole
-# chain moves together on purpose: slowing only linedef 52 would make one stone
-# in six sink at a different rate, which reads as a bug.
-# NOT APPLIED ELSEWHERE. The same arithmetic flags E2M1/E2M6/E3M6/E3M7, but
-# there the "distance" is the tagged sector's own diagonal (353..1024 units) and
-# those are big floors that drop to open a way, not stones you sprint across --
-# the metric over-reports and there is no report from play. Scope one when one
-# shows up.
-# THE REAL FIX is a time-scaled PLR_STEP: it needs move_player's halfway
-# collision probe to subdivide (it assumes step <= 24), and simply running
-# faster trades the miss for visible teleporting -- 120 units between two drawn
-# frames at 5 fps instead of 48. Delete this table the day that lands.
-SPEED_MAP = {
-    'E3M1': {37: 3},         # the stepping stones -- see above
-}
 SPEED_BOSS = 2               # A_BossDeath's tag 666 is lowerFloorToLowest
 
 # ---- RAISE_BY: kind 8, the raises that go up a FIXED number of units --------
@@ -413,7 +385,7 @@ BONUS = {
 }
 NF_SUBSECTOR = 0x8000
 # SHOOTABLE things -> info.c spawnhealth, keyed by doomednum. These are DOOM's own
-# numbers, verbatim from _pomocne/_doomsrc/info.c; 0/absent = not shootable, which
+# numbers, verbatim from _doomsrc/info.c; 0/absent = not shootable, which
 # is what the engine tests, so decorations and pickups need no entry.
 # u16 in the blob on purpose: BRUISER is 1000, so a byte would silently make the
 # barons of E1M8 four times cheaper to kill.
@@ -894,6 +866,47 @@ def emit_mk_tables():
           f'{"":29}; CYBR = A_Hoof at RUN state 0 + A_Metal at\n'
           f'{"":29}; 6, SPID = A_Metal at 0/4/8 -- pack_things\n'
           f'{"":29}; asserts every word of that against info.c\n\n')
+        # ---- A_SkullAttack: the LOST SOUL's flight (enemy_ai_attack.asm) ---
+        # p_enemy.c SKULLSPEED, info.c MT_SKULL damage / attacksound / the
+        # spawnstate's tics (P_SetMobjState(mo, spawnstate) ends every flight),
+        # and the kind P_CheckMissileRange halves the roll for by TYPE.
+        sk = d2.fields_of_type('MT_SKULL')
+        src = open(os.path.join(os.path.dirname(doomstates.SRC), 'p_enemy.c'),
+                   encoding='latin-1').read()
+        m = re.search(r'#define\s+SKULLSPEED\s+\(\s*(\d+)\s*\*\s*FRACUNIT\s*\)', src)
+        assert m, 'SKULLSPEED not found in _doomsrc/p_enemy.c'
+        skspd = int(m.group(1))
+        assert skspd % 2 == 0 and skspd // 2 <= 15, \
+            f'SKULLSPEED {skspd}: ai_fly moves in two equal halves of at most ' \
+            f'MAXMOVE/2 (p_mobj.c P_XYMovement splits a move above that)'
+        m = re.search(r'dist\s*>>=\s*1', re.search(
+            r'P_CheckMissileRange.*?\n\}', src, re.S).group(0))
+        assert m and 'MT_SKULL' in re.search(r'P_CheckMissileRange.*?\n\}',
+                                             src, re.S).group(0), \
+            'P_CheckMissileRange no longer halves the roll for MT_SKULL'
+        skst = d2.states[d2.state_id[sk['spawnstate']]][2]
+        skatk = ids.get(sk.get('attacksound', '0')[4:].upper(), 0xFF)
+        assert skatk != 0xFF, \
+            f'MT_SKULL attacksound {sk.get("attacksound")} is not shipped by ' \
+            f'tools/wadsound.py -- A_SkullAttack plays it at the launch'
+        w(f'MK_SKUL      equ {MK_ORDER.index(SKULL_NUM) + 1}'
+          f'{"":10}; the LOST SOUL kind: ai_mrange halves its\n'
+          f'{"":29}; roll (P_CheckMissileRange names MT_SKULL)\n')
+        w(f'MK_SKSPD     equ {skspd}'
+          f'{"":<{max(1, 13 - len(str(skspd)))}}'
+          '; p_enemy.c SKULLSPEED, units a tic (ai_fly\n'
+          f'{"":29}; moves it as two P_TryMove halves)\n')
+        w(f'MK_SKDMG     equ {int(sk["damage"])}'
+          f'{"":<{max(1, 13 - len(sk["damage"]))}}'
+          '; info.c MT_SKULL damage: a hit costs\n'
+          f'{"":29}; ((P_Random()%8)+1) * this (p_map.c:277)\n')
+        w(f'MK_SKSTND    equ {skst}'
+          f'{"":<{max(1, 13 - len(str(skst)))}}'
+          '; S_SKULL_STND tics: the pause a landed\n'
+          f'{"":29}; flight sits in its spawnstate\n')
+        w(f'MK_SKATK     equ {skatk}'
+          f'{"":<{max(1, 13 - len(str(skatk)))}}'
+          '; SFX id of MT_SKULL attacksound (sklatk)\n\n')
         for tag, col, what in (('mk_pain', 2, 'pain SFX'),
                                ('mk_death', 3, 'death SFX'),
                                ('mk_chance', 4, 'P_Random < this -> pain'),
@@ -942,7 +955,10 @@ def emit_mk_tables():
     emit_wi_tables(rows, d)       #    the intermission's two, each in its own
                                   #    file (see emit_wi_tables for why)
     return rows
-HEADER = 38                   # +36 BFS1 A and +37 BFE1 A, the BFG ball's flight
+HEADER = 40                   # +38 CLIP A and +39 SHOT A: what a dead zombieman
+                              # and a dead shotgun guy leave on the floor ($FF =
+                              # the level has none of them; sprites.asm spr_add).
+                              # +36 BFS1 A and +37 BFE1 A, the BFG ball's flight
                               # and burst ($FF = the level packed neither, which
                               # makes pj_bspawn land the shot at once). 2026-08-28.
                               # +35 BAL2 A, the CACODEMON's fireball (2026-08-20;
@@ -1921,15 +1937,17 @@ AT_TICS = 0x1F                # what is left for info.c's own tics once those
                               # the assert in pack_atk holds every kind to it.
 
 # p_enemy.c's attack actions, as the engine's damage-roll selector. mk_atk
-# carries this per kind; 0 = the kind has no attack this port can do. That is
-# the LOST SOUL alone now: A_SkullAttack is a charge, not a projectile -- the
-# monster itself becomes the missile (MF_SKULLFLY), which is a mover this
-# engine does not have. The baron got its ball in 2026-08-08, the cacodemon
-# on 2026-08-20.
+# carries this per kind; 0 = the kind has no attack this port can do. The baron
+# got its ball in 2026-08-08, the cacodemon on 2026-08-20.
+# 8 = A_SkullAttack (2026-09-30), the LOST SOUL: a charge, not a projectile --
+# the monster itself flies (MF_SKULLFLY), ai_fly in enemy_ai_attack.asm. Its chain
+# is the one that loops back to state 2 (S_SKULL_ATK4 -> ATK3) while it flies;
+# pack_atk pins that, emit_mk_tables pins the MK_SK* numbers the flight reads.
 ATK_ACTIONS = {'A_PosAttack': 1, 'A_SPosAttack': 2,
                'A_TroopAttack': 3, 'A_HeadAttack': 4,
                'A_BruisAttack': 5, 'A_CyberAttack': 6,
-               'A_SargAttack': 7}
+               'A_SargAttack': 7, 'A_SkullAttack': 8}
+SKULL_NUM = 3006              # MT_SKULL's doomednum
 # THE ORDER IS LOAD-BEARING (2026-08-20). at_tables.inc is emitted over
 # ATM_LO..ATM_HI and lives in a 25-byte hole at $F067 with fps_win hard against
 # it, so it has room for FOUR rows of six tables and not five. Putting
@@ -1938,7 +1956,7 @@ ATK_ACTIONS = {'A_PosAttack': 1, 'A_SPosAttack': 2,
 # 3..6 and the table exactly the size it always was. A_SargAttack moved to 7,
 # outside the range, which it can afford: ai_fire routes it to its own melee
 # branch and it never reaches ball.asm at all.
-# 7 = A_HeadAttack (2026-08-20), the CACODEMON -- the one monster in episodes
+# 4 = A_HeadAttack (2026-08-20), the CACODEMON -- the one monster in episodes
 # 1-3 that had no attack at all: mk_atk 0 meant pack_atk skipped its chain, so
 # it chased the player and never did a thing. p_enemy.c gives it A_TroopAttack's
 # shape with two numbers changed -- melee (P_Random()%6+1)*10 instead of
@@ -1968,7 +1986,7 @@ def noblast_types():
                encoding='latin-1').read()
     body = re.search(r'PIT_RadiusAttack\s*\([^)]*\)\s*\{.*?\n\}', src, re.S)
     if not body:
-        sys.exit('  ERROR: PIT_RadiusAttack not found in _pomocne/_doomsrc/p_map.c')
+        sys.exit('  ERROR: PIT_RadiusAttack not found in _doomsrc/p_map.c')
     d = doomstates.doom()
     out = set()
     for mt in re.findall(r'thing->type\s*==\s*(MT_\w+)', body.group(0)):
@@ -2057,11 +2075,18 @@ def pack_atk(sp, blob, black, kinds_present, nrows, have, frames, coltabs,
         # CPOS/BSPI/SSWV -- which is the only target ai_refire can express (it
         # zeroes ai_awst and lets ai_atk_next's own +1 do the rest). The LOST
         # SOUL is the one chain that loops anywhere else: S_SKULL_ATK4 -> ATK3,
-        # a charge animation that P_SkullAttack's collision breaks out of, not a
-        # refire at all. It never reaches here (A_SkullAttack is not an
-        # ATK_ACTION, so the `continue` above skips the kind), and if it ever
-        # does this has to be looked at rather than shipped.
-        if loop not in (None, 1):
+        # a charge animation that the flight's collision breaks out of, not a
+        # refire at all. It gets AT_LAST alone, and ai_refire (enemy_ai_attack.asm)
+        # sends a FLYING thing back to state 2 instead of the RUN cycle -- so the
+        # chain must be exactly FaceTarget, SkullAttack, x, x -> 2, and whole.
+        skull = any(a == 'A_SkullAttack' for _b, _f, _t, a in chain)
+        if skull:
+            if loop != 2 or len(chain) != 4 or chain[1][3] != 'A_SkullAttack':
+                sys.exit(f'  ERROR: {chain[0][0]}: the A_SkullAttack chain is no '
+                         f'longer 4 states firing on state 1 and looping to 2 '
+                         f'(loop {loop}) -- ai_refire hardcodes that shape')
+            loop = None                    # the loop is the engine's, not a refire
+        elif loop not in (None, 1):
             sys.exit(f'  ERROR: {chain[0][0]}: info.c loops its attack chain '
                      f'back to state {loop}, not state 1. ai_refire '
                      f'(enemy_ai_attack.asm) can only express 1 -- see the note '
@@ -2092,6 +2117,10 @@ def pack_atk(sp, blob, black, kinds_present, nrows, have, frames, coltabs,
             packed.append(group)
         if not packed:
             continue
+        if skull and len(packed) != len(chain):
+            sys.exit(f'  ERROR: {chain[0][0]}: the A_SkullAttack chain was cut '
+                     f'short ({len(packed)}/{len(chain)} states) -- ai_refire '
+                     f'would send the flight into a row that is not there')
         # AT_LAST on the REAL last state, in every slot copy -- and AT_REFIRE
         # beside it only when the WHOLE chain made it in. A chain cut short by a
         # missing lump would otherwise loop a monster round two of its four
@@ -2500,6 +2529,24 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
                                 coltabs)
             tab.append((addr, w, h, left, top, got[0]))
 
+    # --- what a dead trooper leaves (p_inter.c P_KillMobj): MT_POSSESSED drops
+    #     MT_CLIP, MT_SHOTGUY drops MT_SHOTGUN. The item is no map thing: the
+    #     engine draws this frame at the corpse while it carries its drop.
+    drop_ids = []
+    here = {t[7] for t in things}
+    for ty, spr in ((3004, 'CLIP'), (9, 'SHOT')):
+        got = sp.lump_for(spr, 'A', 1) if ty in here else None
+        if got is not None and got[0] not in sprites:
+            pat = sp.patch(got[0])
+            if pat is not None:
+                w, h, left, top, cols = pat
+                sprites[got[0]] = len(tab)
+                addr = _store_frame(blob, _cols_of(w, h, cols, black), frames,
+                                    coltabs)
+                tab.append((addr, w, h, left, top, got[0]))
+        drop_ids.append(sprites.get(got[0], 0xFF) if got else 0xFF)
+    print(f'  drops: CLIP A -> {drop_ids[0]}, SHOT A -> {drop_ids[1]}')
+
     def _msid(spr, fr):
         got = sp.lump_for(spr, fr, 1)
         return sprites.get(got[0], 0xFF) if got else 0xFF
@@ -2531,7 +2578,7 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
     p_sprtab = p_things + len(things) * 8
 
     # ---- trigger table: walkover (W1/WR) + switches (S1/SR) + walkover doors --
-    # Verified against _pomocne/_doomsrc p_spec.c (P_CrossSpecialLine) and
+    # Verified against _doomsrc p_spec.c (P_CrossSpecialLine) and
     # p_switch.c (P_UseSpecialLine). One 16 B record per (line, tagged sector);
     # readers: movers.asm mv_start/check_triggers, doors.asm switch_match/
     # trig_fire.
@@ -2581,8 +2628,7 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
         if not spec or not ld.tag:
             continue
         flags, kind = spec
-        spd = SPEED_MAP.get(md.name, {}).get(ld.special,
-                            SPEED.get(ld.special, 0))
+        spd = SPEED.get(ld.special, 0)
         if flags & (F_USE | F_GUN):
             idxs = [i for i, sg in enumerate(md.segs)
                     if sg.linedef == li and sg.side == 0]
@@ -2851,6 +2897,7 @@ def pack(md, sp, skill=SKILL, decor_cut=0, obst_cut=0, bfg=True):
     struct.pack_into('<B', out, 35, bal2_id)
     struct.pack_into('<B', out, 34, boss_kind)
     struct.pack_into('<BB', out, 36, bfgs_id, bfge_id)
+    struct.pack_into('<BB', out, 38, drop_ids[0], drop_ids[1])
     out += prefix
     for (ssid, x, y, z, sid, fl, _hp, _ty) in things:
         out += struct.pack('<hhhBB', x, y, z, sid, fl)

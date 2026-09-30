@@ -70,8 +70,9 @@ SP_TIMEY = SCREEN_H - 32
 KIT_VRAM = 0x030000
 ARENA_TOP = 0x03D000               # memory_map.inc ARENA_SPR_TOP
 NAME_SLOT = 0x1000                 # a level name's slot in SDRAM (one 4 KB step)
-MSG_STRIDE = 64                    # the message directory's per-array stride
-MSG_DIR = 0x100                    # ...and where the lines start in their bank
+MSG_STRIDE = 72                    # the message directory's per-array stride
+                                   #   (2026-09-28: 64 -> 72, the gamma lines)
+MSG_DIR = 0x200                    # ...and where the lines start in their bank
 
 # lnodes[NUMEPISODES][NUMMAPS] -- where each level sits on its episode's WIMAP
 # (wi_stuff.c:177), DOOM's own x. All THREE episodes since

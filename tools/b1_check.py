@@ -5,7 +5,7 @@ drac.txt moves the code to bank $01 as the MADS segment B1. The assembler lays
 it out, but it cannot see what a 16-bit address means at run time: a `jsr`
 stays in the PROGRAM bank, an absolute data operand reads the DATA bank (0).
 This decodes every listed instruction (tools/code_map.py, byte-exact against
-the XEX and build/b1code.bin) and fails on:
+the XEX and build/assets/code/b1code.bin) and fails on:
 
   xjump   jsr/jmp/branch whose target is code only in the OTHER bank
   xlong   jsl/jml whose 24-bit target is not code in that bank
@@ -37,13 +37,15 @@ BRANCH = {0x90, 0xB0, 0xF0, 0xD0, 0x30, 0x10, 0x50, 0x70, 0x80}
 IDENT = re.compile(r'[A-Za-z_?@][\w?@.]*')
 DATA_MODES = {'abs', 'absx', 'absy'}
 MENU_RUN = (0x1000, 0x14FF)                   # memory_map.inc MENU_RUN..END
+OS_ROM = (0xE400, 0xFFFF)                     # the OS's vectors + code: bank-0
+                                              #   code names them by a bank-0
+                                              #   label (SIOV, COLDSV), ROM in
 
 
 def lab_banks():
     """NAME -> (bank, addr) out of build/doom_bsp.lab (bank 0 or 1 only)."""
     out = {}
-    for line in open(os.path.join(code_map.ROOT, 'build', 'doom_bsp.lab'),
-                     encoding='latin-1'):
+    for line in open(code_map.LAB, encoding='latin-1'):
         p = line.split()
         if len(p) != 3:
             continue
@@ -176,6 +178,8 @@ def main():
             if lbl_bank is not None and lbl_bank != ln.bank and not overlay:
                 errs.append(('xjump', f'{mn} to a bank-${lbl_bank:02X} label from bank '
                                       f'${ln.bank:02X} -- {where(ln)}'))
+            elif ln.bank == 0 and lbl_bank == 0 and OS_ROM[0] <= tgt <= OS_ROM[1]:
+                pass                            # the OS ROM, by its own label
             elif here is None and not overlay and hit(rs, other, tgt) is not None:
                 errs.append(('xjump', f'{mn} ${tgt:04X} lands on bank-${other:02X} '
                                       f'code only -- {where(ln)}'))
@@ -238,7 +242,14 @@ def main():
                                           f'16-bit operand (bank 0) -- {where(ln)}'))
                     break
         if ln.bank == 1 and op in (0x6C, 0x7C, 0xFC, 0xDC):
-            notes.append(('xind', where(ln)))
+            # jmp (abs,x) / jsr (abs,x) read their table through the PROGRAM
+            # bank: a table that is a bank-$01 label is where it has to be
+            ids = IDENT.findall(ln.op.split(';')[0])
+            tl = [resolve(labs, ln, i) for i in ids]
+            if ln.proc:                         # a table inside the proc: PROC.NAME
+                tl += [labs.get(f'{ln.proc}.{i}'.upper()) for i in ids]
+            if not (op in (0x7C, 0xFC) and any(t is not None and t[0] == 1 for t in tl)):
+                notes.append(('xind', where(ln)))
         # xptr: a CODE address loaded as an immediate (lda #label, #<label) --
         # it ends up in a patched jsr operand or a pushed return address, and
         # that jump happens in the bank of the code that TAKES it. A label from
@@ -279,7 +290,7 @@ def main():
     for k, t in notes:
         L.append(f'  note  {k:5} {t}')
     txt = '\n'.join(L)
-    out = os.path.join(code_map.ROOT, 'tools', 'tests', 'out', 'b1_check.txt')   # build/ holds the build only
+    out = code_map.img('tools', 'tests', 'out', 'b1_check.txt')   # build/ holds the build only
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, 'w', encoding='utf-8') as f:
         f.write(txt + '\n')

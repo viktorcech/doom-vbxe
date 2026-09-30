@@ -741,8 +741,8 @@ wi_amax dta 0, 200, 50, 200, 50, 255, 255, 0         ; DOOM maxammo (cells 300
 
 ;--------------------------------------------------------------
 ; wp_bobcalc -- player->bob (P_CalcHeight) + the bob phase, once per tic.
-;   DOOM derives bob from momx/momy, which this port does not track (the step is
-;   a fixed SPD per frame), so it ramps toward MAXBOB while the player actually
+;   DOOM derives bob from momx/momy, which this port does not track, so it
+;   ramps toward MAXBOB while the player actually
 ;   moves -- mv_ox/mv_oy hold the pre-move position, so walking into a wall
 ;   correctly kills the bob, exactly as losing momentum would.
 ;--------------------------------------------------------------
@@ -971,22 +971,24 @@ WS_NXT
 ; transition; nothing reads it per frame, so win2 is the right price.
                                       ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+WS_L1       equ 16                   ; 2026-09-28: extralight 1 / 2 in LIGHT units
+WS_L2       equ 32                   ;   (<< LIGHTSEGSHIFT): lt_seg_flash adds them
 WS_LIGHT
         dta 0                                              ; NULL
         dta 0,0,0,0,0,0,0,0                                ; punch 1..8
         dta 0,0,0,0,0,0,0                                  ; pistol 9..15
-        dta 2                                              ; PISFLASH (A_Light1)
+        dta WS_L1                                          ; PISFLASH (A_Light1)
         dta 0,0,0,0,0,0,0,0,0,0,0,0                        ; sgun 17..28
-        dta 2,4                                            ; SGFLASH1/2 (L1,L2)
+        dta WS_L1,WS_L2                                    ; SGFLASH1/2 (L1,L2)
         dta 0,0,0,0,0,0                                    ; chain 31..36
-        dta 2,4                                            ; CHFLASH1/2 (L1,L2)
+        dta WS_L1,WS_L2                                    ; CHFLASH1/2 (L1,L2)
         dta 0,0,0,0,0,0,0                                  ; saw 39..45
         dta 0,0,0,0,0,0                                    ; missile 46..51
-        dta 2,2,4,4                                        ; MISFLASH1..4 (L1,-,L2,L2)
+        dta WS_L1,WS_L1,WS_L2,WS_L2                        ; MISFLASH1..4 (L1,-,L2,L2)
         dta 0,0,0,0,0                                      ; plasma 56..60
-        dta 2,2                                            ; PLSFLASH1/2 (L1,L1)
+        dta WS_L1,WS_L1                                    ; PLSFLASH1/2 (L1,L1)
         dta 0,0,0,0,0,0,0                                  ; bfg 63..69
-        dta 2,4                                            ; BFGFLASH1/2 (L1,L2)
+        dta WS_L1,WS_L2                                    ; BFGFLASH1/2 (L1,L2)
                                       ; DRAC_PLAN 3a: WS_LIGHT is in segment D0
     .if * != WS_LIGHT + WS_BFGFLASH2 + 1
         ert 'WS_LIGHT is not exactly one byte per state (WS_BFGFLASH2 is the last id)'

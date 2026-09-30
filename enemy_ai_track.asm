@@ -126,11 +126,17 @@
         beq ?next
         lda ai_t
         jsr en_thing.en_th2          ; sp_ptr = the thing record
-        jsr spr_proj
+        ldy #7
+        lda (sp_ptr),y
+        and #F_DROP
+        bne ?drop                    ; a body with its drop beside it
+?proj   jsr spr_proj
 ?next   plx
         lda sp_n
         cmp #VIS_MAX
         bcc ?re
 ?out    rts
+?drop   jsr spr_ditem                ; the item first (sprites.asm)
+        bra ?proj
 .endp
         .endseg

@@ -153,127 +153,24 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
 ;  defined in memory_map.inc -- the single source of truth.)
 
 ;==============================================================
-; EARLY INIT (runs during XEX load) -- kill the ANTIC screen
+; EARLY INIT: the XEX's first INIT, before any store into a bank past 0.
+;   ANTONIA II: CONF1 ($FF:F001, Antonia2 1.4pl.pdf s.3) VBENA = 1, VBADR = 0.
+;   With VBENA 0 VBXE decodes 16 bits and takes every $xx:D6xx for a register.
 ;==============================================================
         org $0600
 .proc early_init
-        lda #0
-        sta SDMCTL
-        sta DMACTL
-        ; BASIC ROM off.
+    .ifdef ANTONIA2
+        lda.l ANT_CONF1
+        and #%11111100
+        ora #%00000001
+        sta.l ANT_CONF1
+    .endif
         rts
 .endp
         ini early_init
 
-;==============================================================
-; RAM CHECK (phaeron's review, 2026-08-31) -- parked at RAMCHK_BASE
-;==============================================================
-; Probe every linear-RAM bank the port uses, BEFORE anything streams into
-; them: SRAM $01-$06 (map EXT + AI tables, SFX, segs, weapon master + CMAP),
-; $08 (sprite coltabs) and the TOP bank of the SDRAM level cache (PRE1 end,
-; atr_layout.inc), which spr_fget and every level revisit read at runtime.
-; A configuration without that RAM boots, plays a while and then silently
-; loses textures (phaeron measured ~4 MB as the visible floor) -- this turns
-; that into one message at power-on.
-;   Method per bank: pattern -> $BB:rc_twin (long store), INVERTED pattern ->
-; the bank-0 twin (same 16-bit offset -- this block's own byte), long read
-; back. A real bank answers the pattern; a partial-decode MIRROR of bank 0
-; answers the twin's inverted value; open bus answers junk -- and the second
-; pass swaps the patterns so a floating value cannot pass both. No restore
-; needed: it runs before the loaders, so every scribble is streamed over.
-;   The failure path calls NO OS -- the IOCBs at $0340 are engine RAM
-; (RECLAIMED OS RAM, memory_map.inc) -- and needs no VBI: it programs ANTIC
-; through the hardware registers (the shadows are dead, NMIEN is 0) and
-; halts, the same policy as main's no-VBXE `jmp *`.
-DLISTL  equ $D402                    ; ANTIC display-list pointer (hardware --
-DLISTH  equ $D403                    ;   not SDLST: no VBI runs here)
-CHBASE  equ $D409                    ; charset base ($E0 = the ROM font)
-COLPF1  equ $D017                    ; mode-2 text luminance
-COLPF2  equ $D018                    ; mode-2 background
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-.proc ram_check
-        ldx #0
-?bank   lda rc_banks,x
-        beq ?ok                      ; table end -> every bank answered
-        sta ?wr+3                    ; the bank byte of all four long operands
-        sta ?rd+3                    ;   (self-mod; cold one-shot code)
-        sta ?sv+3
-        sta ?rs+3
-        lda #$A5
-        jsr ?probe                   ; pattern, the twin gets $5A...
-        bne ?fail
-        lda #$5A                     ; ...then swapped, so neither open bus
-        jsr ?probe                   ;   nor a stale $A5 can pass twice
-        bne ?fail
-        inx
-        bne ?bank                    ; table < 256 B: always taken
-?ok     rts
-?probe  pha
-?sv     lda.l rc_twin                ; THE BANK'S OWN BYTE, saved (2026-09-14):
-        sta rc_save                  ;   bank $01 already holds the staged engine
-        pla                          ;   here (b1_stage_copy ran during the XEX
-        pha                          ;   load), and the probe used to leave $5A
-                                     ;   in it -- an `rts` of crush_things once
-                                     ;   the code grew onto $2A6F (door crash)
-?wr     sta.l rc_twin                ; -> $BB:rc_twin (bank byte patched)
-        eor #$FF
-        sta rc_twin                  ; bank-0 twin: a mirror now differs
-        pla
-?rd     cmp.l rc_twin                ; Z=1 iff the bank held the pattern
-        php
-        lda rc_save
-?rs     sta.l rc_twin                ; ... and the bank's byte goes back
-        plp
-        rts
-?fail   lda rc_banks,x               ; the failing bank -> two hex digits
-        pha
-        lsr @
-        lsr @
-        lsr @
-        lsr @
-        jsr ?hex
-        sta rc_bnk
-        pla
-        and #$0F
-        jsr ?hex
-        sta rc_bnk+1
-        lda #<rc_dl
-        sta DLISTL
-        lda #>rc_dl
-        sta DLISTH
-        lda #$E0
-        sta CHBASE
-        lda #$0E
-        sta COLPF1                   ; white text ...
-        stz COLPF2                   ; ... on black
-        lda #$22
-        sta DMACTL                   ; normal playfield + DL DMA on
-        bra *                        ; halt (the no-VBXE path's policy)
-?hex    cmp #10                      ; nibble -> SCREEN code ('0'=$10,'A'=$21)
-        bcc ?dig
-        adc #$16                     ; C=1: n+$17 = $21..$26 ('A'-'F')
-        rts
-?dig    adc #$10                     ; C=0: n+$10 = $10..$19 ('0'-'9')
-        rts
-.endp
-; the SDRAM level cache's top bank: its last cached sector must exist
-RC_TOP  equ [[PRE1_BASE+[PRE1_CNT*128]-1]>>16]
-rc_banks dta $01,$02,$03,$04,$05,$06,MAP_EXT_BANK,$08,RC_TOP,SPRCOL_BANK,MUS_BANK0,0
-                                     ; (+SPRCOL_BANK / MUS_BANK0 2026-09-13: both ...
-rc_twin dta 0                        ; every probe's bank-0 twin byte
-rc_save dta 0                        ; the probed bank's original byte
-rc_dl   dta $70,$70,$70              ; 24 blank scans
-        dta $42,a(rc_msg)            ; two mode-2 lines, one LMS
-        dta $02
-        dta $41,a(rc_dl)             ; JVB
-rc_msg  dta d'LINEAR RAM MISSING AT BANK $'
-rc_bnk  dta d'XX'
-        dta d'.         '
-        dta d'THIS PORT NEEDS A 16MB RAPIDUS.         '
-    .if * <> rc_msg+80
-        ert 'rc_msg is not 2 x 40 B -- each mode-2 line reads exactly 40'
-    .endif
+; (the RAM check is the boot loader's since 2026-09-28: boot.asm, before the load)
+        .segment D0
 ;--------------------------------------------------------------
 ; snd_vgo -- snd_play's stereo tail (X = voice*2): the trigger's pan into the
 ;   voice, reset it to CENTRE, arm the voice. Lives HERE because the sound
@@ -314,19 +211,14 @@ rc_bnk  dta d'XX'
         stz SDMCTL                   ; ANTIC off; VBXE drives the display
         stz NMIEN                    ; no VBI yet
 
-        jsr ram_check                ; every linear-RAM bank answers, or halt
-                                     ;   with a message (parked block above) --
-                                     ;   BEFORE anything streams into them
                                       ; 2026-09-22 idiom: snd_init2 inlined (-12)
         lda #3                       ; the STEREO POKEY out of init (harmless
         sta $D21F                    ;   SKCTL2: out of the init state
         stz $D218                    ;   AUDCTL2: 64 kHz base, like AUDCTL
                                      ;   mirror writes on a mono machine)
 
-        jsr detect_vbxe
-        bcs * 
-        ;bra *                        ; no VBXE -> halt (error UI added later)
-?ok
+                                     ; (the CPU, the linear RAM and VBXE were
+                                     ;   checked by the boot loader, boot.asm)
         jsr setup_memac
         jsr setup_xdl
         jsr setup_bcbs
@@ -338,19 +230,6 @@ rc_bnk  dta d'XX'
                                      ;   they are staged in (memory_map.inc
                                      ;   RECIP_EXT).
 
-    .ifdef ANTONIA2
-        ; 2026-09-23 (drac030: VBXE palette 0 trashed on Antonia II only). CONF1
-        ; ($FF:F001, Antonia2 1.4pl.pdf s.3) has VBENA = 0 by default: VBXE then
-        ; decodes the 16-bit address only, so every store to $xx:D6xx in ANY bank --
-        ; the read_sectors tee parks each sector in its SDRAM home, ~100 banks -- is
-        ; a VBXE register write (PSEL/CSEL/CR/CG/CB). VBENA = 1 = the card's own
-        ; bank-$00 decoder, VBADR = 0 = VBXE at $D6xx; bits 7-2 stay as they are.
-        ; Native here, and before the first level load (the first tee).
-        lda.l ANT_CONF1
-        and #%11111100
-        ora #%00000001
-        sta.l ANT_CONF1
-    .endif
         jsl B1CODE_BASE+con_init_w1  ; the PC text-mode startup goes UP first
         jsl B1CODE_BASE+con_msg_w1   ;   (2026-09-26): the script prints in
         jsl B1CODE_BASE+con_msg_w1   ;   ORDER -- the bar, then WAD + the box
@@ -458,8 +337,8 @@ rc_bnk  dta d'XX'
         sta mv_oy
         sep #$20
         .LONGA OFF
-        jsr move_player              ; walk forward/back (collision in stage 2)
-        jsr frame_dt                 ; dt_vbl = VBLANKs this frame -> doors + lifts
+        jsr frame_dt                 ; dt_vbl = VBLANKs this frame -> doors + lifts,
+                                     ;   and the walk (plr_steps: move_player)
         jsr check_triggers           ; crossed a lift line?
         jsr pf_frameb                ; animate it -- and let a floor that moved
                                      ;   carry what stands on it (mv_carry); ...
@@ -631,7 +510,7 @@ load_hud_w1     jsr load_hud
                 rtl
 load_level_c_w1 jsr load_level_c
                 rtl
-load_palette_w1 jsr load_palette
+load_palette_w1 jsr gm_apply         ; (2026-09-28: lights.asm, out of SDRAM)
                 rtl
 load_sounds_w1  jsr load_sounds
                 rtl
@@ -1088,9 +967,6 @@ stcopy_resume = *
 ; the level loader brings it along for free. Texture PIXELS still stream
 ; separately into VBXE VRAM ($020000).
 ;==============================================================
-MAP_PLAYPAL equ TEX_STAGE            ; PLAYPAL is streamed into the staging buffer
-                                     ; by load_palette (the 768 B it used to take
-                                     ; here is movers.asm now)
 
 ;==============================================================
 ; sprites.asm -- billboards for the level's THINGS (items, decorations,
@@ -1153,8 +1029,8 @@ tw_seg_end = *                       ; watched by the .if below
                                      ; the fifth and sixth MENU_RUN overlays.
         icl 'pl_kick.asm'            ; P_DamageMobj's KICK for the PLAYER. LAST:
                                      ; forward-references oct_of, thr_comp, the
-                                     ; thr_sx/thr_sy tables, skipx_ref, pl_latch
-                                     ; and move_player's mp_slide/mp_nomove.
+                                     ; thr_sx/thr_sy tables, skipx_ref and
+                                     ; move_player's mp_slide/mp_nomove.
 
 ;==============================================================
 ; Map data is NO LONGER embedded -- it streams from the data ATR (D1:) at boot

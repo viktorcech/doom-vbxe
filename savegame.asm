@@ -42,7 +42,7 @@ SGOVL_WIN       equ MEMW16+[[SGOVL_BANK&3]<<12]
         jmp sg_save
 ?scan   jmp sg_scan
 ?rest   jmp sg_restore
-?quit   jmp sg_quit
+?quit   jmp quit_doom
 .endp
 
 ; --- the regions. (address, 256-byte pages, kind) ---------------------------
@@ -485,7 +485,7 @@ sg_kind dta 0
 .endp                                ;   its IRQs masked again
 
 ;--------------------------------------------------------------
-; sg_scan -- what wolf3d's refresh_slot_labels does: read every slot's header
+; sg_scan -- read every slot's header
 ;   and write down what is in it, so the picker can say so. One sector per slot,
 ;   and only the first three bytes matter -- magic plus the level.
 ;--------------------------------------------------------------
@@ -524,48 +524,7 @@ sg_kind dta 0
 .endp
 sg_si   dta 0
 
-;--------------------------------------------------------------
-; sg_quit -- M_QuitResponse (m_menu.c:1080-1092), which is the only part of QUIT
-;   DOOM this port can have: M_QuitDOOM itself just puts up the "are you sure"
-;   message and there is no message system here to put it on.
-;--------------------------------------------------------------
-sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
-        dta SFX_TELEPT, SFX_POSIT1, SFX_POSIT3, SFX_SGTATK
-
-.proc sg_quit
-        jsr sg_qwait                 ; let the menu's select shot finish -- DOOM
-                                     ;   has the y/n prompt in this gap, so its
-                                     ;   two sounds never overlap either
-        lda RTCLOK3
-        lsr
-        lsr
-        and #7                       ; (gametic>>2) & 7
-        tax
-        lda sg_qsnd,x
-        tax
-        jsr snd_play_t
-        jsr sg_qwait                 ; I_WaitVBL(105)
-        jsl B1CODE_BASE+con_end_w1   ; I_Quit: ENDOOM, then a key (console.asm)
-        jmp sg_bye                   ; ...and out. NOT `rom_in + jmp COLDSV`: that
-                                     ;   hands the OS a machine nobody reset.
-                                     ;   See sg_bye, up beside sg_go2.
-.endp
-
-;--------------------------------------------------------------
-; sg_qwait -- spin until the mixer is empty. snd_arm sets POKMSK bit0 when a
-;   sample starts and snd_disarm zeroes the byte when the last voice ends, so
-;   bit0 IS "something is playing".
-;--------------------------------------------------------------
-.proc sg_qwait
-?w      lda POKMSK_R
-        lsr
-        bcc ?done
-        lda RTCLOK3                  ; one frame
-?v      cmp RTCLOK3
-        beq ?v
-        bra ?w
-?done   jmp snd_stop                 ; ... and the channels with it
-.endp
+        icl 'quit.asm'               ; QUIT DOOM: it lives in this overlay for room
 
 ;--------------------------------------------------------------
 ; sg_save -- G_DoSaveGame. Header sector, then every region. A = 0 ok / $FF SIO
@@ -690,66 +649,8 @@ sg_qsnd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
         jmp mn_open                  ;   too, but we have already left it.
 .endp
 
-;--------------------------------------------------------------
-; sg_bye -- I_Quit: put the machine back and RE-BOOT THE ATR OURSELVES.
-;--------------------------------------------------------------
-BOOT_RUN equ $0700                   ; the ATR boot loader's home (boot.asm: the
-                                     ;   loader is $0700..$082D and boot_init
-                                     ;   MUST sit at BLDADR+6 = $0706)
-.proc sg_bye
-        sei
-        cld
-        jsr blitter_wait_t ; the blitter still owns VRAM until it stops
-        ;lda #0
-        stz NMIEN                    ; NMI off across the handover
-        stz VBXE_VCTL                ; --- VBXE: XDL off, so nothing garbles the
-        stz VBXE_MEMAC_CTL           ;     screen while the loader streams. It is
-        stz VBXE_MEMAC_B             ;     a DEVICE -- no software entry into the
-        stz VBXE_BANK_SEL            ;     OS ever reaches it (vbxe.cpp WarmReset)
-        stz DMACTL                   ; --- ANTIC: screen DMA off, as boot_init
-                                     ;     does it (and _pomocne/games/combat.s)
-        sec                          ; --- CPU: out of 65816 native mode. boot.asm
-        xce                          ;     runs as a 6502 until it turns the
-                                     ;     65816 on itself, and this must happen
-                                     ;     BEFORE the ROM covers $FFEA/$FFEE --
-                                     ;     the same order rom_in uses.
-        lda #$FF
-        sta PORTB                    ; --- PIA/MMU: SetBankRegister($FF) as a real
-                                     ;     XL reset does (alt-src simulator.cpp
-                                     ;     InternalWarmReset).
-        lda #$40
-        sta NMIEN                    ; --- and SIOV's world back: the OS VBI on
-        cli                          ;     and IRQs enabled, because SIOV waits on
-                                     ;     the serial IRQ (diskio.asm's header).
-
-        ; --- RE-BOOT THE ATR OURSELVES, instead of asking the OS to do it ----- ...
-        lda #1                       ; the ATR's own boot sectors, 1..3
-        sta ll_sec
-        stz ll_sec+1
-        lda #<BOOT_RUN
-        sta DBUFLO
-        lda #>BOOT_RUN
-        sta DBUFHI
-        lda #3
-        sta sg_cnt
-        jsr sg_read
-        jsr sg_sio
-        php                          ; (C = the read failed)
-        sei                          ; siov_r hands back the ENGINE's world --
-        stz NMIEN                    ;   native, ROM out, rom_nmi on. The loader
-        sec                          ;   and COLDSV want the OS's: emulation and
-        xce                          ;   the ROM in, before a VBI can come. Else
-        lda #$FF                     ;   the loader's own ROM-in + NMIEN $40 took
-        sta PORTB                    ;   the next VBI native, through the ROM's
-        lda #$40                     ;   $FFEA bytes: PC $FB02, S wrapped to
-        sta NMIEN                    ;   $E324 (Altirra, 2026-09-27)
-        plp                          ; C back, and I as sg_bye left it (clear)
-        bcs ?fallback                ; drive gone? then the OS is still a better
-        jmp BOOT_RUN+6               ;   answer than sitting here
-?fallback
-        jmp COLDSV
-.endp
+        icl 'quit_boot.asm'          ; ... and its reboot
     .if * > MENU_RUN_END+1
-        ert 'sg_go2/sg_bye outgrew the overlay window (memory_map.inc)'
+        ert 'sg_go2/quit_boot outgrew the overlay window (memory_map.inc)'
     .endif
         org sg_amb                   ; ... and back to the staging block

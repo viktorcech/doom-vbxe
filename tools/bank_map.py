@@ -305,6 +305,9 @@ REGIONS = [
     R('TH_MODE',    B1 + 'TH_MODE',  '256', 'RUN chain or ATTACK chain + the mode bits', PAGE),
     R('TH_SEEN',    B1 + 'TH_SEEN',  '256', 'the cached sight answer', PAGE),
     R('TH_RAD',     B1 + 'TH_RAD',   '256', 'PIT_CheckThing radius', PAGE),
+    R('TH_FLY',     B1 + 'TH_FLY',   '256', 'MF_SKULLFLY: the lost soul is flying', PAGE),
+    R('TH_FVX',     B1 + 'TH_FVX',   '256', "the flight's half-tic step, x", PAGE),
+    R('TH_FVY',     B1 + 'TH_FVY',   '256', "the flight's half-tic step, y", PAGE),
     # RECIP_EXT is a full 24-bit $018000 -- bank $01 by its own bank byte, NOT
     # POOL_VRAM (see the note above). The old map masked it to 16 bits.
     R('RECIP_EXT',  'RECIP_EXT', 'RECIP_BYTES', 'reciprocal + trig tables (RECIP+TRGX)',
@@ -327,6 +330,18 @@ REGIONS = [
     R('B1 segment', 'B1CODE_BASE+B1SEG_BASE', 'B1SEG_LEN',
       'the bank-$01 code segment (split_b1.py stages it, b1_stage_copy copies it)',
       'MADS .segdef bound'),
+    # 2026-09-28: inflate816.asm's scratch, below the code segment. LOAD TIME
+    # ONLY (every inflate call rebuilds it), reached with long,x and [dp],y.
+    R('INF_X',      'INF_X', 'INF_XLEN',
+      'inflate: code lengths, counts, the symbols of the codes past the tables',
+      "inflate816.asm's ert bound"),
+    R('INF_T2',     'INF_T2', 'INF_T2LEN',
+      'inflate: the second table read of a 9/10-bit literal/length code',
+      '4 pages of dispatch + 4 of values'),
+    R('SSCL_LO',    'SSCL_LO', '160',
+      'per frame: scale of the wall that closed each column, low byte', 'SCREEN_WIDTH'),
+    R('SSCL_HI',    'SSCL_HI', '160',
+      'per frame: ... high byte ($FF on the view border)', 'SCREEN_WIDTH'),
     R('HUD_TAB',    'EXT_BASE+HUDTAB_OFF', '180',
       'status-bar lump rows (data; b1_to_ext copies the page up)', 'hud.tab 30 x 6 B'),
     # 2026-08-31: the frac-table pages, the SQ2 masters and the second code
@@ -371,7 +386,10 @@ REGIONS = [
     R('CMAP_EXT',   'CMAP_EXT', 'CMAP_ROWS*256', 'DOOM COLORMAP (lights.asm zp_cm long ptr)',
       'lt_seg reads [CMAP_EXT + row*256 + colour]; 2 WEAP_CHUNKS behind the weapons'),
     R('SKY_EXT',    'SKY_EXT', 'SKY_BYTES', 'DOOM sky columns SKY1-3 + view column offsets',
-      'seg_draw.asm sky_clip lda.l; pack_sky.py, the last WEAP_CHUNKS'),
+      'seg_draw.asm sky_clip lda.l; pack_sky.py, WEAP_CHUNKS behind the COLORMAP'),
+    R('GAMMA_EXT',  'GAMMA_EXT', 'PALRAW_EXT-GAMMA_EXT+PAL_COUNT*768',
+      'gammatable[5][256] + the PLAYPAL slots as R/G/B planes (lights.asm gm_apply)',
+      'doomgamma.py, the last WEAP_CHUNKS'),
 
     # ---- SDRAM, bank $08 up. The LEVEL CACHE: read_sectors tees every drive
     # sector of the two ranges into PREn_BASE + (sec - PREn_SEC)*128 (pre_map),
@@ -418,6 +436,15 @@ VIEWS = [
 VIEW_HOMES = ('PRE', 'POOL_SD')      # regions a view may land in: the cache
                                      #   ranges, or the depacked pool itself
 
+# Pointer tables: `dta` rows of 24-bit addresses split lo/mid/hi, which must
+# point INTO the region their reader takes them for -- a bank that moved in one
+# include and not in the other plays silence. (file, the three labels, the
+# region's base and size, what an entry is)
+PTR_TABLES = [
+    ('music_tabs.inc', ('mus_b0', 'mus_b1', 'mus_b2'), 'MUS_BANK0*$10000',
+     'MUS_BYTES', 'a song mus_reset points mus_p at'),
+]
+
 # Invariants the map leans on. (lhs, op, rhs, fatal, why). A fatal one means a
 # stream writes past the region priced for it -- an overrun, and --check fails.
 CHECKS = [
@@ -438,6 +465,9 @@ CHECKS = [
     ('CMAP_EXT+CMAP_ROWS*256', '<=', 'SKY_EXT', False, 'the sky columns ride behind the COLORMAP'),
     ('WEAP_EXT+WEAP_CHUNKS*4096', '>=', 'SKY_EXT+SKY_BYTES', True,
      'load_weapons streams the whole sky blob (sky_clip reads its offset table at the end)'),
+    ('SKY_EXT+SKY_BYTES', '<=', 'GAMMA_EXT', False, 'the gamma block rides behind the sky'),
+    ('WEAP_EXT+WEAP_CHUNKS*4096', '>=', 'PALRAW_EXT+PAL_COUNT*768', True,
+     'load_weapons streams the whole gamma block'),
     ('MUS_BYTES', '<=', 'MUS_CHUNKS*4096', False, 'the songs fit the chunks load_music streams'),
     ('PRE0_BASE+PRE0_CNT*128', '==', 'LVL_TEXSD_C', False,
      'the depacked pool sits where cache range 0 ends'),
@@ -460,7 +490,6 @@ ATR_BLOCKS = [
     ('LOS', 'LOS_SEC1', 'LOS_SECTORS', 'NUM_LEVELS'),
     ('SPRC', 'SPRC_SEC1', 'SPRC_SECTORS', 'NUM_LEVELS'),
     ('HUD', 'HUD_SEC1', 'HUD_PAK_SECT', '1'),
-    ('PAL', 'PAL_SEC1', 'PAL_SECTORS', 'PAL_COUNT'),
     ('SND', 'SND_SEC1', 'SND_PAK_SECT', '1'),
     ('WEAP', 'WEAP_SEC1', 'WEAP_PAK_SECT', '1'),
     ('MENU', 'MENU_SEC1', 'MENU_DISK_SECT', '1'),
@@ -554,6 +583,31 @@ def run_checks():
         if not ops[op](a, b):
             bad.append((fatal, f'{lhs} {op} {rhs} fails (${a:X} vs ${b:X}): {why}'))
     return bad
+
+
+def ptr_problems():
+    out = []
+    for fn, labels, base, size, what in PTR_TABLES:
+        rows, cur = {}, None
+        for ln in open(os.path.join(ROOT, fn), encoding='latin-1'):
+            ln = ln.split(';', 1)[0].rstrip()
+            if ln and not ln[0].isspace():           # a label in column 0
+                cur, _, ln = ln.partition(' ')
+                cur = cur.lower()
+            d = re.match(r'\s*dta\s+(.*)$', ln)
+            if d and cur:
+                rows.setdefault(cur, []).extend(v(t.strip()) for t in d.group(1).split(','))
+        cols = [rows.get(l, []) for l in labels]
+        if not cols[0] or len({len(c) for c in cols}) != 1:
+            out.append(f'{fn}: {", ".join(labels)} are not three rows of one length')
+            continue
+        lo, hi = v(base), v(base) + v(size) - 1
+        for i, (a, b, c) in enumerate(zip(*cols)):
+            addr = a | b << 8 | c << 16
+            if not lo <= addr <= hi:
+                out.append(f'{fn} entry {i}: ${addr:06X} is outside '
+                           f'${lo:06X}-${hi:06X} -- {what}')
+    return out
 
 
 def view_problems(regions):
@@ -741,6 +795,7 @@ def main(argv):
     views = view_problems(regions)
     lost = [x for x in views if x[3] is None]
     fatal = [msg for is_fatal, msg in checks if is_fatal]
+    ptrs = ptr_problems()
 
     if only is not None:
         show_bank(only, by_bank.get(only, []), over)
@@ -770,7 +825,9 @@ def main(argv):
         if not checks:
             print(f'  all {len(CHECKS)} consistency checks hold')
 
-    problems = len(coll) + len(over) + len(fatal) + len(lost)
+    problems = len(coll) + len(over) + len(fatal) + len(lost) + len(ptrs)
+    for msg in ptrs:
+        print(f'OUTSIDE ITS REGION: {msg}')
     if coll:
         print(f'\n{len(coll)} COLLISION(S) -- two regions share bytes:')
         for a, b, lo, hi in coll:

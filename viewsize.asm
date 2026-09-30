@@ -52,9 +52,11 @@ vs_resume = *
         ; the frame path ever writes solid_arr outside [vw_x0,vw_x1].
                                       ; 2026-09-23 BUG FIX: `ldx #159 / dex / bpl` ran ONCE
         ldx #SCREEN_WIDTH            ;   (159 = $9F has bit 7 set: after the dex N = 1),
-        lda #1                       ;   so only column 159 was closed. X = 160..1 ->
-?bd     sta solid_arr-1,x            ;   columns 159..0, dex/bne (6502-idioms: dex/bpl
-        dex                          ;   only for n <= 128)
+?bd     lda #$FF                     ;   so only column 159 was closed. X = 160..1 ->
+        sta.l SSCL_HI-1,x            ;   columns 159..0, dex/bne (6502-idioms: dex/bpl
+        lda #1                       ;   only for n <= 128). SSCL_HI = $FF: the
+        sta solid_arr-1,x            ;   border is nearer than any sprite
+        dex
         bne ?bd
         lda #3                       ; repaint the border into ALL THREE buffers
         sta vw_dirty                 ;   (triple buffer, 2026-08-11)

@@ -28,7 +28,7 @@
         asl @
         adc #PJSLOT_EXT&$FFFF
         sta zp_ptr
-        ldy #PJ_CTXN-2               ; WORDS: 18 moves for the 36 bytes
+        ldy #PJ_CTXN-2               ; the context, as WORDS
 ?c      lda [zp_ptr],y
         sta pj_ctx,y
         dey
@@ -251,7 +251,8 @@ pj_sx   dta a(0)                     ; step per VBLANK, Q8 + sign extension
 pj_sxe  dta 0
 pj_sy   dta a(0)
 pj_sye  dta 0
-pj_ttl  dta 0                        ; flight guard / burst frame countdown
+pj_ttl  dta a(0)                     ; flight guard, sub-steps (a word) / burst
+                                     ;   frame countdown (its low byte)
 pj_ss   dta a(0)                     ; the leaf the missile is in
 pj_cap  dta 1                        ; sub-steps per drawn frame for this shot
 pj_vic  dta $FF                      ; the thing this shot will hurt when it
@@ -259,12 +260,11 @@ pj_dmg  dta 0                        ;   lands ($FF = none, it flies at a wall)
 pj_frm  dta 0                        ; the frame it is SHOWING right now: pj_fid
                                      ;   while it flies, then the three burst ids
                                      ;   in turn.
-PJ_CTXN equ *-pj_ctx                 ; 36: was 31, +4 for the z leg and +1 for
-    .if PJ_CTXN & 1
-        ert 'PJ_CTXN must be even: pj_load/pj_save move it as words'
+        dta 0                        ; (pad: the context is moved as words)
+PJ_CTXN equ *-pj_ctx
+    .if PJ_CTXN & 1 || PJ_CTXN > PJ_SLSTR
+        ert 'PJ_CTXN must be even (pj_load/pj_save move words) and fit a slot'
     .endif
-                                     ;   pj_frm -- which is why PJ_SLSTR had to
-                                     ;   go 32 -> 64 (_verify_pjz checks both)
 ;--------------------------------------------------------------
 ; ...and the SHARED half: scratch and level state, one copy for all bolts.
 ;--------------------------------------------------------------

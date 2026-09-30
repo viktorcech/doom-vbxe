@@ -43,7 +43,7 @@ def fail(msg):
 def main():
     atr = open(ATR, "rb").read()
     xex = open(XEX, "rb").read()
-    boot = atr[16:16 + 384]              # boot sectors 1-3
+    boot = atr[16:16 + atr[17] * 128]    # the boot sectors: the header counts them
 
     # 1 -- the safety vectors: sta $FFFA / sta $FFFE with the ROM banked out.
     if boot.find(bytes.fromhex("8dfaff")) < 0 or boot.find(bytes.fromhex("8dfeff")) < 0:

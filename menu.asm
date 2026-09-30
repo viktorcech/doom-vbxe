@@ -53,9 +53,51 @@ MN_D_N  equ * - mn_dtab
         stz inf_out+1
         lda #MENU_BOUNCE>>16
         sta inf_out+2
-        jsl B1CODE_BASE+inflate_w1
+        jsl B1CODE_BASE+mn_vrel_w1   ; inflate, and the overlays' VBXE addresses
         rts
 .endp
+;--------------------------------------------------------------
+; mn_vrel -- a VBXE at $D7xx (2026-09-28). The boot loader has stepped the
+;   engine's register operands (mn_vbase with them); the code overlays come
+;   in the menu's streams, so theirs are stepped here, in the bounce, before
+;   mn_dist hands them to VRAM: mn_binf's inflate comes through here. A group
+;   of mn_vtab a stream, pakA's first: 24-bit bounce addresses, a 0 bank ends
+;   the group (tools/vbxe_reloc.py fills it).
+;--------------------------------------------------------------
+MN_VMAX equ 32                       ; the entries a group holds
+MN_VGB  equ [MN_VMAX+1]*3            ; group B's first (pakB's overlays)
+        .segment B1
+.proc mn_vrel
+        jsr inflate
+        lda.l B1CODE_BASE+mn_vbase+1
+        cmp #$D7
+        bne ?r
+        lda.l B1CODE_BASE+mn_vgrp    ; this stream's group, the next one's after
+        tax
+        lda #MN_VGB
+        sta.l B1CODE_BASE+mn_vgrp
+?e      lda.l B1CODE_BASE+mn_vtab+2,x
+        beq ?r
+        sta zp_ptr+2
+        lda.l B1CODE_BASE+mn_vtab+1,x
+        sta zp_ptr+1
+        lda.l B1CODE_BASE+mn_vtab,x
+        sta zp_ptr
+        lda [zp_ptr]
+        inc @
+        sta [zp_ptr]
+        inx
+        inx
+        inx
+        bra ?e
+?r      rts
+.endp
+mn_vrel_w1 jsr mn_vrel               ; (mn_binf, bank 0, jsl's it)
+        rtl
+mn_vbase dta a(VBXE_BASE)
+mn_vgrp dta 0
+mn_vtab :2*MN_VGB dta 0
+        .endseg
 .proc mn_dist
         sta mn_le
 ?l      stx mn_li
@@ -271,7 +313,15 @@ mnk_rk  lda kb_sk                    ;   (am_kgate, no read_keys) still reads SK
 ;   works in-game in DOOM (m_menu.c:1030); here ?read only closed the menu,
 ;   because mn_readthis lives in the map slot and the pages stream through
 ;   TEX_STAGE, which is the overlay's own RAM.
+;   The last page stays up (list R) until the game's first flip, and
+;   arena_init fills the pool under its lower half: list R goes BLANK first.
 ;--------------------------------------------------------------
+RD_WXDL equ MEMW16+[VRAM_XDL_R&$3FFF]          ; list R, in the window as parked
+RD_XOFF equ XDLC_OVOFF|XDLC_MAPOFF|[[XDLC_ATT|XDLC_END]<<8]  ; ctrl1, ctrl2
+RD_XATT equ XDL_ATT_BASE|FL_PAL_NORM|[PRI_ALL<<8]            ; the lists' ATT pair
+    .if [VRAM_XDL_R&$FFC000] <> [VRAM_OVERHEAD&$FFC000]
+        ert 'mn_rdgame: list R must sit in the 16 KB the window is parked on'
+    .endif
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc mn_rdgame
                                       ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a)
@@ -281,6 +331,17 @@ mnk_rk  lda kb_sk                    ;   (am_kgate, no read_keys) still reads SK
         jsl snd_stop_w0              ; the DAC quiet before SIO takes POKEY
         stz SOUNDR_R
         jsr rd_pages
+        lda RTCLOK3                  ; in the blank, no list being read: list R
+?vb     cmp RTCLOK3                  ;   = ONE entry, overlay off and END. Black
+        beq ?vb                      ;   until swap_buffers' XDLA1
+        rep #$20
+        .LONGA ON
+        lda #RD_XOFF
+        sta RD_WXDL
+        lda #RD_XATT
+        sta RD_WXDL+2
+        .LONGA OFF
+        sep #$20
         sei
                                       ; 2026-09-22 idiom: rom_out inlined (-12)
         lda PORTB
@@ -293,36 +354,65 @@ mnk_rk  lda kb_sk                    ;   (am_kgate, no read_keys) still reads SK
         sta zp_ptr+2                 ;   SPRCOL_BANK; init_level sets the engine-
                                      ;   wide MAP_EXT_BANK after a level load and
                                      ;   nothing runs it here.
+        lda RTCLOK3                  ; the pages' time is not the game's: no walk,
+        sta fps_last                 ;   door or light takes it (as mn_ingame)
         jmp vw_apply                 ; the border columns (TEX_STAGE = solid_arr).
 .endp                                ;   FRAME_A and the SR bar were not touched.
 
 ;--------------------------------------------------------------
 ; rd_pages -- every READ THIS! page, a key each: boot (mn_readthis) and game
-;   (mn_rdgame). A page is 320x200 SR with its list in the padding, streamed
-;   to MENU_VRAM = FRAME_B + the pool's first 32 KB, both dead while it is up.
+;   (mn_rdgame). A page is 320x200 SR with its list in the padding: a DEFLATE
+;   stream, depacked to MENU_BOUNCE and copied to MENU_VRAM = FRAME_B + the
+;   pool's first 32 KB, both dead while it is up.
 ;   The list is blitted to VRAM_XDL_R in bank 0, so XDLA2 ends 0 and the
 ;   game's first flip (XDLA1 alone) takes the display back by itself.
 ;--------------------------------------------------------------
-RD_SEC0 equ MENU_PLAIN_SEC + [MENU_HELP_CH-34]*32  ; HELP1: the pages sit in
-                                     ;   the PLAIN middle of the packed menu
-                                     ;   region (chunk 34 on; make_atr_doom.py)
+RD_SEC0 equ MENU_PLAIN_SEC + [MENU_HELP_CH-34]*32  ; HELP1: a page's stream
+                                     ;   starts its own 512 sectors in the menu
+                                     ;   region's middle (make_atr_doom.py)
+RD_VRAM equ MENU_HBANK*4096
     .if MENU_HCHUNKS*32 <> 512
         ert 'rd_pages steps ll_sec+1 by 2 a page: a page must be 512 sectors'
     .endif
+    .if [RD_VRAM&$FFFF] <> 0 || MENU_HCHUNKS <> 16 || MENU_BNC_CH < 16 || [MENU_BOUNCE&$FFFF] <> 0
+        ert 'rd_pages copies a page as two halves of 32 KB from a bank line to a bank line'
+    .endif
 .proc rd_pages
-        lda #MENU_HCHUNKS            ; load_vram only reads these two
-        sta ld_chunks
-        lda #MENU_HBANK
-        sta ld_bank0
         lda #0
 ?pg     pha
         asl                          ; page*2 into the high byte: page < 128, so
         adc #>RD_SEC0                ;   the asl leaves C = 0
         sta ll_sec+1
-        lda #<RD_SEC0                ; (read_sectors advanced ll_sec: every pass)
+        lda #<RD_SEC0                ; (inflate advanced ll_sec: every pass)
         sta ll_sec
-        stz VBXE_VCTL                ; black while the page streams over the one
-        jsr load_vram                ;   on show (MEMAC back on the overhead bank)
+        stz VBXE_VCTL                ; black while the page lands over the one
+        lda zp_sptr+2                ;   on show. inf_out is zp_sptr: the level's
+        pha                          ;   seg bank rides the stack
+        stz inf_out
+        stz inf_out+1
+        lda #MENU_BOUNCE>>16
+        sta inf_out+2
+        jsr inflate
+        pla
+        sta zp_sptr+2
+        rep #$20
+        .LONGA ON
+        stz sf_src                   ; the bounce -> VRAM, 32 KB a call: sf_size
+        stz sp_addr                  ;   is a word
+        lda #$8000
+        sta sf_size
+        .LONGA OFF
+        sep #$20
+        lda #MENU_BOUNCE>>16
+        sta sf_src+2
+        lda #RD_VRAM>>16
+        sta sp_addr+2
+        jsr spr_fcopy                ; (keeps both addresses, eats sf_size;
+        lda #$80                     ;   MEMAC back on the overhead bank)
+        sta sf_src+1
+        sta sp_addr+1
+        sta sf_size+1
+        jsr spr_fcopy
         rep #$20
         .LONGA ON
         lda #MENU_HXDL&$FFFF
@@ -1057,8 +1147,8 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 ?drawn  ldx #SFX_SWTCHN              ; M_StartControlPanel's own sound: the menu
         jsr snd_play_t ;   opening IS a switch throw (m_menu.c:1545)
         stz mn_sk
-        stz mn_arm2                  ; the key that opened the menu has to be
-                                     ;   released before it can pick an item too
+        lda #MN_REST                 ; the key that opened the menu is down: the
+        sta mn_arm2                  ;   controls rest before it picks an item
         lda #MENU_SKTICS
         sta mn_tic
         jsr mn_skdraw
@@ -1074,12 +1164,15 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         jsr mn_skdraw
 ?nb     jsr mn_press
         bcs ?act
-        lda #1
-        sta mn_arm2                  ; everything released -> arm the next press
+        lda mn_arm2                  ; at rest: a frame less to wait
+        beq ?loop
+        dec @
+        sta mn_arm2
 ?back   bra ?loop
-?act    lda mn_arm2
-        beq ?back                    ; still held: one press = one action
-        stz mn_arm2
+?act    ldx #MN_REST                 ; a press counts when the controls had
+        lda mn_arm2                  ;   rested: not while held, not in the
+        stx mn_arm2                  ;   bounce of a contact
+        bne ?loop
         lda TRIG0
         lsr
         bcc ?sel                   ; (?sel is out of branch range from here
@@ -1161,7 +1254,7 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         bne ?back2                   ; 1 = options: no submenu
         lda #BANK_EN | SGOVL_BANK    ; quitdoom: the quit sound, ENDOOM and the
         ldx #SG_E_QUIT               ;   reboot are the OTHER overlay's
-        jmp mn_open                  ;   (savegame.asm sg_quit) -- QUIT never
+        jmp mn_open                  ;   (quit.asm quit_doom) -- QUIT never
                                      ;   comes back
 ?read   lda mn_ing                   ; IN-GAME mn_readthis IS NOT THERE. It is
         bne ?rdcl                    ;   staged in the map slot ($4A5C) with the
@@ -1536,7 +1629,7 @@ mn_it   dta 0                        ; mn_items' loop counter (mn_i is mn_draw's
 mn_sk   dta 0                        ; whichSkull
                                      ; (mn_sy -- itemOn -- is NOT here: every ...
 mn_tic  dta 0                        ; skullAnimCounter
-mn_arm2 dta 0                        ; 0 = a control is still held from last time
+mn_arm2 dta 0                        ; frames the controls still rest (MN_REST)
 mn_ing  = mn_ing_p                   ; 1 = the ESC panel (NEW GAME restarts the
                                      ;     game); 0 = the boot menu
 mb_x    = mn_bx                      ; mn_box's rectangle -- PERMANENT bytes

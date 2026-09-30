@@ -613,24 +613,36 @@ scrop_resume = *
         .endseg
 ;--------------------------------------------------------------
 ; spr_fcopy -- sf_size bytes, SDRAM (sf_src) -> VRAM at sp_addr, through the
-;   MEMAC window. Byte loop (~30 cyc/B: 2 KB typical frame is ~3 ms, the
-;   plan's first-look hitch). Parks the window back on the overhead bank and
-;   zp_vptr+2 back on MAP_EXT_BANK. Preserves X.
+;   MEMAC window, a word a pass: the window is the chip bus, a byte over it
+;   is a chip cycle, and the 21 fast cycles between two words round up to
+;   two more. Parks the window back on the overhead bank and zp_vptr+2 back
+;   on MAP_EXT_BANK. Eats sf_size. Preserves X, Y and zp_ptr+2.
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc spr_fcopy
+        rep #$20
+        .LONGA ON
         lda sf_size                  ; nothing stored (every column empty)?
-        ora sf_size+1
         bne ?go
+        sep #$20
+        .LONGA OFF
         rts
-
-?go     lda sf_src                   ; zp_vptr walks the SDRAM source
+?go     .LONGA ON
+        lda sf_src                   ; zp_vptr walks the SDRAM source
         sta zp_vptr
-        lda sf_src+1
-        sta zp_vptr+1
+        lda sp_addr                  ; window ptr = MEMW16 + (dst & $3FFF)
+        and #$3FFF
+        ora #MEMW16
+        sta zp_ptr
+        sep #$20
+        .LONGA OFF
         lda sf_src+2
         sta zp_vptr+2
-
+        lda zp_ptr+2                 ; the window through [zp_ptr],y: a long
+        pha                          ;   store does not read its target first
+        stz zp_ptr+2
+        phx
+        phy
         lda sp_addr+1                ; window bank = dst >> 12
         lsr
         lsr
@@ -644,55 +656,90 @@ scrop_resume = *
         asl
         ora sf_bank
         sta sf_bank
-        ora #BANK_EN
+?chunk  ora #BANK_EN
         sta VBXE_BANK_SEL
-        lda sp_addr                  ; window ptr = MEMW + (dst & $0FFF)
-        sta zp_ptr
-        lda sp_addr+1
-                                      ; DRAC_PLAN 3b: 16 KB window
-        and #$3F
-        ora #>MEMW16
-        sta zp_ptr+1
-                                      ; 2026-09-15: ON -- native from urom_init (DRAC_PLAN 4a); snd_irq
-                                     ;   pushes X at 16 bits first, so the width is IRQ-safe.
-	phx
-	rep #$10
-	.LONGI ON
-	ldx sf_size
-?byte   lda [zp_vptr]
-        sta (zp_ptr)
-                                      ; the BYTE loop's shared tail (the .elseif / .else
-                                     ;   sides above; the 2026-09-23 word copy is OFF)
-        inc zp_vptr                  ; 24-bit source walk (SDRAM is linear)
-        bne ?s1
-        inc zp_vptr+1
-        bne ?s1
+        rep #$21
+        .LONGA ON
+        lda #MEMW16+$4001            ; C = 0: the bytes to the window's end
+        sbc zp_ptr
+        cmp sf_size
+        bcc ?part
+        lda sf_size
+?part   pha                          ; this pass: that many
+        eor #$FFFF
+        sec
+        adc sf_size
+        sta sf_size
+        pla
+        lsr @                        ; words, C = the odd byte
+        pha
+        bcc ?blk
+        sep #$20
+        .LONGA OFF
+        lda [zp_vptr]
+        sta [zp_ptr]
+        rep #$20
+        .LONGA ON
+        inc zp_ptr
+        inc zp_vptr
+        bne ?blk
+        sep #$20
         inc zp_vptr+2
-?s1     inc zp_ptr                   ; window walk, re-banking every 4 KB
-        bne ?d1
-        inc zp_ptr+1
-        lda zp_ptr+1
-                                      ; DRAC_PLAN 3b: 16 KB window
-        cmp #[>MEMW16]+$40
-        bcc ?d1
-        lda sf_bank                  ; next 16 KB page
+        rep #$20
+?blk    lda 1,s                      ; 128 words a block: Y is the cursor
+        beq ?cend
+        sec
+        sbc #128
+        bcs ?full
+        lda 1,s
+        tax
+        lda #0
+?full   sta 1,s
+        bcc ?run
+        ldx #128
+?run    ldy #0
+?w      lda [zp_vptr],y
+        sta [zp_ptr],y
+        iny
+        iny
+        dex
+        bne ?w
+        tya
+        beq ?page
+        clc                          ; the last block of the pass
+        adc zp_ptr
+        sta zp_ptr                   ; (C = 0: the window ends at $C000)
+        tya
+        adc zp_vptr
+        sta zp_vptr
+        bcc ?blk
+        sep #$20
+        inc zp_vptr+2
+        rep #$20
+        bra ?blk
+?page   inc zp_ptr+1                 ; (words at +1: the page and the bank)
+        inc zp_vptr+1
+        bra ?blk
+?cend   pla
+        lda sf_size
+        beq ?done
+        lda #MEMW16                  ; the next 16 KB of VRAM
+        sta zp_ptr
+        sep #$20
+        .LONGA OFF
+        lda sf_bank
         and #$7C
         clc
         adc #4
         sta sf_bank
-        ora #BANK_EN
-        sta VBXE_BANK_SEL
-        lda #>MEMW16
-        sta zp_ptr+1
-?d1
-                                     ; 2026-09-15: ON -- native from urom_init (DRAC_PLAN 4a); snd_irq
-                                     ;   pushes X at 16 bits first, so the width is IRQ-safe.
-	dex
-        bne ?byte
-	sep #$10
-	.LONGI OFF
-	plx
-
+        jmp ?chunk
+?done   .LONGA ON
+        sep #$20
+        .LONGA OFF
+        ply
+        plx
+        pla
+        sta zp_ptr+2
         lda #BANK_EN|BANK_OVERHEAD   ; park the window back on the BCB bank
         sta VBXE_BANK_SEL
         lda #MAP_EXT_BANK            ; ...and the borrowed pointer's bank byte

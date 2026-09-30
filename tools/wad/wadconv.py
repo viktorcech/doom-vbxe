@@ -53,7 +53,7 @@ sys.path.insert(0, _TOOLS)
 #   * the four generated includes, which are ASSEMBLER INPUTS. atr_layout.inc
 #     and atr_levels.inc carry the level list and the sector map of the ATR;
 #     map_syms.inc the packed map's symbols. Leave those on a foreign WAD and
-#     the next plain build.ps1 quietly assembles an XEX for the wrong maps.
+#     the next plain build_atr.ps1 quietly assembles an XEX for the wrong maps.
 #   * the built XEX + listing, which every tools/_verify_*.py reads
 # build/assets/** is NOT in the list on purpose: build_atr.ps1 repacks all of
 # it from scratch on every run, so a stale copy there costs nothing.
@@ -64,7 +64,7 @@ sys.path.insert(0, _TOOLS)
 # pack_hud's hud_syms.inc, wadsound's snd_pitch.inc and the two pack_things
 # emits BESIDE mk_tables.inc -- at_tables.inc and wi_tables.inc. A TNT
 # conversion left every one of them describing TNT, and the next plain
-# build.ps1 assembled the project's own episode 1 against them.
+# build_atr.ps1 assembled the project's own episode 1 against them.
 _GUARDED = ('build/doom.atr', 'build/doom_bsp.xex', 'build/doom_bsp.lst',
             'map_syms.inc', 'atr_layout.inc', 'atr_levels.inc',
             'weap_tables.inc', 'sound_tables.inc',
@@ -1104,7 +1104,7 @@ def build(iwad, pwad, maps, log, prog=None, name=None):
     # build/doom.atr -- and it also regenerates the .inc files the assembler
     # reads, so running it on somebody else's maps used to leave the project
     # holding THEIR level list: the shipping ATR gone, and the next plain
-    # build.ps1 assembling an XEX for maps that are not ours. Snapshot the lot
+    # build_atr.ps1 assembling an XEX for maps that are not ours. Snapshot the lot
     # first and put it back in the finally below; the conversion's own output is
     # copied out before that happens.
     keep = _snapshot()

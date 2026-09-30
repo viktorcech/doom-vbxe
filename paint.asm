@@ -2,10 +2,15 @@
 ; paint.asm -- walls the engine PAINTS from texture runs read out of SDRAM
 ;   (TEX_RUNS) instead of blitting pixels from VRAM.
 ;--------------------------------------------------------------
-PT_MAXRUN   equ 4*TEX_RUNK           ; REAL runs painted per column before the
-                                     ;   tail is filled flat (zero-length pads
-                                     ;   are never fetched since 2026-09-25 --
-                                     ;   see paint_col's ?cpxb).
+PT_MAXRUN   equ 128                  ; REAL runs painted per column before the
+                                     ;   tail is filled flat
+PT_XB       equ 256-2*TEX_RUNK       ; 2026-09-28: the run index X starts HERE, so
+                                     ;   the slot after the 32nd is its wrap to 0
+                                     ;   (inx/inx/beq, no cpx); rs_tsrc arrives
+                                     ;   lower by PT_XB (arena_init's tex_sdram)
+    .if PT_MAXRUN+TEX_RUNK > 255 || PT_MAXRUN < TEX_RUNK
+        ert 'paint_col ?lap keeps the run budget + a slot index in a byte, and never counts the first lap'
+    .endif
 
 paint_resume = *
         org TWRUNS_BASE              ; the $0900 fast page tw_runs vacates. It is
@@ -185,8 +190,9 @@ m3d     sbc SQ2H+$FF,y
 
 ;--------------------------------------------------------------
 ; pt_span -- EVERY span the frame draws lands here: the painter's runs AND the
-;   ceiling/floor flats (draw_span tail-jmps in). A = top row, Y = rows (>= 1),
-;   zp_color = the shade, zp_col = the column. Preserves X.
+;   ceiling/floor flats. A = the span's LAST row (2026-09-28: the links paint
+;   BOTTOM-UP, DST_STEPY = -160, see paint_col's loop), Y = rows-1, B = the
+;   shade. OUT: X = the column. Entry px: the row is in X already.
 ;--------------------------------------------------------------
 zp_pt    = zp_tsrc                   ; -> current slot in the window (2 B; the
                                      ;   loaders' copy pointer, dead in-frame)
@@ -203,16 +209,18 @@ pc_y16   = zp_mvsec                  ; (y << 8) | $FF as ONE word: what the run
                                      ;   loop subtracts from yacc (2026-09-25,
                                      ;   see ?acc); its high byte ...
 pc_y     = zp_mvsec+1                ; ... IS the row being painted
+pc_a0    = pc_cum                    ; the anchor's slot (X), 0 once the first lap
+                                     ;   is counted (2026-09-28; pc_cum was free)
     .if zp_savex <> zp_pt+2
         ert 'zp_pt+2 must be zp_savex: the bank byte of [zp_pt],y, kept 0 (ptc_open)'
     .endif
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc pt_span
-        tax                          ; top row -> the row-table index. OUT: X = the
+        tax                          ; the row -> the row-table index. OUT: X = the
                                      ;   COLUMN (pcx), whatever X was: every caller
                                      ;   but sky_clip has X = the column anyway, and
                                      ;   sky_clip saves its run index itself
-                                      ; 2026-09-22 idiom: Y ARRIVES as rows-1 (BCB HEIGHT)
+px                                    ; 2026-09-22 idiom: Y ARRIVES as rows-1 (BCB HEIGHT)
                                      ;   -- "a constant added on every pass belongs in
                                      ;   the start value": draw_span/sky_clip/paint_col
                                      ;   hand it over that way, the dey went
@@ -269,59 +277,72 @@ ps_cend cmp #BCB_SIZE*TW_MAXLINKS+BCB_DST_ADDR   ;   slot (its DST field) as the
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 pc_bkj  jmp paint_col.bake           ; the far reach for paint_col's memo test
 .proc paint_col
-        stx pc_x                     ; NOT zp_savex: draw_vspan owns that one,
-                                     ;   and it is what carries the run index
-                                     ;   across the fill below
+        ; 2026-09-28: the column's three rare exits sit AHEAD of the entry
+        ; (pc_in, draw_twall_clip's jmp), in the reach of their branches --
+        ; the setup below has no unconditional branch left to hide them behind
+        .LONGA ON
+?bkp    pha                          ; (16-bit A = the address: kept)
+        .LONGA OFF
+        sep #$20
+        tya
+        sta.l B1CODE_BASE+?rlen+3    ; the bank byte into all five run readers --
+        sta.l B1CODE_BASE+?rlenb+3   ;   the address is 64-aligned (a 128-aligned
+        sta.l B1CODE_BASE+?rlen2+3   ;   payload + column*64 - PT_XB), so the
+        sta.l B1CODE_BASE+?rcol+3    ;   +1/+2 the low-word patches add never
+        sta.l B1CODE_BASE+?ccol+3    ;   carry into it
+        sta.l B1CODE_BASE+pc_bk+1    ; ... and into the memo's own operand
+        rep #$20
+        .LONGA ON
+        pla
+        bra ?bkok
+        .LONGA OFF
+ .ifdef ANTONIA2
+?aneg   stz m_a                      ; spa < pegrow (rare): m_a = 0 -> the byte
+        stz m_a+1                    ;   path
+        bra pc_abyte
+?wj     jmp pc_widem                 ; |spa-peg| >= 256: the wide multiply (rare, 2026-09-26)
+ .else
+?ahi    lda #0                       ; 2026-09-29: the HIGH byte, only when it can
+        sbc rs_pegrow+1              ;   be other than 0 (C is the low subtract's:
+        bmi ?aneg                    ;   ldy keeps it)
+        bne ?wj
+        lda m_a                      ; 0 after all: the byte path, A = m_a, C = 1
+        sec
+        bra pc_abyte
+?aneg   stz m_a+1                    ; spa < pegrow (rare): m_a = 0 -> the byte
+        lda #0                       ;   path (a written 0: A = m_a for it)
+        sta m_a
+        sec
+        bra pc_abyte
+?wj     sta m_a+1                    ; |spa-peg| >= 256: the wide multiply (rare)
+        jmp pc_widem
+ .endif
+        ; pc_in (2026-09-29) -- IN: 16-bit M, A = the run bytes' address (low
+        ; word), Y = its bank byte, X = the column = zp_col, tx_slot = the tile.
                                      ; texH is never 0 here: a texid is only kept
                                      ;   (not $FF) when MAP_TEXH != 0 (seg_draw
                                      ;   ?wflat/?lflat), so no divide-by-zero test
-        lda rs_tsrc+2                ; the SDRAM bank byte, patched only when it
-        cmp.l B1CODE_BASE+?rlen+3    ;   changed (6502-loops-tables-smc) -- and the
-        bne ?bkp                     ;   patch sits OUT OF LINE (below ?nok's bra):
-?bkok                                ;   the common path falls through
-	rep #$21		;absorb CLC
-	.LONGA ON
-	lda rs_tsrc                  ; point the run readers at this column
-        sta.l B1CODE_BASE+?rlen+1
+        .LONGA ON
+pc_in
+pc_bk   cpy #0                       ; the bank byte, patched only when it changed
+        bne ?bkp                     ;   (6502-loops-tables-smc: the memo IS this
+?bkok                                ;   operand), out of line
+        sta.l B1CODE_BASE+?rlen+1    ; point the run readers at this column
         sta.l B1CODE_BASE+?rlen2+1
-        sta.l B1CODE_BASE+?rlenp+1
-        adc #1
+        inc @
         sta.l B1CODE_BASE+?rcol+1
         sta.l B1CODE_BASE+?ccol+1
         inc @                        ; tsrc+2: ?find's second run of a pass (2026-09-26)
         sta.l B1CODE_BASE+?rlenb+1
                                      ; (the loop's DST add, pcolw, gets the column
                                      ;   from process_seg mskr, once a column)
-        ; ---- 2n, twice the column's REAL runs (2026-09-25): the run loop stops
-        ; there (?cpxb), so a zero-length pad is never fetched -- and the pads'
-        ; `beq` (2 x ~5,500 a frame) went with it. pack_textures writes 2n into
-        ; every pad's colour byte: ONE word read of the last pair says it all
-        ldx #2*TEX_RUNK-2
-?rlenp  lda.l $000000,x              ; A = 2w of slot 31, B = its colour byte
-        bit #$00FF                   ; Z from the LOW byte alone (sep keeps the
-	.LONGA OFF                   ;   16-bit Z, and B must stay)
-	sep #$20
-        beq ?pad                     ; 2w = 0: a pad, B = 2n
-        lda #2*TEX_RUNK              ; a full 32-run tile
-        bra ?nok
-?bkp    sta.l B1CODE_BASE+?rlen+3    ; (2026-09-26, out of line) the bank byte into all six run readers --
-        sta.l B1CODE_BASE+?rlenb+3   ;   rs_tsrc is 64-aligned (a 128-aligned
-        sta.l B1CODE_BASE+?rlen2+3   ;   payload + column*64), so the +1/+2 the
-        sta.l B1CODE_BASE+?rlenp+3   ;   low-word patches add never carry into it
-        sta.l B1CODE_BASE+?rcol+3
-        sta.l B1CODE_BASE+?ccol+3
-        bra ?bkok
-?aneg   stz m_a                      ; spa < pegrow (rare): m_a = 0 -> the byte
-        stz m_a+1                    ;   path. Out of line HERE (2026-09-26: was
-        bra pc_abyte                 ;   above the proc), in the reach of its bmi
-?wj     jmp pc_widem                 ; |spa-peg| >= 256: the wide multiply (rare, 2026-09-26)
-?pad    xba
-?nok    sta.l B1CODE_BASE+?cpxb+1    ; the loop's bound ...
-        lsr                          ; ... and n, for the PT_MAXRUN budget (?lap)
-        sta pc_n
-
-        rep #$20                     ; rs_rpt baked into the table addresses,
-        .LONGA ON                    ;   before the FIRST run uses them -- but
+        ; 2026-09-28: NO 2n here any more (a patch, a read and a bound per
+        ; column, ~40 cycles x 350). The loop finds the column's end itself: a
+        ; PAD (2w = 0) multiplies to dy-1 = -1 with C = 0, the add carries out
+        ; and ?clamp sorts it from a real clamp by Y = 0; a full 32-run column
+        ; ends on X's wrap. n is read at ?lap, 55 times a frame.
+                                     ; rs_rpt baked into the table addresses,
+                                     ;   before the FIRST run uses them -- but
         lda rs_rpt                   ;   ONLY when it CHANGED since the last bake
         cmp ptm_last                 ;   (2026-08-11 pm): ONE word compare. The
         .LONGA OFF                   ;   bake stores the memo itself (2026-09-25:
@@ -337,10 +358,16 @@ pc_bkj  jmp paint_col.bake           ; the far reach for paint_col's memo test
         lda rs_spa
         sbc rs_pegrow
         sta m_a
+ .ifndef ANTONIA2
+        bcc ?ahi                     ; 2026-09-29: no borrow, pegrow < 256 (common):
+        ldy rs_pegrow+1              ;   the high byte is 0 without working it out,
+        bne ?ahi                     ;   and A is still m_a for the multiply
+ .else
         lda #0
         sbc rs_pegrow+1
         sta m_a+1
         bmi ?aneg                    ; m_a < 0: out of line (?aneg, below ?nok)
+ .endif
 ?apos
  .ifdef ANTONIA2
         lda m_a+1                    ; ANTONIA II: (spa-peg) * tpr_q8 in ONE
@@ -364,12 +391,16 @@ pc_bkj  jmp paint_col.bake           ; the far reach for paint_col's memo test
                                       ; 2026-09-22 idiom: flags are values you track --
   .ifdef ANTONIA2                     ;   Z is still `sbc rs_pegrow+1`'s (sta/bpl keep
         lda m_a+1                    ;   it), so the byte/wide fork needs no reload.
-  .endif                              ;   (ANTONIA2's block above clobbers it: reload)
-	bne ?wj
+	bne ?wj                      ;   (ANTONIA2's block above clobbers it: reload)
 pc_abyte
+	qsmulx m_a, rs_tpr, m_prod
+  .else
+pc_abyte                             ; A = m_a and C = 1 on every way in: the low
+                                     ;   subtract did not borrow (bcc ?ahi not taken)
                                       ; X is dead here (?havewt loads it): qsmulx fuses
-	qsmulx m_a, rs_tpr, m_prod         ;   each table read with its subtract -- no
+	qsmulx m_a, rs_tpr, m_prod, ld, c1 ;   each table read with its subtract -- no
                                      ;   store/reload of :3 (6502-idioms)
+  .endif
         qsmulxa m_a, rs_tpr+1              ; + (lo * tpr_hi) << 8, IN A:B (math.asm)
 	rep #$21		;absorb CLC
 	.LONGA ON
@@ -379,26 +410,27 @@ pc_abyte
 	sep #$20
 	.LONGA OFF
                                      ; (the wide path, pc_widem, is out of line below)
-?havep  lda rs_vsh                   ; DOOM's peg shift: whole texels
-        beq ?novsh
+?havep  ldy tx_slot                  ; the tile's three facts, by slot (0 the wall's,
+        lda rs_vshw,y                ;   1 the lower step's: per SEG, process_seg).
+        beq ?novsh                   ;   DOOM's peg shift: whole texels
         clc
         adc m_prod+1
         sta m_prod+1
         bcc ?novsh
         inc m_prod+2
 
-?novsh  lda rs_texpow2               ; power-of-two texH -> the modulo is an AND
+?novsh  lda rs_texpow2,y             ; power-of-two texH -> the modulo is an AND
         bne ?slowmod
         lda m_prod
         sta tw_wt
         lda m_prod+1
-        and rs_texmask+1             ; A = wt's high byte, kept in A (only ?havewt
+        and rs_texmask,y             ; A = wt's high byte, kept in A (only ?havewt
 ?havewt                              ;   reads it; ?slowmod arrives the same way)
         ; ---- walk to the run holding texel wt>>8 ---------------------------
         ; COUNT DOWN, don't sum up: A = 2 * (the texels still ahead of the
         ; anchor), the run bytes being 2w (2026-09-25).
         asl                          ; wt_hi <= texH-1 <= 127: no carry out
-        ldx #0
+        ldx #PT_XB                   ; slot 0 (2026-09-28: X is biased, see ?next)
 	sec			;get SEC outside the loop
                                      ; TWO runs a pass, no counter (2026-09-26):
 ?find                                ;   the packer makes the runs SUM to texH
@@ -420,8 +452,11 @@ pc_abyte
 ?red0
 	                              ; m_den = texH*256 (one tile, Q8)
         stz m_den
-        lda rs_texh_cur
-        sta m_den+1
+        lda rs_wtexh                 ; the tile's height, by slot (Y = tx_slot)
+        cpy #0
+        beq ?smh
+        lda rs_ltexh
+?smh    sta m_den+1
         jsr udiv24
 
         lda m_rem
@@ -436,32 +471,27 @@ pc_widem lda rs_tpr                  ; |spa-peg| >= 256
         jmp ?havep
 ?found2 inx                          ; (2026-09-26) the borrow came from the pass's SECOND run
         inx
-?found  sta pc_w                     ; A = 2*(wt_hi - cum_after) = -2*(the leftover)
-        sec                          ; rem_q8 = (cum << 8) - wt: what is LEFT of
-        lda #0                       ;   the run below the anchor
+?found  tay                          ; 2026-09-29 (no php/plp, no pc_w): A = -2*(the leftover),
+        sec                          ;   parked in Y. rem_q8 = (cum << 8) - wt: what
+        lda #0                       ;   is LEFT of the run below the anchor
         sbc tw_wt
         sta pc_f                     ; C = 1 iff wt's fraction is 0 (b = 0)
-        php
-        lda #0                       ; 2*leftover - b. C = 0 out: leftover >= 1
-        sbc pc_w                     ;   (the sbc.l above borrowed), so the byte
-        plp                          ;   0 - (256 - 2*leftover) - b always borrows
-        sbc #0                       ; ... - b again = 2*(leftover - b): the
-        sta pc_w                     ;   anchor run's WHOLE texels, as 2w
+        tya                          ; (tya / eor / dec / inc keep C)
+        eor #$FF                     ; 2*leftover - 1 (leftover >= 1: the sbc.l
+        dec @                        ;   borrowed), - 1 = 2*(leftover - 1): the
+        bcc ?fs                      ;   fraction takes a texel off the anchor run,
+        inc @                        ;   the common case; b = 0 puts it back
+        inc @
+?fs     tay                          ; the run's WHOLE texels, as 2w: in Y up to
+                                     ;   pc_wsel (nothing below touches Y)
                                       ; 2026-09-21: pc_yacc is kept BIASED BY +255.
         lda #$FF                     ; yacc = spa.FF, Q8, biased: the high byte
         sta pc_yacc                  ;   is the ceiling
         sta pc_y16                   ; ... and the compare cell's low byte: y.FF
-        ; ---- the PT_MAXRUN budget, per LAP (2026-09-14; at the anchor since
-        ; 2026-09-25): the tail fires on the 129th REAL run. The first lap
-        ; (slots x0/2 .. n-1) is never counted -- pc_g = the runs left after
-        ; it, +1, and ?lap settles each following lap in one compare.
-        txa
-        lsr                          ; x0/2
-        clc
-        adc #PT_MAXRUN+1             ; + 129 (<= 160: fits)
-        sec
-        sbc pc_n                     ; - n  (>= 97: no borrow)
-        sta pc_g
+        ; ---- the PT_MAXRUN budget (2026-09-28): the tail fires on the 129th
+        ; REAL run, and ?lap does ALL the counting -- the anchor only leaves
+        ; its slot (X, never 0) for the first lap to count from.
+        stx pc_a0
         ; 2026-09-27: the rows run BIASED by kh = 255-spb (yacc, pc_y, pc_y16 all
         ; carry +kh<<8), so yn > spb is exactly the carry out of the yacc add:
         ; the per-run `cmp #(spb+1)<<8 / bcs` went (5 cycles x ~5,300 runs a
@@ -475,75 +505,80 @@ pc_widem lda rs_tpr                  ; |spa-peg| >= 256
         sta pc_y
         rep #$21
         .LONGA ON
-        lda rs_spb
-        and #$00FF
-        adc #row_hi-$100             ; row_hi-1-kh = row_hi-256+spb (no carry out)
+        lda rs_spb                   ; 2026-09-28: a run is painted UP from its last
+        and #$00FF                   ;   row yn-1, and the tables are read at yn:
+        adc #row_hi-$101             ;   row_hi-1-1-kh = row_hi-257+spb (no carry out)
         sta.l B1CODE_BASE+?rhi+1
-        adc #row_lo-row_hi+1         ; row_lo-kh
+        adc #row_lo-row_hi+1         ; row_lo-1-kh
         sta.l B1CODE_BASE+?rlo+1
-        lda pc_w                     ; the anchor run's 2w -> the multiply. w = 0
-        and #$00FF                   ;   (only a part texel left in the anchor
+        tya                          ; the anchor run's 2w -> the multiply (8-bit
+                                     ;   Y: the high byte comes 0). w = 0
+                                     ;   (only a part texel left in the anchor
         beq ?next                    ;   run: pc_f) paints nothing: on to the next
         bra pc_wsel                  ;   run. C = 0: the word path adds it in
         .LONGA OFF
-        ; ---- paint: one span per run, top down, until spb ------------------
+        ; ---- paint: one span per run, until spb -----------------------------
         ; 2026-09-25 -- THE LOOP RUNS 16-BIT (M = 0) end to end; only the
         ; colour lookup and the row tables drop to 8 bits. A run is two 16-bit
-        ; bus stores (HEIGHT+AND, DST); the fast work from the DST store round
-        ; to the next HEIGHT store is 97 cycles = 9 chip cycles (110 = 10
-        ; before; rapidus-bus-timing), HEIGHT to DST 32 (3) as before: 16 chip
-        ; cycles a run, 17 before. A run that adds no row costs 50 (66).
+        ; bus stores (HEIGHT+AND, DST).
+        ; 2026-09-28 -- 15 CHIP CYCLES A RUN (16 before; rapidus-bus-timing,
+        ; _probe_phase): DST round to the next HEIGHT is 88 fast cycles = 8
+        ; (96 = 9), HEIGHT to DST 31 = 3 (28 = 3). What paid for it:
+        ;   * the links paint BOTTOM-UP (the slots' DST_STEPY is -160), so DST
+        ;     is the row yn-1 and ONE `ldy pc_yacc+1` is both the table index
+        ;     and the next run's pc_y -- the `ldy pc_y` went (-3), and the
+        ;     pc_y update sits in the short stretch, where it is free;
+        ;   * X runs PT_XB..254 and its wrap to 0 is the 33rd slot: inx/inx/
+        ;     beq, no cpx (-2). A shorter column ends on its first PAD, which
+        ;     the word path turns into a carry (see pc_in).
+        ; Both stretches are full: +1 cycle in either costs 11.
         ; The rare exits sit above the loop, in branch reach:
-?fire   sep #$20                     ; buffer full
-        .LONGA OFF
-        jsr ptc_fire
-        rep #$21
-        .LONGA ON
-        bra ?next
-        .LONGA OFF
 ?adv    lda pc_yacc+1                ; a transparent run (midtex.asm): advance y,
         sta pc_y                     ;   draw nothing, what is behind stays
         rep #$21
         .LONGA ON
         bra ?next
         .LONGA OFF
-?clamp  sep #$20                     ; yn > spb, or yacc past row 255 (both from
-        .LONGA OFF                   ;   16-bit code, C = 1): this run ENDS the
-?ccol   lda.l $000001,x              ;   column. The run's PLAYPAL index (patched
+?clamp  cpy #0                       ; C = 1 out (cpy #0 never borrows). Y = 2w on
+        beq ?padlap                  ;   the word path: 0 is a PAD, the column's
+                                     ;   runs are spent, not its rows (pc_paint_mem
+                                     ;   brings Y = 1)
+        sep #$20                     ; yn > spb, or yacc past row 255: this run
+        .LONGA OFF                   ;   ENDS the column.
+?ccol   lda.l $000001,x              ;   The run's PLAYPAL index (patched
         beq ?cend                    ;   above): transparent -> nothing to paint
         tay
         lda [zp_cm],y                ; its shade through the sector's colormap
                                       ;   row (lights.asm) -- pt_span takes it in B
         xba                          ;   (2026-09-22; the 8-bit code below keeps B)
-        lda #$FF                     ; paint down to spb and RETURN: rows-1 = spb-y
-        sbc pc_y                     ;   = 255 - (y+kh) (2026-09-27 bias; C = 1 on
-        tay                          ;   every way in, and y <= spb: no borrow)
+        lda #$FF                     ; paint y..spb and RETURN: rows-1 = spb-y
+        sbc pc_y                     ;   = 255 - (y+kh) (2026-09-27 bias; C = 1,
+        tay                          ;   and y <= spb: no borrow)
                                       ; jsr X / rts -> jmp X: pt_span hands back X =
-        lda pc_y                     ;   the column (= pc_x) itself, so no ldx here
-        adc rs_spb                   ; y = (y+kh) + spb + 1 - 256 (C = 1)
-        jmp pt_span                  ;   and its rts returns for both
-?cend   ldx pc_x
+        lda rs_spb                   ;   the column (= pc_x) itself, so no ldx here.
+        jmp pt_span                  ;   Its row is the LAST one (2026-09-28)
+?cend   ldx zp_col
         rts
-        ; ---- the loop proper: 16-bit M, C = 0 on every way to pc_wsel -------
         .LONGA ON
+?padlap inc pc_yacc                  ; the pad's dy-1 = -1 went into yacc: put it
+?lapj   jmp ?lap                     ;   back (16-bit), then the lap
+        ; ---- the loop proper: 16-bit M, C = 0 on every way to pc_wsel -------
 ?next   inx
         inx
-?cpxb   cpx #2*TEX_RUNK              ; PATCHED: 2n, the column's real runs (the
-        bcs ?lap                     ;   anchor code), or the budget's end (?lap).
-                                     ;   Not taken: C = 0, the word path's carry
+        beq ?lapj                    ; the 33rd slot: a full column's lap
 ?rlen2  lda.l $000000,x              ; A = colour<<8 | 2w -- ONE 16-bit read
 pc_wsel tay                          ; Y = 2w. THESE TWO BYTES ARE PATCHED by the
                                      ;   bake: `tay` + m1w's own opcode ($B9) on
                                      ;   the word path (rpt_hi = 0, rpt_lo != 0),
                                      ;   `bra pc_wide` otherwise. Assembled = the
                                      ;   word form; the rpt=0 memo hit that could
-                                     ;   meet it (setup_chains' ptm_last = 0) is
-                                     ;   harmless: dy = -1/256 a run there, and
-                                     ;   yacc's ceiling cannot move in < 256 runs
+                                     ;   meet it (setup_chains' ptm_last = 0) ends
+                                     ;   the column on its first run (dy-1 = -1)
 m1w     lda SQ1W,y                   ; f(rpt+w)         (operand = SQ1W + 2 rpt)
 m1n     adc NSQ2W+510,y              ; + ~f(|w-rpt|) = dy - 1, and C = 1: f(rpt+w)
                                      ;   > f(|w-rpt|) strictly for w, rpt >= 1
-                                     ;   (operand = NSQ2W + 510 - 2 rpt)
+                                     ;   (operand = NSQ2W + 510 - 2 rpt). w = 0,
+                                     ;   a pad: -1 and C = 0
 ?acc    adc pc_yacc                  ; yacc += dy (the word path's +1 rides in on
         sta pc_yacc                  ;   C; pc_paint_mem arrives with C = 0 and dy
         bcs ?clamp                   ;   exact). Carry = yn > spb (the kh bias)
@@ -564,29 +599,31 @@ m1n     adc NSQ2W+510,y              ; + ~f(|w-rpt|) = dy - 1, and C = 1: f(rpt+
         .LONGA ON
         ldy #BCB_HEIGHT-BCB_DST_ADDR ; zp_pt -> the slot's DST field (ptc_open)
         sta [zp_pt],y                ; [14] = HEIGHT, [15] = AND (the colour)
-        ldy pc_y                     ; DST = row*160 + col: row_hi[y] into B by a
-?rhi    lda row_hi-1,y               ;   16-bit read (its low byte, row_hi[y-1], is
-        .LONGA OFF                   ;   replaced below; row_hi-1+199 stays in page)
-        sep #$20
-?rlo    lda row_lo,y                 ; A = row_lo[y], B = row_hi[y] (both bases
-                                     ;   moved down by kh per column)
+        ldy pc_yacc+1                ; yn: the run's rows end at yn-1, the next
+        sty pc_y                     ;   run's start at yn
+?rhi    lda row_hi-2,y               ; DST = (yn-1)*160 + col: row_hi[yn-1] into B
+        .LONGA OFF                   ;   by a 16-bit read (its low byte is replaced
+        sep #$20                     ;   below)
+?rlo    lda row_lo-1,y               ; A = row_lo[yn-1] (both bases moved down by
+                                     ;   kh per column)
         rep #$21
         .LONGA ON
 pcolw   adc #0                       ; + the column, PATCHED per column (process_seg mskr)
         sta [zp_pt]                  ; DST: zp_pt points at it
-        ldy pc_yacc+1                ; pc_y := yn (the row reads above used the old
-        sty pc_y                     ;   y). 2026-09-27: AFTER the DST store -- the
-                                     ;   kh bases' page crossings (+2) put HEIGHT->DST
-                                     ;   at 34 = 4 chip cycles; 28 here keeps it at 3,
-                                     ;   and DST->HEIGHT (92+6) stays within 9
         lda zp_pt                    ; slot += 21 -- no clc: the DST sum above is
         adc #BCB_SIZE                ;   row*160+col < $8000 (row_hi <= $7C), so
         sta zp_pt                    ;   its add cannot carry out
 pc_cend cmp #BCB_SIZE*TW_MAXLINKS+BCB_DST_ADDR  ; the END slot's DST field; the
-        beq ?fire                    ;   high byte is ptc_open's patch (tw_chn + 3)
+        bne ?next                    ;   high byte is ptc_open's patch (tw_chn + 3)
+        sep #$20                     ; buffer full: falls out of the loop (a taken
+        .LONGA OFF                   ;   bne on the common path, not beq + bra)
+        jsr ptc_fire
+        rep #$21
+        .LONGA ON
         bra ?next
         .LONGA OFF
 pc_paint_mem                         ; from pt_dy: dy in pc_dy (3 B), 8-bit M
+        ldy #1                       ; (not a pad, should this run clamp)
         sec                          ; ?clamp's subtract relies on C = 1
         lda pc_dy+2                  ; a run 256+ rows tall cannot end inside a
         bne ?clamp                   ;   200-row span, so it ends it
@@ -595,30 +632,15 @@ pc_paint_mem                         ; from pt_dy: dy in pc_dy (3 B), 8-bit M
         lda pc_dy
         bra ?acc
         .LONGA OFF
-?lap    sep #$20                     ; a lap ended (16-bit M, X = the bound)
-        .LONGA OFF
-        lda pc_g                     ; 0: the budget ended WITH this lap -> the tail
-        beq ?tail
-        cmp pc_n                     ; does the 129th run fall in the coming lap?
-        bcc ?lastlap
-        beq ?lastlap
-        sbc pc_n                     ; no: one more uncounted lap (C=1: no borrow)
-        sta pc_g
-?lapgo  ldx #0                       ; slot 0, THROUGH the bound test: a bound of
-        rep #$21                     ;   0 fires the tail before slot 0, as the
-        .LONGA ON                    ;   counting tail did. C = 0 for the word path
-        bra ?cpxb
-        .LONGA OFF
-?lastlap dec                         ; yes: the runs this lap may still paint ...
-        asl                          ; ... as the byte bound, 2*(pc_g-1) <= 62
-        sta.l B1CODE_BASE+?cpxb+1
-        stz pc_g                     ; -> ?tail when the loop runs into it
-        bra ?lapgo
+?wpad   jmp ?lap                     ; (pc_wide's pad, out of line)
 pc_wide                              ; A = 2w in the low byte (16-bit M, B junk):
         .LONGA ON                    ;   rpt_hi != 0, or rpt = 0 -- the byte tables
         sep #$20                     ;   for the rpt_lo product, pt_dy for the rest
         .LONGA OFF
         lsr @                        ; w (2w is even: C = 0 out)
+        beq ?wpad                    ; 2026-09-28: w = 0 is a PAD -- the column's
+                                     ;   runs are spent (pt_dy would hand it the
+                                     ;   anchor's part texel, pc_f)
         tay
         sec
 m1a     lda SQ1L,y                   ; dy_lo = w * rpt_lo via SQ1L/SQ1H/SQ2L/SQ2H
@@ -637,6 +659,82 @@ m1d     sbc SQ2H+$FF,y
     .if paint_col.pc_wsel+1 <> paint_col.m1w
         ert 'the bake patches pc_wsel as `tay` + m1w opcode: m1w must follow pc_wsel directly'
     .endif
+        ; ---- a lap ended: X = 0 (the wrap) or a pad's slot. The PT_MAXRUN
+        ; budget is settled HERE, per lap (2026-09-14), all of it since
+        ; 2026-09-28: pc_g = the runs the column may still paint once the lap
+        ; that starts now is over; pc_a0 != 0 marks the first lap.
+?lap    sep #$20
+        .LONGA OFF
+        txa                          ; n, the column's real runs, is WHERE THE LAP
+        beq ?l32                     ;   ENDED: the first pad's slot, or 32 on the
+        sec                          ;   wrap. (Not the pad's colour byte: texruns.py
+        sbc #PT_XB                   ;   pads with the last run's colour, and the
+        lsr @                        ;   2n the 2026-09-25 loop read there was never
+        bra ?ln                      ;   shipped -- short textures did not tile.)
+?l32    lda #TEX_RUNK
+?ln     sta pc_n
+        lda pc_a0
+        beq ?l2
+        stz pc_a0                    ; the first lap painted slots k0..n-1:
+        sec
+        sbc #PT_XB                   ; 2*k0
+        lsr @                        ; k0, C = 0
+        adc #PT_MAXRUN               ; PT_MAXRUN - (n - k0) are left (>= 96)
+        sec
+        sbc pc_n
+        bra ?l3
+?l2     lda pc_g
+?l3     beq ?tail                    ; none: the tail, from where X stands
+        cmp pc_n
+        bcc ?lastlap
+        sbc pc_n                     ; a whole lap fits (C = 1)
+        sta pc_g
+        ldx #PT_XB
+?lapgo  rep #$21                     ; C = 0 for the word path
+        .LONGA ON
+        jmp ?rlen2
+        .LONGA OFF
+?lastlap                             ; A = m, 1..n-1 runs and then the tail: the
+        stz pc_g                     ;   readers move so that X wraps after the
+        asl @                        ;   m-th (rare: a column past 96 runs a lap)
+        pha
+        clc                          ; m_prod(24) = the column's address + 2m -
+        adc.l B1CODE_BASE+?rlen+1    ;   2*TEX_RUNK. The address is ?rlen's operand
+        sta m_prod                   ;   (pc_in; lower by PT_XB already)
+        lda.l B1CODE_BASE+?rlen+2
+        adc #0
+        sta m_prod+1
+        lda.l B1CODE_BASE+?rlen+3
+        adc #0
+        sta m_prod+2
+        sec
+        lda m_prod
+        sbc #2*TEX_RUNK
+        sta m_prod
+        lda m_prod+1
+        sbc #0
+        sta m_prod+1
+        lda m_prod+2
+        sbc #0
+        sta.l B1CODE_BASE+?rlen2+3
+        sta.l B1CODE_BASE+?rcol+3
+        sta.l B1CODE_BASE+?ccol+3
+        lda #$FF                     ; ... and the bank memo forgets: the next
+        sta.l B1CODE_BASE+pc_bk+1    ;   column patches all five again
+        rep #$20
+        .LONGA ON
+        lda m_prod
+        sta.l B1CODE_BASE+?rlen2+1
+        inc @                        ; (even: no carry into the bank)
+        sta.l B1CODE_BASE+?rcol+1
+        sta.l B1CODE_BASE+?ccol+1
+        .LONGA OFF
+        sep #$20
+        pla                          ; X = 256 - 2m
+        eor #$FF
+        inc @
+        tax
+        bra ?lapgo
         ; --- ?tail: fires only when a column crosses PT_MAXRUN real runs, i.e.
 ?tail   lda rs_mpass                 ; the flat tail fill is a MINIFICATION
         bne ?tend                    ;   fallback -- on a masked column it would
@@ -644,23 +742,14 @@ m1d     sbc SQ2H+$FF,y
                                      ;   simply stops instead (midtex.asm)
         rep #$20
         .LONGA ON
-        lda.l B1CODE_BASE+?rlen2+1
-        sta.l B1CODE_BASE+?tlen+1
         lda.l B1CODE_BASE+?rcol+1
         sta.l B1CODE_BASE+?tcol+1
         sep #$20
         .LONGA OFF
-        lda.l B1CODE_BASE+?rlen2+3
-        sta.l B1CODE_BASE+?tlen+3
         lda.l B1CODE_BASE+?rcol+3
         sta.l B1CODE_BASE+?tcol+3
-?tb     dex                          ; the run BEFORE the 129th, pads skipped
-        dex
-        bpl ?tb2
-        ldx #2*TEX_RUNK-2
-?tb2
-?tlen   lda.l $000000,x
-        beq ?tb
+        dex                          ; the run BEFORE the 129th: X = 0 or a pad's
+        dex                          ;   slot came in, so X-2 is a run (2026-09-28)
 ?tcol   lda.l $000001,x
         tay
         lda [zp_cm],y
@@ -670,20 +759,18 @@ m1d     sbc SQ2H+$FF,y
         sbc pc_y
         tay
                                       ; jsr X / rts -> jmp X (as ?ccol, no ldx)
-        lda pc_y
-        adc rs_spb                   ; y = (y+kh) + spb + 1 - 256 (C = 1)
+        lda rs_spb                   ; the span's LAST row (2026-09-28)
         jmp pt_span
-?tend   ldx pc_x
+?tend   ldx zp_col
         rts
-bake                                 ; --- the bake (rs_rpt changed), out of line:
-                                     ;   pc_bkj brings the memo test's bne here
-        stz pc_dy+2                  ; --- pt_dy's third byte
-        lda rs_rpt+1                 ; rpt_hi -> pt_dy's operands, only when THAT
-        cmp ptm_last+1               ;   half changed since the last bake (the memo
-        beq ?hiok                    ;   is still the OLD rpt here; 2026-09-25: it
-                                     ;   is 0 for every wall farther than a row a
-                                     ;   texel, so the eight stores left the
-                                     ;   common bake)
+        ; 2026-09-28: the bake's rare half, out of line: rpt >> 5 moved since
+        ; the last bake. A = the bits that did (16-bit)
+        .LONGA ON
+?chg    cmp #$0100
+        bcc ?dimnew                  ; rpt_hi is as it was: the light alone
+        .LONGA OFF
+        sep #$20
+        lda rs_rpt+1                 ; rpt_hi -> pt_dy's operands
         sta.l B1CODE_BASE+pt_dy.m2a+1
         sta.l B1CODE_BASE+pt_dy.m2c+1
         sta.l B1CODE_BASE+pt_dy.m3a+1
@@ -693,11 +780,40 @@ bake                                 ; --- the bake (rs_rpt changed), out of lin
         sta.l B1CODE_BASE+pt_dy.m2d+1
         sta.l B1CODE_BASE+pt_dy.m3b+1
         sta.l B1CODE_BASE+pt_dy.m3d+1
-?hiok
-                                      ; 2026-09-22: the WORD tables' operands (see
-        rep #$20                     ;   ?acc) and the routing of pc_wsel
+        rep #$20
         .LONGA ON
-        lda rs_rpt
+?dimnew lda rs_rpt                   ; DOOM's scalelight: the scale takes min(rw_scale
+        cmp #24<<5                   ;   >> 12, 47)/2 rows off a wall, rs_rpt being
+        bcc ?dim1                    ;   rw_scale >> 8
+        lda #23<<5
+?dim1   lsr @
+        lsr @
+        lsr @
+        lsr @
+        lsr @
+        sta pc_dim
+        clc
+        adc rs_wlit                  ; (a word: its high byte is 0)
+        tay
+        .LONGA OFF
+        sep #$20
+        lda LT_ROW,y                 ; the wall's colormap row at this scale
+        sta zp_cm+1
+        rep #$20
+        .LONGA ON
+        bra ?hiok
+        .LONGA OFF
+bake                                 ; --- the bake (rs_rpt changed), out of line:
+                                     ;   pc_bkj brings the memo test's bne here
+        stz pc_dy+2                  ; --- pt_dy's third byte
+        rep #$20                     ; 2026-09-28: ONE test for rpt_hi (pt_dy's
+        .LONGA ON                    ;   operands) and rpt >> 5 (the light's rows):
+        lda rs_rpt                   ;   the memo is still the OLD rpt here
+        eor ptm_last
+        and #$FFE0
+        bne ?chg
+?hiok   lda rs_rpt                   ; the WORD tables' operands (see ?acc) and the
+                                     ;   routing of pc_wsel
         sta ptm_last                 ; the memo, now that its old value is read
         and #$00FF
         asl @                        ; 2 rpt_lo (< 512: the asl cannot carry out)

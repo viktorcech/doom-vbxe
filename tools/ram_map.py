@@ -95,7 +95,7 @@ END = ';<<< RAM-BUDGET'
 # early_init and the RUNAD/INITAD vectors there, so it is NOT part of the overlap
 # check -- only of the free-space computation.
 # 2026-07-31: split around $0340-$03E7. Per the OS source
-# (_pomocne/A800-OS-XL-Rev2-main/Atari_XL_OS_Rev.2.lab) that range is the eight
+# (the XL OS rev. 2 listing) that range is the eight
 # 16-byte IOCBs ($0340-$03BF) plus PRNBUF ($03C0-$03E7) -- CIO and the printer.
 # This port never calls CIOV: every load goes through SIOV, which uses the DCB at
 # $0300-$030B and nothing above it. So the range is real, contiguous, free RAM.
@@ -112,7 +112,7 @@ RESERVED = [
     # (memory_map.inc). Equated variables carry no XEX segment, so without this
     # line the budget below offers those 20 bytes as free code space -- the same
     # trap rs_utL/rs_utR at $03C1 sit in, one block further up.
-    # ... +0x0357 = EXTRALIGHT, the muzzle flash's 0/2/4 (memory_map.inc,
+    # ... +0x0357 = EXTRALIGHT, the muzzle flash's 0/16/32 (memory_map.inc,
     # lights.asm wp_flight/lt_seg_flash, 2026-08-31).
     (0x0357, 0x0357, "EXTRALIGHT (PAINT_VARS left for segment D0, DRAC_PLAN 4)"),
     # ...and the two the line above already named as the same trap "one block
@@ -125,9 +125,11 @@ RESERVED = [
     # same trap as PAINT_VARS above. ZFRONT = the published buffer (mn_freeze
     # reads it), FRM_PAR = the spectre-fuzz frame parity.
     (0x06EC, 0x06ED, "ZFRONT/FRM_PAR: triple-buffer flip state (memory_map.inc)"),
-    # $0700-$08FF: the boot loader dies after load, but the CLIP POOL ($0700)
-    # and the vissprite arrays vs_xb..vs_scl ($0800) live there at RUNTIME.
-    (0x0700, 0x08FF, "boot loader during load; clip pool + vissprite arrays at runtime"),
+    # $0700-$0E87: the boot loader, its screen and its sector buffer WHILE THE XEX
+    # LOADS (boot.asm BOOT_TOP; 2026-09-28: the machine check made it 12 sectors).
+    # At RUNTIME the clip pool ($0700), the vissprite arrays ($0800) and the
+    # per-frame arrays live there.
+    (0x0700, 0x0E87, "boot loader during load; clip pool, vissprite + frame arrays at runtime"),
     # 2026-08-08: ANVARS, the animated-texture rings' cursor + countdown
     # (an_i[16]/an_t[16]/an_n, memory_map.inc ANVARS_BASE..END). Same equ-with-no-
     # XEX-segment trap as vs_ybt and vs_th below, and it had already put a whole
@@ -160,6 +162,10 @@ RESERVED = [
     # window, unlike $8000-$BFFF. Keep this bound in step with pack_map.py
     # LOW_LIMIT: that is what fails the pack if a level set outgrows it.
     (0x4000, 0x4BFF, "streamed map slot (LOW) -- load_level overwrites it"),
+    # 2026-09-28: inflate816.asm copies its symbol constants here (INF_K,
+    # INF_KLEN) at every call, to read them abs,x -- no XEX segment, so
+    # without this entry free_blocks() offers it as code space.
+    (0x5620, 0x573F, "inflate816.asm: the symbols' constants (INF_K), written at every load"),
     # 2026-08-01: the texture COLUMN INDEX table (pack_textures.dedup_columns).
     # It is not an XEX segment -- tex_getix copies it out of the MEMAC window
     # after every level load -- so without this entry free_blocks() would offer

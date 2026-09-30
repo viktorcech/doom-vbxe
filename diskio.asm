@@ -22,7 +22,7 @@ current_level dta 0                  ; level index to (re)load (0-based)
 tex_chunk  dta 0                     ; load_textures: current 4KB chunk (survives read_sectors)
 
 ;--------------------------------------------------------------
-; load_level -- stream `current_level` from the ATR. woll3d-style fixed stride:
+; load_level -- stream `current_level` from the ATR. Fixed stride:
 ;   base_sec = LVL_SEC1 + current_level*LVL_SECTORS (atr_layout.inc).
 ;--------------------------------------------------------------
 ll_dst  dta a(0)                     ; under-ROM copy destination
@@ -69,16 +69,13 @@ ll_stride dta a(0)
         lda #>LVL_SECTORS
         sta ll_stride+1
         jsr lvl_offset
-        lda #<MAP_LOW_SECT           ; --- LOW region: straight to $4000 ---
-        sta ll_cnt
-        lda #>MAP_LOW_SECT
-        sta ll_cnt+1
-                                      ; 2026-09-22 (drac030 RELOAD): A = >MAP_LOW_SECT = <MAP_LOAD = 0
-        ert [>MAP_LOW_SECT]<>[<MAP_LOAD]
-        sta DBUFLO
+        lda #MAP_LOW_SECT            ; --- LOW region: $4000 ---
+        sta ll_left
+        lda #<MAP_LOAD
+        sta ll_dst
         lda #>MAP_LOAD
-        sta DBUFHI
-        jsr read_sectors             ; leaves ll_sec on the first HIGH sector
+        sta ll_dst+1
+        jsr read_urom                ; leaves ll_sec on the first HIGH sector
         lda #<MAP_LOAD_HI            ; --- HIGH region: staged, then under the ROM ---
         sta ll_dst
         lda #>MAP_LOAD_HI
@@ -123,6 +120,104 @@ ll_stride dta a(0)
     .if MAP_SEG_SECT > 510
         ert 'MAP_SEG_SECT > 510 sectors -- a Rapidus bank cannot hold it anyway'
     .endif
+    .if MAP_LOW_SECT > 255
+        ert 'load_level: read_urom counts MAP_LOW_SECT in a byte'
+    .endif
+
+;--------------------------------------------------------------
+; cache_run -- ll_left sectors from ll_sec: C = 1 and zp_vptr -> them when
+;   the SDRAM cache serves sectors (ld_src) and holds the whole run, first
+;   sector to last, in one of its ranges (pre_map). Clobbers A/X, m_a, zp_ptr.
+; cache_cp -- ... those sectors, [zp_vptr] -> [zp_ptr], a word a pass, two
+;   sectors a block; ll_sec and both cursors behind them, ll_left = 0.
+;   Clobbers A/X/Y. The caller puts zp_vptr+2 back (MAP_EXT_BANK).
+;--------------------------------------------------------------
+        .segment B1
+.proc cache_run
+        lda ld_src
+        beq ?no
+        jsr pre_map                  ; the first sector
+        bcc ?no
+        stx m_b                      ; ... its range
+        rep #$20
+        .LONGA ON
+        lda zp_ptr
+        sta zp_vptr
+        lda ll_sec
+        pha
+        sep #$20
+        .LONGA OFF
+        lda zp_ptr+2
+        sta zp_vptr+2
+        lda ll_left
+        dec @
+        clc
+        adc ll_sec
+        sta ll_sec
+        bcc ?l1
+        inc ll_sec+1
+?l1     jsr pre_map                  ; the last one
+        rep #$20
+        .LONGA ON
+        pla
+        sta ll_sec
+        sep #$20
+        .LONGA OFF
+        bcc ?no                      ; (C is pre_map's)
+        cpx m_b
+        bne ?no
+        rts                          ; C = 1
+?no     clc
+        rts
+.endp
+.proc cache_cp
+        lda ll_left
+        lsr @
+        tax                          ; blocks, C = a sector on its own
+        rep #$20
+        .LONGA ON
+        bcc ?blk
+        ldy #0
+?h      lda [zp_vptr],y
+        sta [zp_ptr],y
+        iny
+        iny
+        bpl ?h
+        lda zp_ptr                   ; (C = 1: + 128)
+        adc #127
+        sta zp_ptr
+        lda zp_vptr
+        clc
+        adc #128
+        sta zp_vptr
+        bcc ?blk
+        sep #$20
+        inc zp_vptr+2
+        rep #$20
+?blk    txa                          ; (A = 00:X)
+        beq ?end
+?pg     ldy #0
+?w      lda [zp_vptr],y
+        sta [zp_ptr],y
+        iny
+        iny
+        bne ?w
+        inc zp_ptr+1                 ; (words at +1: the page and the bank)
+        inc zp_vptr+1
+        dex
+        bne ?pg
+?end    sep #$20
+        .LONGA OFF
+        lda ll_left
+        clc
+        adc ll_sec
+        sta ll_sec
+        bcc ?e1
+        inc ll_sec+1
+?e1     stz ll_left
+        rts
+.endp
+        .endseg
 
 ;--------------------------------------------------------------
 ; read_ext -- read ll_left sectors from ll_sec into bank MAP_EXT_BANK at offset
@@ -133,6 +228,22 @@ ll_stride dta a(0)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc read_ext
+        jsr cache_run
+        bcc ?pass
+        lda ll_dst
+        sta zp_ptr
+        lda ll_dst+1
+        sta zp_ptr+1
+        lda ll_bank
+        sta zp_ptr+2
+        jsr cache_cp
+        lda #MAP_EXT_BANK
+        sta zp_vptr+2
+        lda zp_ptr                   ; the next read goes on where this one
+        sta ll_dst                   ;   stopped
+        lda zp_ptr+1
+        sta ll_dst+1
+        rts
 ?pass   lda ll_left
         bne ?go
         rts
@@ -206,6 +317,31 @@ dio2_resume = *
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc read_urom
+        jsr cache_run
+        bcc ?pass
+        lda ll_dst
+        sta zp_ptr
+        lda ll_dst+1
+        sta zp_ptr+1
+        lda zp_ptr+2
+        pha
+        stz zp_ptr+2                 ; bank 0, long: no read of the target
+        lda PORTB                    ;   first. The ROM out, as below
+        and #$FE
+        sta PORTB
+        jsr cache_cp
+        pla
+        sta zp_ptr+2
+        lda #MAP_EXT_BANK
+        sta zp_vptr+2
+        lda zp_ptr
+        sta ll_dst
+        lda zp_ptr+1
+        sta ll_dst+1
+        lda #$40                     ; ... and the interrupts, as below
+        sta NMIEN
+        cli
+        rts
 ?pass   lda ll_left
         bne ?go
         rts
@@ -295,7 +431,7 @@ dio2_resume = *
 ;--------------------------------------------------------------
 ; read_sectors -- read ll_cnt sectors from ll_sec into (DBUFLO/HI), advancing
 ;   both. All non-constant DCB fields are rewritten each sector (SIOV may touch
-;   them; woll3d's diskio does the same). 16-bit ll_cnt so >255-sector maps work.
+;   them). 16-bit ll_cnt so >255-sector maps work.
 ;--------------------------------------------------------------
         org DIOFAST_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
@@ -322,19 +458,26 @@ dio2_resume = *
         sta DAUX2
         jsl siov_r_w0 ; DRAC_PLAN 4a: SIOV with the ROM banked in
         sty sio_status               ; capture SIO status (Y on return; 1 = success)
-        cpy #1                       ; --- the TEE: every good sector read off
-        bne ?adv                     ;     the drive is ALSO parked in its SDRAM
-        jsr pre_map                  ;     home, so the NEXT read of this level
+        dey                          ; anything else: the sector again
+        bne ?sio
+        jsr pre_map                  ; --- the TEE: every sector read off the
+                                     ;     drive is ALSO parked in its SDRAM
+                                     ;     home, so the NEXT read of this level
         bcc ?adv                     ;     is a memory copy (lvl_res gate)
         lda DBUFLO
         sta zp_tsrc
         lda DBUFHI
         sta zp_tsrc+1
-        ldy #127
+        rep #$20
+        .LONGA ON
+        ldy #126
 ?tee    lda (zp_tsrc),y
         sta [zp_ptr],y
         dey
+        dey
         bpl ?tee
+        sep #$20
+        .LONGA OFF
         bra ?adv
 ?sdram  jsr pre_map                  ; zp_ptr = this sector's SDRAM home
         bcc ?sio                    ;   (defensive: outside the mapped ranges
@@ -343,11 +486,16 @@ dio2_resume = *
         sta zp_tsrc
         lda DBUFHI
         sta zp_tsrc+1
-        ldy #127
+        rep #$20
+        .LONGA ON
+        ldy #126
 ?cp     lda [zp_ptr],y
         sta (zp_tsrc),y
         dey
+        dey
         bpl ?cp
+        sep #$20
+        .LONGA OFF
         lda #1
         sta sio_status
 ?adv    inc ll_sec
@@ -585,45 +733,8 @@ pool_res dta 0                       ; 1 = the episode texture blob is in SDRAM
 ;   horizontally by pack_hud.py) into VBXE VRAM $078000+, above the sprites.
 ;   Map-independent, so it is loaded once at boot.
 ;--------------------------------------------------------------
-; The palette is read into the SIO staging buffer and installed from there, so it
-; costs no permanent RAM (that 768 B is now movers.asm).
-pld_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc load_palette
-        lda #<PAL_SEC1
-        sta ll_sec
-        lda #>PAL_SEC1
-        sta ll_sec+1
-                                      ; 2026-09-22 (6502-idioms: an index counting UP to
-        ldx #256-PAL_COUNT           ;   zero -- same order, pld_i is only this loop's)
-?pal    stx pld_i                    ; one palette per pass: the staging buffer is
-        lda #PAL_SECTORS             ;   1 KB and a palette is 768 B, so they cannot
-        sta ll_cnt                   ;   all be read first and installed after
-        stz ll_cnt+1
-        lda #<TEX_STAGE
-        sta DBUFLO
-        lda #>TEX_STAGE
-        sta DBUFHI
-        jsr read_sectors             ; leaves ll_sec on the next palette
-        ldx pld_i
-        lda pld_psel+PAL_COUNT-256,x
-        jsr setup_palette            ; -> VBXE palette pld_psel[x]
-        ldx pld_i
-        inx
-        bne ?pal                     ; (the wrap to 0 after the last one)
-        rts
-.endp
-        .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-; PAL_SLOTS (pack_textures.py) -> VBXE palette. The XDL names one of these four
-; and update_flash swaps between them, so the order here IS the FL_PAL_* map in
-; memory_map.inc: normal, damage red (2 levels), pickup gold.
-pld_psel dta 1, 2, 3                 ; ...and NEVER palette 0: see FL_PAL_GOLD
-pld_i    dta 0
-        .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        org pld_resume
+; (2026-09-28: load_palette is lights.asm gm_apply -- the palettes ride the
+;  gamma block in SDRAM, no drive read)
 
 ; ---------------------------------------------------------------
 ; load_things2 -- the .things blob's SECOND read (2026-08-29).
@@ -901,8 +1012,7 @@ wld_resume = *
 ; ---- per-level DEFLATE directory (make_atr_doom.py, 2026-09-26) -----------
 ;   lvp_<r>_lo/_hi = each level's stream start for region r; a _hi column
 ;   sits exactly NUM_LEVELS behind its _lo (lvl_pak indexes one pointer).
-;   Parked in the $561C-$5BC4 ram_map free hole, right behind the inflate
-;   scratch (inflate816.asm caps inf_end at LVPTAB_BASE).
+;   Parked in the $561C-$5BC4 ram_map free hole.
 LVPTAB_BASE equ $5940
 lvptab_resume = *
         org LVPTAB_BASE

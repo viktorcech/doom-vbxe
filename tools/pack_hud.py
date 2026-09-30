@@ -10,7 +10,7 @@ has twice the horizontal samples it used to: the halving that used to happen
 here is what made STBAR's one-pixel bevels and the tiny AMMO/HEALTH/ARMOR
 labels mush.
 
-  python pack_hud.py --preview  -> _pomocne/preview/stbar_320.png
+  python pack_hud.py --preview  -> tools/tests/out/stbar_320.png
 """
 import os
 import sys
@@ -19,7 +19,7 @@ from wadlib import Wad, DEFAULT_WAD
 from wadtex import WadTextures
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-OUT = os.path.join(os.path.dirname(_HERE), '_pomocne', 'preview')
+OUT = os.path.join(_HERE, 'tests', 'out')
 
 # st_stuff.c: ST_HEIGHT 32, ST_Y = 200-32 = 168. All coordinates below are DOOM's,
 # relative to the bar's top-left corner (so screen y minus 168).

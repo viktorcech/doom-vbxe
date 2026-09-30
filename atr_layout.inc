@@ -3,17 +3,17 @@
 ; `python tools/ram_map.py`. Some RAM looks free to MADS and is NOT ($B000
 ; TEX_STAGE, $4000 map slot, $9000 MEMAC window): code assembled there is
 ; overwritten at runtime with no error and boots to a flat pink screen.
-; Level layout on the bootable ATR (woll3d-style fixed stride):
+; Level layout on the bootable ATR (fixed stride):
 ;   level n at sector LVL_SEC1 + n*LVL_SECTORS, read by load_level.
-LVL_SEC1     equ 33000
-LVL_SECTORS  equ 619
+LVL_SEC1     equ 32000
+LVL_SECTORS  equ 657
 NUM_LEVELS   equ 27
 ; LEVELS E1M1 E1M2 E1M3 E1M4 E1M5 E1M6 E1M7 E1M8 E1M9 E2M1 E2M2 E2M3 E2M4 E2M5 E2M6 E2M7 E2M8 E2M9 E3M1 E3M2 E3M3 E3M4 E3M5 E3M6 E3M7 E3M8 E3M9
 ; Textures (v2): level n .tex at TEX_SEC1 + n*TEX_SECTORS, streamed
 ;   into VBXE VRAM $018000+ by load_textures. TEX_SECTORS is the DISK
 ;   stride (worst level, padded); the chunks actually streamed are per
 ;   level (LVL_TEXCH in atr_levels.inc -- the tex+spr pool split).
-TEX_SEC1     equ 49713
+TEX_SEC1     equ 49739
 TEX_SECTORS  equ 0
 TEX_CHUNKS   equ 0
 ; Shared texture pool (tools/pack_pool.py): every distinct texture
@@ -23,15 +23,15 @@ TEX_CHUNKS   equ 0
 ;   POOL_DIR entry (18 B): u16 sector, u16 sectors, u16 w, u16 h,
 ;                          u8 wlog2, u8 dom, 8s name
 ;   POOL_IDX (per level): u16 count + u16 pool index per level texid
-POOL_SEC     equ 544
-POOL_SECTORS equ 15408
+POOL_SEC     equ 640
+POOL_SECTORS equ 15464
 ;   POOL_SECTORS is the UNPACKED span (the SDRAM home size);
 ;   on the disk the pool is a raw-DEFLATE stream of
 ;   POOL_PAK_SECT sectors, depacked by inflate816.asm.
-POOL_PAK_SECT equ 6958
-POOL_DIR_SEC equ 7502
+POOL_PAK_SECT equ 6140
+POOL_DIR_SEC equ 6780
 POOL_COUNT   equ 0
-POOL_IDX_SEC equ 7502
+POOL_IDX_SEC equ 6780
 POOL_IDX_STR equ 1
 ; THINGS (tools/pack_things.py): level n sprite pixels at
 ;   SPR_SEC1 + n*SPR_SECTORS, streamed into the VRAM pool right
@@ -39,65 +39,64 @@ POOL_IDX_STR equ 1
 ;   atr_levels.inc); the .things blob (prefix table,
 ;   things, sprite table, PLAYPAL) at THG_SEC1 + n*THG_SECTORS,
 ;   read straight into RAM at THINGS_BASE ($C000).
-SPR_SEC1     equ 49713
+SPR_SEC1     equ 49739
 SPR_SECTORS  equ 0
 SPR_CHUNKS   equ 0
-THG_SEC1     equ 49713
+THG_SEC1     equ 49739
 THG_SECTORS  equ 45
 ;   death-animation frame table (pack_things.pack_death), streamed
 ;   into Rapidus SRAM bank $01 at DTAB_EXT by load_things.
-DTB_SEC1     equ 50928
+DTB_SEC1     equ 50954
 DTB_SECTORS  equ 16
 ;   barrel line-of-sight table (tools/pack_los.py): LOS_NMAX
 ;   records of "which 16x16 cells around this barrel does the
 ;   blast reach", streamed into Rapidus SRAM bank $01 at LOS_EXT
 ;   by load_los -- one slot per level, like the .dtab above.
-LOS_SEC1     equ 51360
+LOS_SEC1     equ 51386
 LOS_SECTORS  equ 25
 ;   T4 sprite column tables (pack_things.emit_sprcol): the
 ;   per-frame {off, top, len} x w crop tables, streamed into
 ;   Rapidus SRAM bank $01 at SPRCOL_EXT by load_sprcol --
 ;   one slot per level, contract tools/_verify_sprcrop.py.
-SPRC_SEC1    equ 52035
+SPRC_SEC1    equ 52061
 SPRC_SECTORS equ 464
 SPRC_PASSES  equ 4
 SPRC_LAST    equ 80
 ; Status bar graphics (tools/pack_hud.py), map-independent:
 ;   HUD_CHUNKS x 4KB streamed into VBXE banks from $078000.
-HUD_SEC1     equ 7529
+HUD_SEC1     equ 6807
 HUD_CHUNKS   equ 6
 HUD_PAK_SECT equ 63
-PAL_SEC1     equ 7592
-PAL_SECTORS  equ 6                  ; 768 B per palette -> staging
 PAL_COUNT    equ 3
 ;   DOOM ships 14 palettes in PLAYPAL (st_stuff.c: normal, 8 red,
 ;   4 gold, 1 green); VBXE holds 4 at once, so pack_textures.py
-;   PAL_SLOTS picks the four and load_palette streams them one at
-;   a time -- the staging buffer is 1 KB, a palette 768 B.
+;   PAL_SLOTS picks them. They ride the GAMMA block into SDRAM
+;   (GAMMA_EXT below), not sectors of their own (2026-09-28).
 ; Digitized SFX (tools/wadsound.py), map-independent:
 ;   SND_CHUNKS x 4KB streamed into Rapidus SRAM bank $02 (SND_EXT;
 ;   the Timer-1 IRQ reads samples with lda.l, no VBXE involved).
-SND_SEC1     equ 7610
-SND_CHUNKS   equ 27
+SND_SEC1     equ 6870
+SND_CHUNKS   equ 28
 ;   On the disk each wadsound REGION is its own DEFLATE
 ;   stream (inflate816.asm; sound.asm load_sounds):
-SND_PAK0_SEC equ 7610
-SND_PAK1_SEC equ 7930
-SND_PAK_SECT equ 517
+SND_PAK0_SEC equ 6870
+SND_PAK1_SEC equ 7190
+SND_PAK_SECT equ 526
 ; Weapon psprites (tools/pack_weap.py), map-independent: WEAP_CHUNKS
 ;   x 4KB streamed ONCE at boot into Rapidus SRAM at WEAP_EXT
 ;   ($04:0000); wp_wload copies the active weapon into the VRAM
 ;   slot (weap_tables.inc WEAP_SLOT) on a switch.
 ;   MENU_CHUNKS x 4KB (title + main menu, tools/pack_menu.py)
 ;   streamed into the VRAM pool base by load_menu at boot.
-MENU_SEC1    equ 8492
+MENU_SEC1    equ 7774
 MENU_CHUNKS  equ 94
 ;   chunks 0-33 and 83-93 are TWO DEFLATE streams, depacked
 ;   into the MENU_BOUNCE SDRAM and spr_fcopy-ed to VRAM
-;   (menu.asm mn_dist); chunks 34-82 (READ THIS! pages) stay
-;   plain at MENU_PLAIN_SEC for rd_pages.
-MENU_PLAIN_SEC equ 9580
-MENU_PAKB_SEC equ 11148
+;   (menu.asm mn_dist); chunk 34 is plain at MENU_PLAIN_SEC,
+;   a READ THIS! page is a DEFLATE stream at the start of
+;   its own 512 sectors behind it (menu.asm rd_pages).
+MENU_PLAIN_SEC equ 8862
+MENU_PAKB_SEC equ 10430
 MENU_DISK_SECT equ 3008
 MENU_BOUNCE  equ $740000            ; depack bounce (boot menu
 ;   rows, the HUD, the finale episodes -- never mid-frame)
@@ -105,16 +104,16 @@ MENU_BNC_CH  equ 37                 ; its size, 4 KB chunks
 ;   The end-of-episode FINALE (tools/pack_fin.py). Its INTERNAL
 ;   layout -- which chunk holds which page -- is fin_syms.inc;
 ;   this is only where the blob starts on the disk.
-FIN_SEC1     equ 11500
+FIN_SEC1     equ 10782
 FIN_ATRCHUNKS equ 75
-FIN_PAK1_SEC equ 11500
-FIN_PAK2_SEC equ 11736
-FIN_PAK3_SEC equ 11951
+FIN_PAK1_SEC equ 10782
+FIN_PAK2_SEC equ 11018
+FIN_PAK3_SEC equ 11233
 FIN_DISK_SECT equ 745
 ; The songs as POKEY register streams (tools/pack_musstream.py):
 ;   MUS_CHUNKS x 4KB into Rapidus SDRAM from $550000, once at
 ;   boot (music.asm load_music, tail-called by load_weapons).
-MUS_SEC1     equ 12245
+MUS_SEC1     equ 11527
 MUS_PAK_SECT equ 48
 MUS_CHUNKS   equ 9
 ; The episode 2/3 intermission world maps (tools/pack_wi.py
@@ -122,19 +121,24 @@ MUS_CHUNKS   equ 9
 ;   songs; on the disk a raw-DEFLATE stream of WIM_PAK_SECT
 ;   sectors (inflate816.asm), NOT the chunk walk, into
 ;   Rapidus SDRAM at WIMAP_BANK by the same load_music walk.
-WIM_SEC1     equ 12293
-WIM_CHUNKS   equ 115
-WIM_PAK_SECT equ 929
+WIM_SEC1     equ 11575
+WIM_CHUNKS   equ 117
+WIM_PAK_SECT equ 916
 ; SAVE GAME slots (savegame.asm) -- the only region the engine
 ;   WRITES. Slot n starts at SAVE_SEC1 + n*SAVE_SECTORS; sector 0
 ;   of a slot is the header (magic + level + the scattered vars),
 ;   the rest are the raw region snapshots sg_tab lists.
-SAVE_SEC1    equ 13222
+SAVE_SEC1    equ 12491
 SAVE_SLOTS   equ 6
 SAVE_SECTORS equ 104
-WEAP_SEC1    equ 8127
-WEAP_CHUNKS  equ 31
-WEAP_PAK_SECT equ 365
+WEAP_SEC1    equ 7396
+WEAP_CHUNKS  equ 32
+WEAP_PAK_SECT equ 378
+;   ...the last 1 of them the GAMMA block (tools/doomgamma.py):
+;   v_video.c gammatable[5][256], then the PAL_COUNT palettes as
+;   R/G/B planes -- lights.asm gm_apply installs them from here.
+GAMMA_EXT    equ $05F000
+PALRAW_EXT   equ $05F500
 ;   ...and the last 7 behind THOSE are the sky (tools/pack_sky.py):
 ;   SKY1-3 as painter run columns + the view column offsets,
 ;   read by seg_draw.asm sky_clip at SKY_EXT.
@@ -143,8 +147,8 @@ SKY_BYTES    equ 24736
 ;   The last 2 of those chunks are NOT psprites: DOOM COLORMAP
 ;   (tools/pack_cmap.py), 32 light rows x 256, rides in behind
 ;   them so it needs no loader of its own. lights.asm reads it
-;   at CMAP_EXT: colour = [CMAP_EXT + row*256 + colour], row =
-;   (255 - sector light) >> 3.
+;   at CMAP_EXT: colour = [CMAP_EXT + row*256 + colour], the row
+;   off lights.asm LT_ROW.
 CMAP_EXT     equ $056000
 CMAP_ROWS    equ 32
 ; SDRAM cache ranges (read_sectors tees every drive read into
@@ -152,10 +156,10 @@ CMAP_ROWS    equ 32
 ;   Range 0 = the level slots, range 1 = sprites through the
 ;   weapon master; between them sits the DEPACKED pool
 ;   (LVL_TEXSD_C, POOL_SECTORS x 128 B -- atr_levels.inc).
-PRE0_SEC     equ 33000
-PRE0_CNT     equ 16713
+PRE0_SEC     equ 32000
+PRE0_CNT     equ 17739
 PRE0_BASE    equ $080000            ; Rapidus SDRAM starts here
-PRE1_SEC     equ 49713
+PRE1_SEC     equ 49739
 PRE1_CNT     equ 14850
-PRE1_BASE    equ $46BC80
-PRE_END      equ $63BD80            ; first free SDRAM byte
+PRE1_BASE    equ $48D980
+PRE_END      equ $65DA80            ; first free SDRAM byte

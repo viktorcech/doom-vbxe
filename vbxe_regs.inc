@@ -17,20 +17,21 @@
 ; jsr -- that is why collision sits at $0900, check_bbox at $1B00 and tw_setup at
 ; $8D00 -- instead of letting the segment creep into the next thing.
 ;
-; Guards, all three wired into build.ps1 / build_atr.ps1:
+; Guards, all three wired into build_atr.ps1:
 ;   * the RESERVED list in tools/ram_map.py (check_xex.py enforces it)
 ;   * tools/check_xex.py                    (fails the build on any overlap)
 ;   * tools/ram_map.py --update             (regenerates these figures)
 ;--------------------------------------------------------------
 ;==============================================================
-; wolf3d - VBXE register & constant reference
+; VBXE register & constant reference
 ;--------------------------------------------------------------
-; Authoritative VBXE register map for FX core v1.20+
-; (sources: vbxe.txt tutorial + vbxenavod1.txt + xdl-nove.txt).
+; VBXE register map for FX core v1.20+ (checked against Altirra's vbxe.cpp).
 ;
-; Addresses are absolute, assuming VBXE base at $D600.
-; If runtime detection finds base at $D700, all VBXE_* targets
-; shift by +$100 — handled by patching dispatch routines.
+; Addresses are absolute, for a VBXE at $D600. One at $D700 (2026-09-28): the
+; build assembles the engine a SECOND time with VBXE_D7 set, only to learn
+; which bytes differ (tools/vbxe_reloc.py); the boot loader, which finds the
+; VBXE, steps those bytes before it starts the game (boot.asm), and menu_boot
+; does the same for the code overlays (menu.asm mn_vrel).
 ;==============================================================
 
 ;--------------------------------------------------------------
@@ -62,10 +63,13 @@ ICAX1           equ $034A     ; aux 1 (OPEN: dir mode bits)
 ICAX2           equ $034B     ; aux 2
 
 ;--------------------------------------------------------------
-; VBXE registers (base $D600; +$100 when base is $D700)
+; VBXE registers (base $D600; VBXE_D7: the build's second pass, see above)
 ;--------------------------------------------------------------
+    .ifdef VBXE_D7
+VBXE_BASE       equ $D700
+    .else
 VBXE_BASE       equ $D600
-VBXE_BASE_ALT   equ $D700
+    .endif
 
 VBXE_VCTL       equ VBXE_BASE+$40   ; w: VIDEO_CONTROL  r: CORE_VERSION
 VBXE_XDLA0      equ VBXE_BASE+$41   ; w: XDL addr lo   r: MINOR_REVISION

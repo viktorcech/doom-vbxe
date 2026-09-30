@@ -1,18 +1,15 @@
 
 ;==============================================================
 ; memory_map.inc -- DOOM BSP port: SINGLE SOURCE OF TRUTH for the memory layout.
-;   Unlike wolf3d (where addresses grew scattered + pinned ad-hoc), ALL fixed
-;   6502 RAM addresses and the VBXE 24-bit VRAM map live HERE, documented.
+;   ALL fixed 6502 RAM addresses and the VBXE 24-bit VRAM map live HERE,
+;   documented.
 ;   icl'd early by bsp_main.asm (after vbxe_regs.inc + map_syms.inc).
-;
-;   Advantage over wolf3d: the framebuffer is in VBXE (not main RAM) and DOOM is
-;   flat-shaded (NO wall textures) -> both main RAM and VRAM are far roomier.
 ;==============================================================
 
 ; ---------------- screen geometry (160 LR wide) ------------------------------
 SCREEN_WIDTH    equ 160              ; LR pixels (1 byte = 2 hw pixels, 256 colours)
-SCREEN_HEIGHT   equ 200              ; 2026-06-03: 100 -> 200 (fill the screen like
-                                     ; wolf3d). Cost: only the blitter FILL scales
+SCREEN_HEIGHT   equ 200              ; 2026-06-03: 100 -> 200 (fill the screen).
+                                     ; Cost: only the blitter FILL scales
                                      ; with height; the per-seg/per-column math is
                                      ; unchanged, so the FPS hit is small.
 SCREEN_HALF     equ SCREEN_WIDTH/2   ; 80 = horizontal FOCAL (screen-X, 90 deg FOV)
@@ -122,7 +119,9 @@ rs_acctmp   .ds 4
 zp_near     .ds 2                    ; near child id
 zp_far      .ds 2                    ; far child id
                                       ; 2026-09-22: the four "raw row" cells are ALIASES
-rs_pyx_pad  .ds 8                    ;   of the accumulators' bytes 1-2 now (65816-
+rs_pdl      .ds 2                    ; 2026-09-29: plane_setup's anchor distances, xa - sxL
+rs_pdr      .ds 2                    ;   and sxR - xa: per SEG (process_seg ?ustep)
+rs_pyx_pad  .ds 4                    ;   of the accumulators' bytes 1-2 now (65816-
 rs_pyc16    = rs_ycacc+1             ;   windows: "the cheapest move is the one that
 rs_pyf16    = rs_yfacc+1             ;   is not written"). Their only writer was the
 rs_pybc16   = rs_ybcacc+1            ;   per-column copy in process_seg (?winok /
@@ -223,8 +222,12 @@ zp_Z1       .ds 2
 zp_rx2      .ds 2  ; zp group swap 2026-09-23 (drac_zpplan)
 zp_ry2      .ds 2
 cu_savex    .ds 1
-rs_sscl     .ds 3
-rs_v1w      .ds 1                    ; process_seg stores v1's raw WORD here, so
+rs_sscl     .ds 3                    ; the closing wall's scale at the column, Q8
+rs_sstep    .ds 2                    ;   (sscl_col): its per-column step, Q8 signed,
+rs_ssbs     .ds 2                    ;   the scale it anchors on (scL, or max(scL,
+rs_ssgn     .ds 1                    ;   scR) when the step saturates), the step's
+rs_sscx     .ds 1                    ;   sign byte, the column that continues it
+rs_v1w      .ds 1                   ; process_seg stores v1's raw WORD here, so
 rs_pegf     .ds 1                    ;   its high byte lands in rs_pegf: bit7 =
 rs_v2w      .ds 1                    ;   ML_DONTPEGTOP. Same for v2 / rs_pegl:
 rs_pegl     .ds 1                    ;   bit7 = ML_DONTPEGBOTTOM (2026-09-21)
@@ -272,7 +275,7 @@ rs_vsht     .ds 1
 ;  $8600-$8FFF  spare
 ;
 ; RECLAIMED OS RAM (2026-07-31). The OS source is the authority here:
-; _pomocne/A800-OS-XL-Rev2-main/Atari_XL_OS_Rev.2.lab puts the eight 16-byte
+; the XL OS rev. 2 listing puts the eight 16-byte
 ; IOCBs at $0340-$03BF and PRNBUF at $03C0-$03E7 -- CIO and the printer. This
 ; port never calls CIOV; every load goes through SIOV, which uses the DCB at
 ; $0300-$030B and nothing above it. So those 168 bytes are ordinary free RAM and
@@ -420,6 +423,7 @@ SSECT_SIZE  equ 4
 ;--------------------------------------------------------------
 AM_BANK0    equ MAP_SEG_BANK*$10000  ; bank $03 base, for `sta.l AM_BANK0,x`
 AMSEG_EXT   equ AM_BANK0 + MAP_AMSEG
+SEGLEN_EXT  equ AM_BANK0 + MAP_SEGLEN ; 2026-09-28: u16 per seg, its exact length
 AMSKIP_EXT  equ AM_BANK0 + MAP_AMSKIP
 AMSEEN_EXT  equ AM_BANK0 + MAP_AMSEEN
 AMFLG_EXT   equ AM_BANK0 + MAP_AMFLG
@@ -491,7 +495,6 @@ AMFLG_EXT_D equ AM_BANK0 + MAP_AMFDELTA
                                      ; AMFLG read with the AMSEEN slot's own X:
                                      ; AMSEEN+line*2 + (AMFLG-AMSEEN) = AMFLG+line*2
 KEY_TAB     equ $2C                  ; TAB = AM_STARTKEY/AM_ENDKEY (am_map.c:96).
-                                     ;   The Atari scancode, same as wolf3d's.
 
 ; ---- the overlay, and where its bytes live -----------------------------------
 ; VRAM bank $17 is FRAME_B's STATUS BAR ROWS ($016900-$017FFF) -- the XDL shows
@@ -733,42 +736,23 @@ DOOR_CURLO      = DOOR_STATE+DOORS_NMAX   ; [N] current ceiling, lo
 DOOR_CURHI      = DOOR_CURLO+DOORS_NMAX   ; [N] current ceiling, hi
 DOOR_WAIT       = DOOR_CURHI+DOORS_NMAX   ; [N] open-dwell countdown
 DOOR_TRIGPREV   = $0F40              ; previous SPACE sample (USE edge-detect)
-PLR_STEP        = $0F41              ; player units THIS frame (= SPD, plr_steps)
 TRN_STEP        = $0F42              ; turn BAM THIS frame (TURN + carry, plr_steps)
 trn_acc         = $0F43              ; Q8 turn fraction carried between frames
 trn_held        = $0F44              ; g_game.c turnheld: 0 = no turn key was down
                                      ;   last frame, so THIS frame is the slow one
-SPD             equ 24               ; player units per FRAME. FIXED again: the
-                                     ;   2026-07-28 PSPD_Q8*dt_vbl time scaling was
-                                     ;   reverted the same day -- at the real frame
-                                     ;   rates it walked/turned 3-4x faster than the
-                                     ;   fixed step ever did (unplayable), and
-                                     ;   move_player's halfway collision probe
-                                     ;   assumes a step <= 24 (gap 12 < PLAYER_R).
-                                     ;   THE MOVE STEP STAYS FIXED FOR THAT REASON.
-; ---- TURN RATE ---------------------------------------------------------------
-; TURN stays PER FRAME (so the turn rate still follows the frame rate) and is
-; simply 10% faster than it was. That is a deliberate choice, NOT the faithful
-; number -- the faithful number was tried on 2026-07-30 and felt like far too
-; much in play, which is the same verdict the 2026-07-28 dt_vbl attempt got.
-;
-; For the record, since it is the obvious thing to reach for again: the original
-; is g_game.c angleturn[] = {640,1280,320} applied per TIC in p_user.c
-; (`angle += cmd->angleturn<<16`) at TICRATE 35, and angle_t is a full 32-bit
-; circle -- so 640<<16 = 0.9766% of a circle = 3.516 deg/tic = 123 deg/s. In
-; 8-bit BAM at 50 Hz PAL that is 1.75 BAM per VBLANK, i.e. TRN_STEP =
-; (dt_vbl*7+2)>>2, which at 5 fps is SIX TIMES the step below. It is rate-correct
-; and it is too fast to aim with here. Do not "fix" this back without asking.
-;
-; What is NOT the problem: per-frame cost. A rotation frame costs one extra
-; build_frac_tables (~7.5K cyc) over a walking frame -- 0.1% of the frame
-; (tools/_verify_interleave.py). There is no rotation-specific work to remove;
-; the frame is 87% draw_twall_col.
-;
-; (Whatever the rate, only PLR_STEP may ever be left alone here: move_player's
-;  halfway collision probe assumes a step <= 24. read_input just adds to zp_ang,
-;  so the turn has no such constraint.)
-TURN            equ 3                ; whole BAM per frame (the original value)
+; ---- THE WALK: DOOM's speed, by the clock -----------------------------------
+; g_game.c forwardmove $19 (run $32) * 2048 a tic (p_user.c P_Thrust) under
+; p_mobj.c FRICTION $E800 settles at 8.333 units a tic (run 16.667): 291.66
+; units/s at TICRATE 35, i.e. 5.8494 a PAL VBLANK (49.8607 Hz).
+PSPD_Q8         equ 1497             ; units per VBLANK, Q8; the run key doubles it
+PSPD_DTMAX      equ 16               ; VBLANKs of one frame's walk at most
+PSPD_AIR        equ 5                ; ...and of a frame in the AIR: the 3.5 tics
+                                     ;   FALL_G takes a frame of the fall for
+PSTEP_MAX       equ 24               ; units per move_player call: its halfway
+                                     ;   probe leaves a gap of 12 < PLAYER_R
+; ---- TURN RATE: per FRAME ---------------------------------------------------
+; DOOM's is g_game.c angleturn 640 a tic = 123 deg/s = 1.75 BAM a VBLANK.
+TURN            equ 3                ; whole BAM per frame
 TURN_FADD       equ 192              ; Q8 fraction added per frame: 192/256 = 0.75
                                      ;   BAM, so the average step is 3.75 = TURN
                                      ;   +25.0%. trn_acc carries it between frames;
@@ -833,7 +817,7 @@ THING_ALIVE     = $0F60              ; [32] bitmap, mv_bit[idx&7] in byte idx>>3
                                      ;   ($0F80-$0FDF freed by the bitmap; the view
                                      ;   window took $0F80-$0F8A, see vw_x0 below.)
 PICKUP_R        = 36                 ; DOOM: item radius 20 + player radius 16
-; Player inventory, the wolf3d GetBonus model: a pickup that cannot be used right
+; Player inventory: a pickup that cannot be used right
 ; now (full health, full ammo) is NOT taken and stays on the floor.
 PSTATE          = $0FE0              ; 0 health, 1 armor, 2 bullets, 3 shells,
                                      ; 4 rockets, 5 cells, 6 weapon bits, 7 key bits
@@ -931,7 +915,7 @@ USE_NSTEPS      equ 16               ; samples -> reach = STEP*NSTEPS = 64
 SKSTAT          equ $D20F            ; POKEY: bit2 (KEY) = 0 while a key is held
 SK_SHIFT        equ $08              ; ...and bit3 = 0 while SHIFT is held. That is
                                      ;   the RUN key (plr_steps): DOOM doubles
-                                     ;   forwardmove, the port takes a second step.
+                                     ;   forwardmove.
 KBCODE          equ $D209            ; POKEY: hardware code of the last key
 KEY_SPACE       equ $21              ; spacebar keycode = USE (DOOM convention)
 KEY_MINUS       equ $0E              ; '-' = smaller 3D view (DOOM's own keys), the
@@ -947,30 +931,15 @@ KEY_T           equ $2D              ; 'T' = textures on/off at RUNTIME (tex_fla
                                      ;   the flat-colour walls are the fast frame
                                      ;   (hardware 2026-07-25: flat 6-7 VBLANKs vs
                                      ;   textured 14-16), so the player picks
-KEY_1           equ $1F              ; '1'..'4' = select weapon (DOOM's own keys):
-KEY_2           equ $1E              ;   1 fist, 2 pistol, 3 shotgun, 4 chaingun.
-KEY_3           equ $1A              ;   read_keys turns them into wp_pending, which
-KEY_4           equ $18              ;   A_WeaponReady acts on (weapon.asm)
-KEY_6           equ $1B              ;   6 = the plasma rifle
-KEY_5           equ $1D              ;   5 = the rocket launcher. '1' hands over
-                                     ;   the CHAINSAW when it is owned, exactly
-                                     ;   like G_BuildTiccmd (wp_select).
-KEY_7           equ $33              ;   7 = the BFG9000 (2026-08-28). The scan
-                                     ;   stopped at '6' for as long as WP_BFG had
-                                     ;   no psprite; pack_weap.py gave it one, so
-                                     ;   wk_tab grew a byte and 'T' moved up a
-                                     ;   slot. $33 is the same OS key table the
-                                     ;   IDKFA codes below come from -- the eight
-                                     ;   values already in this file (a $3F, d
-                                     ;   $3A, f $38, i $0D, k $05, l $00, t $2D,
-                                     ;   TAB $2C) all agree with it, which is what
-                                     ;   makes it safe to add a ninth without a
-                                     ;   machine to try it on.
-; ---- IDKFA (st_stuff.c cheat_ammo_seq -- the name in id's source is swapped
-;   with cheat_ammonokey's, the SEQUENCES are what say which is which). The five
-;   KBCODE values are out of the OS source's own key table
-;   (_pomocne/A800-OS-XL-Rev2-main, the entries commented "$0D - I key" etc), not
-;   guessed: KEY_L equ $00 above comes from the same table.
+KEY_1           equ $1F              ; '1'..'7' = select weapon (DOOM's own keys):
+KEY_2           equ $1E              ;   fist/chainsaw, pistol, shotgun, chaingun,
+KEY_3           equ $1A              ;   rocket launcher, plasma rifle, BFG9000
+KEY_4           equ $18              ;   (read_keys -> wp_select)
+KEY_5           equ $1D
+KEY_6           equ $1B
+KEY_7           equ $33
+KEY_8           equ $35              ; '8' = the gamma key, DOOM's F11 (2026-09-28)
+; ---- IDKFA (st_stuff.c cheat_ammo_seq)
 KEY_I           equ $0D
 KEY_D           equ $3A
 KEY_Q           equ $2F               ; POKEY KBCODE for 'Q' (IDDQD)
@@ -1097,6 +1066,8 @@ MNOVL_STAGE     equ $C000            ; ...and where MADS parks it in the XEX
 MN_E_BOOT       equ 0                ; mn_open's entry index: the boot menu
 MN_E_TITLE      equ 1                ;   ... TITLEPIC + display on
 MN_E_INGAME     equ 2                ;   ... the ESC control panel
+MN_REST         equ 4                ; frames the controls rest before a press
+                                     ;   counts: a contact's bounce is no click
 ; ---- THE SAVE/LOAD OVERLAY (savegame.asm) -----------------------------------
 ; The SECOND overlay, in the same window and by the same mechanism: only one of
 ; the two is ever in RAM, and the menu tail-jumps into this one, so they never
@@ -1194,7 +1165,7 @@ mn_sy           = $0F53              ; itemOn, as the skull's screen ROW.
                                      ;   so it is never random RAM.
 ;  $9000-$9FFF  MEMAC-A window (VBXE)       (RESERVED -- below sits the map)
 ;  $A000-$BFFF  spare / future
-;  $C000-$FFFF  OS ROM (banked out during render -> RAM, like wolf3d)
+;  $C000-$FFFF  OS ROM (banked out during render -> RAM)
 ;  (when ATR streaming lands: $5000-$5FFF becomes the SIO staging buffer; the map
 ;   no longer embeds at $4000 but streams per-level.)
 ;==============================================================
@@ -1885,7 +1856,10 @@ DTAB_BYTES  equ $0800                ; the whole slot (pack_things DTAB_MAX):
 ;   the frame's file offset, stored size and coltab; FARENA is the residency
 ;   table -- the frame's VRAM arena address, 0 = not fetched yet. FARENA is
 ;   NOT in the file: arena_init clears it at every level load.
-SPRCOL_BANK equ $6A                  ; 2026-09-21: WAS $66, which the grown SDRAM
+SPRCOL_BANK equ $7A                  ; 2026-09-28: WAS $6A ($78 vertex cache, $7B
+                                     ;   songs, $7C+ WIMAPs): 64-run texture columns
+                                     ;   grow the pool by 0.9 MB and PRE_END to $71.
+                                     ; 2026-09-21: WAS $66, which the grown SDRAM
                                      ;   cache (PRE_END $665A00) now reaches. $67
                                      ;   music, $68 vertex cache, $69 WIMAPs.
                                      ; 2026-09-09: WAS $08 -- and $08:0000 IS
@@ -1945,7 +1919,7 @@ SPRCOL_EXT  equ $0000                ; bank SPRCOL_BANK: coltab blocks, packed
 ; TAGH byte is the index high byte and its STAMP is this frame's vc_frame.
 ; Seven 256-byte tables in an otherwise unused SDRAM bank (bank_map: $6B is
 ; the songs, $69 the WIMAPs, $6A SPRCOL).
-VCACHE_BANK equ $68
+VCACHE_BANK equ $78
 VCACHE_BASE equ [VCACHE_BANK<<16]
 VC_TAGH     equ $0000                ; index high byte
 VC_STAMP    equ $0100                ; frame stamp
@@ -1956,7 +1930,7 @@ VC_ZH       equ $0500
     .if [VCACHE_BANK<<16] < PRE_END
         ert 'VCACHE_BANK sits inside the SDRAM level cache (atr_layout.inc PRE_END)'
     .endif
-    .if [VCACHE_BANK = SPRCOL_BANK] .or [VCACHE_BANK = $6B]
+    .if [VCACHE_BANK = SPRCOL_BANK] .or [VCACHE_BANK = MUS_BANK0]
         ert 'VCACHE_BANK collides with the sprite columns / the songs'
     .endif
 ; --- THE INTERMISSION'S WORLD MAPS (2026-09-24) -- wi.asm wi_bgfetch -----------
@@ -1964,7 +1938,7 @@ VC_ZH       equ $0500
 ; (tools/pack_wi.py wimaps.bin; wi_syms.inc wi_bgm is each level's bank offset).
 ; Streamed ONCE at boot by load_music's second walk; wi_bgfetch copies the
 ; level's map onto the SR surface and into its pristine copy.
-WIMAP_BANK  equ $6C
+WIMAP_BANK  equ $7C
 WIMAP_NB    equ [WIM_CHUNKS*4096+$FFFF]/$10000   ; banks the maps take
     .if [WIMAP_BANK<<16] < PRE_END
         ert 'WIMAP_BANK sits inside the SDRAM level cache (atr_layout.inc PRE_END)'
@@ -2085,6 +2059,13 @@ TH_BNEXT    equ $6700                ; bank $01: [256] next thing in that cell,
                                      ;   wrapped cell only ever adds candidates
                                      ;   the exact test then rejects.
 TH_RAD      equ $7F00                ; bank $01: [256] radius, units
+; ---- A_SkullAttack's flight (enemy_ai_attack.asm), 2026-09-30 ----------------
+;   MF_SKULLFLY and the momentum, per thing, in the free run above the
+;   TSIN/TCOS frac pages (tools/bank_map.py). Only TH_FLY needs clearing per level
+;   (ai_reset): the step pages are read only while it is set.
+TH_FLY      equ $A600                ; bank EXT: [256] 0 = not flying
+TH_FVX      equ $A700                ; bank EXT: [256] half-tic step x, signed
+TH_FVY      equ $A800                ; bank EXT: [256] half-tic step y, signed
 ; ---- INFIGHTING (infight.asm) -- mobj_t.target / mobj_t.threshold ------------
 ;   Everything the AI used to do was player-relative. p_enemy.c never mentions
 ;   the player: it reads actor->target, and p_inter.c P_DamageMobj is what points
@@ -2184,12 +2165,13 @@ RECIP_STAGE   equ $4000              ; staging: the map slot, dead after the cop
 ; load_level. The order is safe by a mile -- main calls recip_to_ext at $0239,
 ; load_sounds/snd_init do not run until menu_boot.
 SNDX_EXT      equ EXT_BASE+$9400            ; bank $01, in the free run above DTAB_EXT
-SNDX_N        equ 57                 ; = sound_tables.inc SFX_COUNT. It lives HERE
+SNDX_N        equ 58                 ; = sound_tables.inc SFX_COUNT. It lives HERE
                                      ;   so the five addresses below resolve
                                      ;   before sound.asm is icl'd; sound.asm ERTs
                                      ;   the moment wadsound.py drifts from it --
                                      ;   which is how 56 -> 57 got caught the
                                      ;   minute DSBFG was appended (2026-08-28).
+                                     ;   57 -> 58: DSSKLATK (2026-09-30).
 SFX_LO_EXT    equ SNDX_EXT+SNDX_N*0
 SFX_HI_EXT    equ SNDX_EXT+SNDX_N*1
 SFX_BNK_EXT   equ SNDX_EXT+SNDX_N*2
@@ -2230,7 +2212,18 @@ B1CODE_BASE   equ [B1CODE_BANK*$10000]  ; ...and what a thunk's `jsl` adds
 B1SEG_BASE    equ $1000              ; bank-$01 offset of the first proc
 B1SEG_LEN     equ $F000              ; ...up to $01:FFFF
         .segdef B1 B1SEG_BASE B1SEG_LEN rw B1CODE_BANK
-B1STAGE       equ $9000              ; the MEMAC hole: plain RAM while loading
+; ---- inflate816.asm's scratch: bank $01 BELOW the code segment, load time
+;      only (long,x and [dp],y; tools/bank_map.py lists both)
+INF_X         equ B1CODE_BASE+$0100  ; code lengths, counts, the symbols ?walk reads
+INF_XLEN      equ $0500
+INF_T2        equ B1CODE_BASE+$0800  ; the second table read of a 9/10-bit code
+INF_T2LEN     equ $0800
+; ---- per-frame, bank $01 below the code segment (long,x): the SCALE of the wall
+;      that closed each column. ytopc/ybotc keep the window it closed, so a
+;      sprite NEARER than that wall still gets it (sprites.asm ?snap, spr_ncut).
+SSCL_LO       equ B1CODE_BASE+$0600  ; [160] low byte
+SSCL_HI       equ B1CODE_BASE+$0700  ; [160] high byte ($FF on the view border)
+B1STAGE      equ $9000              ; the MEMAC hole: plain RAM while loading
 B1STAGE_MAX   equ $1000              ;   (setup_memac turns the window on later)
 B1STCOPY_BASE equ $8EA7              ; b1_stage_copy: boot-only, in the free
 B1STCOPY_END  equ $8EFF              ;   hole below the MEMAC window
@@ -2527,10 +2520,11 @@ tex_sdram   = $0EF3                  ; this level's .tex in SDRAM (u24,
                                      ;   calculation).
 sf_src      = $0EF6                  ; spr_fcopy's SDRAM source (u24): spr_fget
                                      ;   computes it as spr_sdram + file offset
-; $0EF9-$0EFB FREE (3 B): the old tx_flushed + tx_ncols, deleted with tex_fget
-;   2026-08-14.
-; $0EFC-$0EFD FREE (2 B): the old ld_drain tee-drain countdown, dead since the
-;   pool became one DEFLATE stream (2026-09-26, inflate816.asm).
+UDQ_VARS    = $0EF9                  ; udiv24a_v2.asm's ?q_hi/?q_lo (2 x u16):
+                                     ;   BANK 0, so the card's divide runs with
+                                     ;   DBR = 0 like everything else (drac030
+                                     ;   2026-09-30) -- no phb/phk/plb anywhere
+; $0EFD FREE (1 B): the rest of the old ld_drain countdown.
 ; ---- hu_stuff.c's MESSAGE widget (w_message): the line across the TOP --------
 ;   player->message is a char* in DOOM and a strip INDEX here -- the text was
 ;   rasterised at pack time (tools/pack_menu.py), so "the message" is one byte.
@@ -3404,21 +3398,8 @@ FALL_END        equ $B72D            ;   airborne drift and the landing. Was $B6
                                      ;   sliver), and there are 80+ spare bytes
                                      ;   below FALL_END to give away.
 FALL_G          equ 12               ; p_mobj.c GRAVITY is 1 unit per TIC. A step
-                                     ;   here is a FRAME, and a frame is 35/fps
-                                     ;   tics -- about 3.5 at this engine's ~10
-                                     ;   fps -- so matching DOOM's wall-clock
-                                     ;   fall needs g * 3.5^2 = 12.
-                                     ;   2026-08-05, "skakanie je pomale a
-                                     ;   doskoci moc daleko": this was 1, on the
-                                     ;   theory that the port's 24-a-frame step
-                                     ;   IS DOOM's per-tic step. It is not --
-                                     ;   DOOM's forwardmove 0x19 through P_Thrust
-                                     ;   (*2048) against FRICTION 0xE800 settles
-                                     ;   at 8.3 units a TIC, so the port's step
-                                     ;   is 2.9x bigger. A 64-unit drop took nine
-                                     ;   frames and carried 216 units forward; it
-                                     ;   is three frames and 72 now, against
-                                     ;   DOOM's ~0.29 s and ~83 units.
+                                     ;   here is a FRAME, taken for 3.5 tics
+                                     ;   (PSPD_AIR VBLANKs): g * 3.5^2 = 12
 FALL_TERM       equ 120              ; terminal velocity as a MAGNITUDE (mads will
                                      ;   not take a negative equ as an immediate;
                                      ;   the sites below write #-FALL_TERM), and
@@ -3576,7 +3557,7 @@ PLKICK3_BASE    equ $3BAC            ; octant -> per-axis component (thr_comp)
 PLKICK3_END     equ $3BC2
 PLKICK4_BASE    equ $4D77            ; mv_dx += X
 PLKICK4_END     equ $4D8A
-PLKICK5_BASE    equ $6029            ; mv_dy += Y, then pl_latch
+PLKICK5_BASE    equ $6029            ; mv_dy += Y
 PLKICK5_END     equ $603B
 PLIDLE1_BASE    equ $7FE2            ; centred stick + a shove -> still a move
 PLIDLE1_END     equ $7FF1
@@ -4209,15 +4190,10 @@ pl_vh       = $0FED                  ; eye height update_pz adds: EYE_H down to
 pl_keyw     = $0FEE                  ; 1 = a key was already down when the player
                                      ;   died; wait for the release before the
                                      ;   next press is taken as "restart"
-; ---- P_KillMobj's "Drop stuff" (p_inter.c) ----------------------------------
-;   Only two kinds drop anything in episode 1: MT_POSSESSED -> MT_CLIP and
-;   MT_SHOTGUY -> MT_SHOTGUN, both flagged MF_DROPPED, which halves what they
-;   give (a clip is 5 bullets not 10, a dropped shotgun one clip of shells not
-;   two). The port has no way to SPAWN a thing -- the array is packed per level
-;   and sorted into a per-subsector prefix -- so the corpse itself carries the
-;   drop: flags bit2, and spr_pickup hands the ammo over when you walk on it.
-;   The divergence, stated plainly: there is no clip sprite lying on the floor,
-;   you pick it up off the body.
+; ---- P_KillMobj's "Drop stuff" (p_inter.c:734) ------------------------------
+;   MT_POSSESSED -> MT_CLIP, MT_SHOTGUY -> MT_SHOTGUN, MF_DROPPED: half the
+;   ammo. The thing array is packed, so the BODY carries the item (F_DROP):
+;   spr_ditem draws it at the body, spr_pickup hands it over there.
 F_DROP      equ $04                  ; thing flags bit2 (bit0 pickup, bit1 solid)
 F_FUZZ      equ $08                  ; bit3 = MF_SHADOW: the SPECTRE (doomednum
                                      ;   58), which shares the demon's SARG
@@ -4838,8 +4814,8 @@ WEAPONSPEED     equ 6                ; LOWERSPEED/RAISESPEED, px per tic
 MAXBOB          equ 16               ; p_user.c MAXBOB (0x100000 = 16 px)
 BOBRAMP         equ 2                ; px per tic toward the target bob. DOOM gets
                                      ;   there through momentum + FRICTION over
-                                     ;   ~8 tics; the port has no momx/momy (the
-                                     ;   step is fixed, see SPD), so it ramps.
+                                     ;   ~8 tics; the port has no momx/momy, so
+                                     ;   it ramps.
 WP_SWAY          equ 0                ; 1 = sway the gun while walking
                                      ;   (A_WeaponReady's psp->sx/sy). OFF by
                                      ;   request 2026-07-30: at 3-8 fps the sway
@@ -4899,8 +4875,8 @@ wp_ent      = $0F9D                  ; [7] the patched WEAP_TAB record hud_blit
 ;   `extralight` to every lightnum, brightening the whole view 1-2 rows for a
 ;   few tics. Here textured walls are colormap 0 (nothing to brighten) but the
 ;   floors/ceilings/flat walls DO go through lt_seg's per-sector row -- so the
-;   flash lifts those. DOOM's 16-row ladder step = 2 rows of this port's
-;   32-row one, hence EXTRALIGHT holds 0/2/4 (A_Light0/1/2, WS_LIGHT below).
+;   flash lifts those. EXTRALIGHT holds extralight in LIGHT units, 0/16/32
+;   (A_Light0/1/2, WS_LIGHT below; 2026-09-28), added to the sector light.
 ;   ZERO frame cost by design ("nesmie to spomalovat fps"): lt_seg is
 ;   untouched; wp_flight (runs only on FLASH STATE TRANSITIONS, 2-4 per shot)
 ;   retargets process_seg's `jsr lt_seg` operand (process_seg.ltsj) to
@@ -4908,7 +4884,7 @@ wp_ent      = $0F9D                  ; [7] the patched WEAP_TAB record hud_blit
 TRIG0           equ $D010            ; GTIA: joystick 0 button, 0 = pressed
                                      ;   (read straight off the chip -- under SEI
                                      ;   the OS STRIG shadow never updates here)
-EXTRALIGHT      equ $0357            ; 0/2/4 (the PAINT_VARS tail; ram_map's
+EXTRALIGHT      equ $0357            ; 0/16/32, light units since 2026-09-28 (the PAINT_VARS tail; ram_map's
                                      ;   reserve extended to cover it)
 LTSEGF_BASE     equ $3985            ; lt_seg_flash + wp_flight, in the $2000
 LTSEGF_END      equ $39FF            ;   segment's tail hole (fast win)
@@ -4929,8 +4905,6 @@ FL_PAL_GOLD     equ OV_PAL3          ; 2026-08-01: PALETTE 0 IS NOT USED. It is
                                      ;   through and a warm reset does not
                                      ;   refill it, so writing it left a black
                                      ;   screen after RESET until a power cycle.
-                                     ;   wolfenstein3d-vbxe avoids it for the
-                                     ;   same reason (src/vbxe_init_cold.asm:70).
                                      ;   The price is one of DOOM's two damage
                                      ;   reds: REDLO and REDHI are the same
                                      ;   palette now, so FL_REDSPLIT below still

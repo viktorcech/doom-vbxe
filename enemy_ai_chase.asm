@@ -13,7 +13,10 @@
     .if [TH_WROW & $FF] != 0
         ert 'ai_tick: TH_WROW must be page-aligned for the word sweep'
     .endif
-        stz zp_ptr                   ; every AI page shares low byte 0, so the
+        lda ai_flyn                  ; P_MobjThinker: P_XYMovement before the state
+        bne ?fly                     ;   clock (ai_flyall, enemy_ai_attack.asm). The
+?grnd   stz zp_ptr                   ;   rare flight is out of line below. Every AI
+                                     ;   page shares low byte 0, so the
         lda #>TH_WROW                ;   sweep only ever moves zp_ptr+1
         sta zp_ptr+1
         ldx #0                       ; 2026-09-26: the idle sweep in X, long,x (6
@@ -28,6 +31,8 @@ ait_lim cpx #0                       ; WATERMARK (2026-09-14): the level's n_thi
         sep #$20
         .LONGA OFF
         rts
+?fly    jsr ai_flyall                ; a lost soul in the air (8-bit, like ?grnd)
+        bra ?grnd
 ?hit    txy
         sep #$20                     ; one of the pair chases: which?
         .LONGA OFF

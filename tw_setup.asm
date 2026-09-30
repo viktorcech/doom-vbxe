@@ -8,74 +8,11 @@ twclip_resume = *
         ; PINNED FAST (2026-08-11): the hottest former win2 block (~21% of the
         ; frame in x11.2 fetches) -- never move it back to $8000-$BFFF.
         org TWCLIP_BASE
-;--------------------------------------------------------------
-; seg_len -- rs_seglen = |v2 - v1| in world units, from the player-relative
-;   endpoints (rotation preserves length). Octagonal approximation
-;   max + min/2 - max/8, ~3% high; a constant per-seg scale error is invisible,
-;   a sqrt per seg would not be. Clobbers A/Y and m_a/m_b.
-;--------------------------------------------------------------
-; 16-BIT (2026-08-29). The two differences, the unsigned compare that orders
-; them, the swap and the shifts are all 16-bit quantities; only m_neg/m_negb
-; are 8-bit code. `sep` touches M alone, so the N the subtract set survives it
-; and the `bpl` still reads the sign of the 16-bit result.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc seg_len
-        rep #$20                     ; ---- 16-bit A
-        .LONGA ON
-seg_len16                            ; (am_mark arrives 16-bit already)
-        sec                          ; m_a = |dx| (v1 = zp_rx/zp_ry since 2026-09-26)
-        lda zp_rx2
-        sbc zp_rx
-	bpl ?dxp
-	eor #$ffff
-	inc
-?dxp	sta m_a
-
-        sec                          ; m_b = |dy|
-        lda zp_ry2
-        sbc zp_ry
-	bpl ?dyp
-	eor #$ffff
-	inc
-?dyp	sta m_b
-        lda m_a                      ; which is the max? -- one unsigned 16-bit
-        cmp m_b                      ;   compare, and then NO swap: each order
-        bcs ?omax                    ;   has its own tail (2026-09-15). The tail
-                                      ;   is L = max - max/8 + min/2, the max/8
-        lsr m_a                      ;   negated in A (~q + 1 + max) so nothing
-        lda m_b                      ;   goes through m_res -- same 16-bit sum
-        lsr                          ;   as max + min/2 - max/8
-        lsr
-        lsr
-        eor #$FFFF
-        sec
-        adc m_b                      ; max - max/8 (this add always carries out)
-        clc
-        adc m_a                      ; + min/2
-        bra ?fin
-?omax   lsr m_b                      ; min/2
-                                      ; A still holds m_a: the lda at the top, and
-        lsr
-        lsr
-        lsr
-        eor #$FFFF
-        sec
-        adc m_a
-        clc
-        adc m_b
-?fin
-    .if TEX_HALFW
-        ; 2:1 HORIZONTAL DOWNSAMPLE (pack_textures.py HALF_W).
-    	lsr
-    .endif
-	bne ?ok
-	inc
-?ok	sta rs_seglen
-                                    ; 2026-09-22 (65816-windows): seg_len returns 16-bit
-	.LONGA OFF
-	rts
-.endp
-        .endseg
+; seg_len -- GONE (2026-09-28). It estimated |v2 - v1| as max - max/8 + min/2,
+;   which is 12.5 % SHORT on an axis-aligned seg (112 for a 128-unit door):
+;   the texture was stretched by a seventh. rs_seglen is the map's own number
+;   now, exact and cheaper -- MAP_SEGLEN (pack_map.py _seglen), read where
+;   process_seg marks the line for the automap.
 
 ;--------------------------------------------------------------
 ; tw_texmask -- from rs_texh_cur derive rs_texmask = texH*256-1 and rs_texpow2 =
@@ -107,6 +44,120 @@ twmask_resume = *
 ;   seams accepted -- see textures-prototype memory). Column-major layout:
 ;   src = base + tex_x*texH. Caller must have set rs_wtex*/rs_ltex* per seg.
 ;--------------------------------------------------------------
+    .if TEX_RUNS
+    .if TEX_RUNSH < 6 || TEX_RUNSH > 7
+        ert 'the closed form below is TEX_RUNSH = 6 or 7 -- see map_syms.inc'
+    .endif
+;--------------------------------------------------------------
+; wall_src / low_src (2026-09-29) -- clip rs_ra/rs_rb to [rs_top, rs_bot] ->
+;   rs_spa/rs_spb, then the column's run address to paint_col.pc_in: A = its
+;   low word, Y = its bank. tx_slot picks the tile (0 wall, 1 lower step).
+;   IN: 8-bit M, X = the column. OUT: 8-bit M, X kept.
+;--------------------------------------------------------------
+tx_slot = rs_vsh
+        .segment B1
+.proc wall_src
+        lda rs_ra+1                  ; a = max(rs_ra, top); > bot -> nothing
+        bmi ?atop
+        bne ?out
+        lda rs_ra
+        cmp rs_top
+        bcc ?atop
+        cmp rs_bot
+        bcc ?aset                    ; (cmp keeps A = rs_ra)
+        beq ?aset
+?out    rts
+?atop   lda rs_top
+?aset   sta rs_spa
+        lda rs_rb+1                  ; b = min(rs_rb, bot); < top -> nothing
+        bmi ?out
+        bne ?bbot
+        lda rs_rb
+        cmp rs_top
+        bcc ?out
+        cmp rs_bot                   ; rb < bot is the common case: it falls through
+        bcs ?bbot
+?bset   sta rs_spb
+        cmp rs_spa                   ; draw only if spb >= spa
+        bcc ?out
+        stz tx_slot                  ; the WALL's tile
+        lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texels)
+        and rs_wtexwm
+        txy                          ; the column waits in Y: long is X-indexed only
+        tax
+wix     lda.l $000000,x              ; which STORED column that is (pack_textures
+        tyx                          ;   dedup_columns; the operand is per seg)
+        xba                          ; A = column << 8 as a word: the byte into B,
+        lda #0                       ;   a written 0 under it
+        rep #$20
+        .LONGA ON
+        .rept 8-TEX_RUNSH            ; the stride is 64 or 128
+        lsr @
+        .endr
+        adc rs_wtexad                ; + the texture's base (C = 0: zeros shifted out)
+        ldy rs_wtexad+2              ; ... and its SDRAM bank byte, with the carry
+        bcs ?binc
+        jmp paint_col.pc_in
+?binc   iny
+        jmp paint_col.pc_in
+        .LONGA OFF
+?bbot   lda rs_bot                   ; (the rare b >= bot, out of line)
+        bra ?bset
+.endp
+        .endseg
+
+        .segment B1
+.proc low_src
+        lda rs_ra+1                  ; (the clip, as wall_src)
+        bmi ?atop
+        bne ?out
+        lda rs_ra
+        cmp rs_top
+        bcc ?atop
+        cmp rs_bot
+        bcc ?aset
+        beq ?aset
+?out    rts
+?atop   lda rs_top
+?aset   sta rs_spa
+        lda rs_rb+1
+        bmi ?out
+        bne ?bbot
+        lda rs_rb
+        cmp rs_top
+        bcc ?out
+        cmp rs_bot
+        bcs ?bbot
+?bset   sta rs_spb
+        cmp rs_spa
+        bcc ?out
+        lda #1                       ; the LOWER step's tile
+        sta tx_slot
+        lda rs_uacc+1                ; world u, same track as wall_src
+        and rs_ltexwm
+        txy
+        tax
+lix     lda.l $000000,x              ; the LOWER step's own index array, in SDRAM
+        tyx
+        xba
+        lda #0
+        rep #$20
+        .LONGA ON
+        .rept 8-TEX_RUNSH
+        lsr @
+        .endr
+        adc rs_ltexad
+        ldy rs_ltexad+2
+        bcs ?binc
+        jmp paint_col.pc_in
+?binc   iny
+        jmp paint_col.pc_in
+        .LONGA OFF
+?bbot   lda rs_bot
+        bra ?bset
+.endp
+        .endseg
+    .else                            ; !TEX_RUNS: the blitted walls, as they were
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc wall_src
         lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texels)
@@ -132,18 +183,19 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
         sta rs_texpow2               ;   pages (see tw_texmask's header)
                                       ; ... but NOTHING reads that low byte: paint.asm
     .if TEX_RUNS
-    .if TEX_RUNSH <> 6
-        ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
+    .if TEX_RUNSH < 6 || TEX_RUNSH > 7
+        ert 'the closed form below is TEX_RUNSH = 6 or 7 -- see map_syms.inc'
     .endif
         ; 16-BIT A (2026-08-31, the drac030 hand-review): the split ...
         rep #$20
         .LONGA ON
         tya                          ; the column: Y is 8-bit, so B comes out 0
 	xba
+        .rept 8-TEX_RUNSH            ; (2026-09-28: the stride is 64 or 128)
 	lsr
-	lsr
+        .endr
 ;       clc
-        adc rs_wtexad                ; rs_tsrc = wtexad + (txx<<6)
+        adc rs_wtexad                ; rs_tsrc = wtexad + (txx<<TEX_RUNSH)
         sta rs_tsrc
         .LONGA OFF
         sep #$20
@@ -191,17 +243,18 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         sta rs_texpow2
                                       ; (the low byte has no reader, as wall_src)
     .if TEX_RUNS
-    .if TEX_RUNSH <> 6
-        ert 'the closed form below is TEX_RUNSH=6 only -- see map_syms.inc'
+    .if TEX_RUNSH < 6 || TEX_RUNSH > 7
+        ert 'the closed form below is TEX_RUNSH = 6 or 7 -- see map_syms.inc'
     .endif
         rep #$20                     ; same 16-bit fusion as wall_src above
         .LONGA ON
         tya
 	xba
+        .rept 8-TEX_RUNSH
 	lsr
-	lsr
+        .endr
 ;       clc
-        adc rs_ltexad                ; rs_tsrc = ltexad + (txx<<6)
+        adc rs_ltexad                ; rs_tsrc = ltexad + (txx<<TEX_RUNSH)
         sta rs_tsrc
         .LONGA OFF
         sep #$20
@@ -258,7 +311,7 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         bcc ?out                     ;   just stored, so no reload
     .if TEX_RUNS
         ; THE HEIGHT/TOP HANDOFF IS DEAD HERE (2026-08-30). paint_col reads the ...
-        jmp paint_col                ; tail-call (preserves X) -- paint.asm
+        jmp paint_col.pc_in          ; tail-call (preserves X) -- paint.asm
     .else
 ;       sec                          ; draw_twall_col DOES take A=top, Y=height
         sbc rs_spa
@@ -272,6 +325,7 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
         bra ?bset
 .endp
         .endseg
+    .endif                           ; TEX_RUNS
     .if * > TWCLIP_END+1
         ert 'seg_len/wall_src/low_src/draw_twall_clip outgrew TWCLIP_BASE..END (memory_map.inc)'
     .endif

@@ -24,7 +24,8 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
         stz XDLA_PEND                ;   store lands mid-picture (the flicker),
                                      ;   Altirra latches at frame start; this is
         jsr kb_scan                  ; the cheat matcher's press edge, at 50 Hz
-?done   pla                          ;   correct on both. $00 = nothing pending.
+?done                                ;   correct on both. $00 = nothing pending.
+        pla
         rti
 .endp
 
@@ -60,7 +61,7 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
                                      ;   IRQEN=POKMSK, which must be 0 for that)
         clc
         xce                          ; native for good: only siov_r (SIOV) and
-                                     ;   sg_bye (COLDSV) step back into the ROM
+                                     ;   quit_boot (COLDSV) step back into the ROM
         lda #$40
         sta NMIEN                    ; rom_nmi: RTCLOK3 (ZFRONT/FRM_PAR/XDLA_PEND
         cli                          ;   were zeroed in setup_chains before this)

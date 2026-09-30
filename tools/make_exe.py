@@ -39,8 +39,8 @@ ENTRY = os.path.join(_HERE, 'wad', 'wadconv_exe.py')
 KEEP_EXT = ('.asm', '.inc', '.py', '.ps1')
 KEEP_NAME = ('mads.exe', 'VERSION', 'res')
 SKIP_DIRS = {'build', 'exe', 'wads-mapy', '__pycache__', '.git', 'bench',
-             'sram', 'mads-src', 'alt-src', 'DOOM-master', 'FastDoom-1.3.0',
-             '_pomocne', 'tests'}
+             'sram', 'mads-src', 'alt-src', '_doomsrc',
+             'tests'}
 # Never ship a commercial IWAD.
 SKIP_FILES = {'doom.wad', 'doom2.wad', 'tnt.wad', 'plutonia.wad'}
 
@@ -78,11 +78,11 @@ def stage_engine(dst):
     # into a table. Leave it out and the packaged tool dies on the first
     # conversion with "info.c missing". It is linuxdoom-1.10, GPL, so it
     # travels legitimately; only the .c/.h, not the whole checkout.
-    src = os.path.join(_PROJ, 'DOOM-master', 'linuxdoom-1.10')
+    src = os.path.join(_PROJ, '_doomsrc')
     if os.path.isdir(src):
         for fn in sorted(os.listdir(src)):
             if os.path.splitext(fn)[1].lower() in ('.c', '.h'):
-                out = os.path.join(dst, 'DOOM-master', 'linuxdoom-1.10', fn)
+                out = os.path.join(dst, '_doomsrc', fn)
                 os.makedirs(os.path.dirname(out), exist_ok=True)
                 shutil.copy2(os.path.join(src, fn), out)
                 n += 1

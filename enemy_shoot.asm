@@ -307,12 +307,12 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 SH_STEP  equ 32                      ; sample spacing. It only has to land in
                                      ;   every subsector the ray crosses -- the
                                      ;   crossing test itself uses the whole ray
-SH_NBULL equ 32                      ; 1024 units, same reach as the rocket. It
-                                     ;   was 16 on the theory that a puff past ...
-SH_NROCK equ 32                      ; 1024 units, the reach en_march had
+SH_NBULL equ 32                      ; 1024 units
+SH_NROCK equ 255                     ; 8160 units: a missile has NO range in DOOM
+                                     ;   (p_mobj.c flies it until P_TryMove fails)
 SH_NMELEE equ 3                      ; MELEERANGE is 64, and this is 96: the
                                      ;   crossing test needs the ray to pass ...
-SH_REF   equ 7                       ; binary-search steps -> 1024/128 = 8 units
+SH_REF   equ 10                      ; binary-search steps -> 8160/1024 = 8 units
 
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc sh_trace

@@ -103,17 +103,38 @@ def exact_idx(pal32, rgb, a, b):
     return int(np.argmin(e))
 
 
-def exact_idx_cuts(pal32, rgb, cuts):
+def exact_idx_cuts(pal32, rgb, cuts, idx=None):
     """exact_idx for EVERY [cuts[i], cuts[i+1]) segment in one numpy pass.
     Bit-identical to calling exact_idx per segment (same dtype, same op
     order, same first-minimum argmin tie-break) -- the per-call numpy
-    dispatch was a third of a cold pack (2026-09-26)."""
+    dispatch was a third of a cold pack (2026-09-26).
+
+    idx (2026-09-28) = the column's palette indices: a run is then painted in
+    one of ITS OWN colours -- the one nearest all its texels -- instead of the
+    PLAYPAL entry nearest their mean, which is often a colour the texture does
+    not hold at all. Same cuts, same run count, so the engine pays nothing:
+    76 % of the stored texels keep the WAD's colour instead of 72 %, for 2 %
+    more mean error (tools/tests/_verify_texfid.py --try, `medoid`). Index 0
+    stays out, as in exact_idx; a run that holds nothing else falls back to
+    the nearest-to-mean entry."""
     means = np.stack([rgb[cuts[i]:cuts[i + 1]].mean(0)
                       for i in range(len(cuts) - 1)])
     d = pal32.astype(np.float64)[None, :, :] - means[:, None, :]
     e = (d * d * W).sum(-1)
     e[:, 0] = np.inf
-    return e.argmin(1)
+    out = e.argmin(1)
+    if idx is None:
+        return out
+    idx = np.asarray(idx, dtype=np.uint8)
+    palf = pal32.astype(np.float64)
+    for i in range(len(cuts) - 1):
+        a, b = cuts[i], cuts[i + 1]
+        own = [int(c) for c in np.unique(idx[a:b]) if c]
+        if own:
+            # sum |p - c|^2 over the run = n |c - mean|^2 + const: the nearest
+            # of the run's own colours to its mean IS its medoid
+            out[i] = own[int(e[i, own].argmin())]
+    return out
 
 
 def col_matrix(rgb, pal32, cube):
@@ -211,7 +232,7 @@ def _masked_runs(col_idx, pal32, cube, k):
             continue
         sub = rgb[a:b]
         _err, cuts = dp_cuts(col_matrix(sub, pal32, cube), share[(a, b, False)])
-        idxs = exact_idx_cuts(pal32, sub, cuts)
+        idxs = exact_idx_cuts(pal32, sub, cuts, col_idx[a:b])
         runs += [(cuts[i + 1] - cuts[i], int(idxs[i]))
                  for i in range(len(cuts) - 1)]
     return runs
@@ -276,7 +297,7 @@ def column_runs(col_idx, pal32, cube, k=DEFAULT_K, masked=False):
     else:
         rgb = pal32[np.asarray(col_idx, dtype=np.uint8)]
         _err, cuts = dp_cuts(col_matrix(rgb, pal32, cube), k)
-        idxs = exact_idx_cuts(pal32, rgb, cuts)
+        idxs = exact_idx_cuts(pal32, rgb, cuts, col_idx)
         runs = [(cuts[i + 1] - cuts[i], int(idxs[i]))
                 for i in range(len(cuts) - 1)]
     while len(runs) < k:

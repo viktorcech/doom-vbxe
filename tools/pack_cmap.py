@@ -9,11 +9,11 @@ add/mask darkens it). What the port CAN shade for free is every surface it
 paints in ONE palette index: floors, ceilings, and any wall drawn flat (the 'T'
 mode, or a texture whose pixels this build does not ship).
 
-So the shading is exactly DOOM's, just applied per SURFACE instead of per pixel:
-  colour = COLORMAP[row][colour],  row = (255 - sector->lightlevel) >> 3
-which is r_main.c's `scalelight[lightnum]` with the distance term dropped
-(lightnum = lightlevel >> LIGHTSEGSHIFT is the same 16-step ladder, doubled to
-the colormap's 32).
+The shading is DOOM's (2026-09-28, lights.asm LT_ROW):
+  colour = COLORMAP[row][colour],  row = (15 - lightnum)*4 - distance rows
+with lightnum = lightlevel >> LIGHTSEGSHIFT (+ extralight, + the fake contrast
+on a wall), r_main.c's scalelight per painted wall COLUMN, and zlight's mean
+per flat (one colour a sector).
 
 The first 32 rows only: row 32 is the invulnerability inverse map and row 33 is
 all-black, neither of which the port uses. 32 x 256 = 8192 B = exactly two 4 KB

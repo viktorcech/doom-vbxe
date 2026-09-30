@@ -36,6 +36,16 @@ MK_WSND      equ 10          ; the CYBERDEMON kind -- and the FIRST kind
                              ; 6, SPID = A_Metal at 0/4/8 -- pack_things
                              ; asserts every word of that against info.c
 
+MK_SKUL      equ 6          ; the LOST SOUL kind: ai_mrange halves its
+                             ; roll (P_CheckMissileRange names MT_SKULL)
+MK_SKSPD     equ 20           ; p_enemy.c SKULLSPEED, units a tic (ai_fly
+                             ; moves it as two P_TryMove halves)
+MK_SKDMG     equ 3            ; info.c MT_SKULL damage: a hit costs
+                             ; ((P_Random()%8)+1) * this (p_map.c:277)
+MK_SKSTND    equ 10           ; S_SKULL_STND tics: the pause a landed
+                             ; flight sits in its spawnstate
+MK_SKATK     equ 57           ; SFX id of MT_SKULL attacksound (sklatk)
+
 mk_pain
         dta $FF    ; kind 0 = not a monster (pain SFX)
         dta $0F    ; POSS (3004)
@@ -141,7 +151,7 @@ mk_atk
         dta $03    ; TROO (3001)
         dta $07    ; SARG (3002)
         dta $07    ; SARG (58)
-        dta $00    ; SKUL (3006)
+        dta $08    ; SKUL (3006)
         dta $04    ; HEAD (3005)
         dta $05    ; BOSS (3003)
         dta $00    ; BEXP (2035)

@@ -436,6 +436,22 @@ class Wad:
             # could not get past. Nine steps across E1-E3 (E1M8 2, E2M4 4,
             # E2M5 1, E2M8 2).
             no_merge |= _stair_sectors(lines, sides, sectors)
+            # ...and NEVER merge the sector a manual door REFUSES the spacebar
+            # from (its face with special 0 -- pack_map's DOOR_DENY). Folded
+            # into the sector of the door's push face, the two faces read the
+            # same and the door opens from both: E1M2's secret door 97.
+            push = {}
+            for ld in lines:
+                if ld.special in doomspecs.MANUAL_DOOR and ld.left != NO_SIDEDEF:
+                    push.setdefault(sides[ld.left].sector,
+                                    set()).add(sides[ld.right].sector)
+            for ld in lines:
+                if NO_SIDEDEF in (ld.right, ld.left):
+                    continue
+                fs, bs = sides[ld.right].sector, sides[ld.left].sector
+                for ds, face in ((fs, bs), (bs, fs)):
+                    if ds in push and face != ds and face not in push[ds]:
+                        no_merge.add(face)
             newsec, remap = sectors, {}
             for quant in (1, 16, 32):
                 if quant > 1 and len(newsec) <= 248:

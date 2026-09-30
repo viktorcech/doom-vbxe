@@ -46,20 +46,48 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;   Called once per drawn seg (~140 a frame). A/Y clobbered, X PRESERVED --
 ;   the caller is mid-way through resolving the wall texture handle.
 ;--------------------------------------------------------------
+; 2026-09-28: DOOM's ladder (r_main.c scalelight / zlight), counted UP from
+;   black: row = 60 - 4*lightnum - the rows the distance takes off. A WALL's
+;   lightnum carries its fake contrast (rs_lcon) and its scale takes pc_dim
+;   rows (paint_col's bake); a FLAT is one colour a sector, so it loses
+;   zlight's mean over a view, LT_FLATDIM.
+;   LT_ROW[i] = zp_cm's high byte for row 64 - i, clamped to the 32 rows;
+;   i = 4*lightnum + rs_lcon + pc_dim, 0..68+23.
+LT_FLATDIM  equ 8
+LT_PAGE     equ [CMAP_EXT>>8]&$FF
+        .segment D0
+LT_ROW  :33 dta LT_PAGE+31           ; i = 0..32: darker than row 31 is row 31
+        :32 dta LT_PAGE+31-#         ; i = 33..64
+        :27 dta LT_PAGE              ; i = 65..91
+        .endseg
+
+;--------------------------------------------------------------
+; lt_seg_flash -- lt_seg while the muzzle flash lights: r_segs.c adds
+;   extralight to lightnum, EXTRALIGHT holds it in light units (WS_LIGHT).
+;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+.proc lt_seg_flash
+        ldy #4
+        lda (zp_ptr),y
+        clc
+        adc EXTRALIGHT
+        bcc lt_seg.lts_l
+        lda #$FF                     ; (lightnum stops at 15)
+        bra lt_seg.lts_l
+.endp
 .proc lt_seg
                                       ; 2026-09-22: no visor test -- the visor is a
         ldy #4                       ;   per-TIC fact, so lt_pick points process_seg's
         lda (zp_ptr),y               ;   ltsj at lt_segv while it lights (-6 a seg)
-        lsr @                        ; row = (255-L)>>3 = (L>>3)^31; the row (bits
-        lsr @                        ;   0-4) and >CMAP_EXT (bits 5-7) never overlap,
-        lsr @                        ;   so ONE eor puts both in
-        eor #[>CMAP_EXT]|$1F
-    .if [>CMAP_EXT] & $1F
-        ert 'lt_seg merges the row into >CMAP_EXT: its low five bits must be clear'
-    .endif
+lts_l   and #$F0
+        lsr @
+        lsr @                        ; 4*lightnum. C = 0: the mask cleared what falls out
+        tay
+        adc rs_lcon                  ; the walls' (<= 68: C = 0 out)
+        sta rs_wlit
+        lda LT_ROW+4+LT_FLATDIM,y    ; the flats' row
 lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
-        iny                          ; floor_pal @5
+        ldy #5                       ; floor_pal @5
         lda (zp_ptr),y
         tay
         lda [zp_cm],y
@@ -69,6 +97,33 @@ lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
         tay
         lda [zp_cm],y
         sta rs_ceilcol
+        lda rs_wlit                  ; the walls' row stays in zp_cm for the painter.
+        adc pc_dim                   ;   C = 0 still: nothing above touches it (the
+        tay                          ;   visor's index is >= 64 with either carry)
+        lda LT_ROW,y
+        sta zp_cm+1
+        rts
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; lt_flat -- the colour of an UNTEXTURED wall ('T', or no pixels shipped): its
+;   texture's dominant colour under the seg's light, at the flats' distance.
+;   2026-09-28. IN: X = texid (kept). OUT: A. zp_cm is left as it was.
+;--------------------------------------------------------------
+        .segment B1
+.proc lt_flat
+        lda zp_cm+1
+        pha
+        ldy rs_wlit
+        lda LT_ROW+LT_FLATDIM,y
+        sta zp_cm+1
+        ldy MAP_TEXDOM,x
+        lda [zp_cm],y
+        tay
+        pla
+        sta zp_cm+1
+        tya
         rts
 .endp
         .endseg
@@ -79,7 +134,8 @@ lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc lt_segv
-        ldy #4
+        lda #64                      ; (2026-09-28: LT_ROW[64 + pc_dim] is row 0 too)
+        sta rs_wlit
         lda #>CMAP_EXT
         bra lt_seg.lts_add
 .endp
@@ -105,6 +161,92 @@ lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
 ?set    sta.l B1CODE_BASE+process_seg.ltsj+1
         .LONGA OFF
         sep #$20
+        rts
+.endp
+        .endseg
+
+;--------------------------------------------------------------
+; THE GAMMA KEY (2026-09-28) -- DOOM's F11, '8' here. m_menu.c steps usegamma
+;   0..4 and I_SetPalette sends every colour through gammatable[usegamma]
+;   (v_video.c), level 0 too. The tables and the PLAYPAL slots, as R/G/B
+;   planes, are in SDRAM (GAMMA_EXT / PALRAW_EXT, tools/doomgamma.py): the
+;   colour is the index of every read. Nothing here runs in a frame.
+;--------------------------------------------------------------
+GM_MSG0     equ 37+MSG_IDX0          ; GAMMALVL0's line (pack_menu.py)
+        .segment D0
+gm_lvl  dta 0                        ; usegamma
+; PAL_SLOTS (pack_textures.py) -> VBXE palette. The XDL names one of these and
+; update_flash swaps between them, so the order here IS the FL_PAL_* map in
+; memory_map.inc: normal, damage red, pickup gold.
+pld_psel dta 1, 2, 3                 ; ...and NEVER palette 0: see FL_PAL_GOLD
+gm_page :PAL_COUNT dta [[PALRAW_EXT>>8]&$FF]+3*#  ; the slot's R plane: a page a plane
+        .endseg
+    .if [PALRAW_EXT & $FF] | [GAMMA_EXT & $FF]
+        ert 'gm_apply: GAMMA_EXT and PALRAW_EXT must start on a page'
+    .endif
+        .segment B1
+.proc gm_next                        ; the key: the next level, its line ...
+        ldx gm_lvl
+        inx
+        cpx #5
+        bcc ?k
+        ldx #0
+?k      stx gm_lvl
+        txa
+        clc                          ; (C = 1 on the wrap)
+        adc #GM_MSG0
+        jsr msg_set.msg_arm
+        ert *<>gm_apply              ; ... and its palettes: falls through
+.endp
+; gm_apply -- every PLAYPAL slot into its VBXE palette, through usegamma's
+;   table. 8-bit on purpose: the boot installs the palettes through here too
+;   (load_palette_w1). Clobbers A/X/Y; zp_ptr is parked.
+.proc gm_apply
+        pei (zp_ptr)
+        lda zp_ptr+2
+        pha
+        stz zp_ptr                   ; [zp_ptr],y = gammatable[usegamma][y]
+        clc
+        lda gm_lvl
+        adc #>GAMMA_EXT
+        sta zp_ptr+1
+        lda #[GAMMA_EXT>>16]
+        sta zp_ptr+2
+        ldx #PAL_COUNT-1
+?pal    lda pld_psel,x
+        sta VBXE_PSEL
+        stz VBXE_CSEL
+        lda gm_page,x                ; the slot's three planes into the readers
+        sta.l B1CODE_BASE+?r+2
+        inc @
+        sta.l B1CODE_BASE+?g+2
+        inc @
+        sta.l B1CODE_BASE+?b+2
+        phx
+        ldx #0                       ; X = the colour, counting up to the wrap:
+?r      lda.l PALRAW_EXT,x           ;   CSEL steps the same way
+        tay
+        lda [zp_ptr],y
+        sta VBXE_CR                  ; (plain abs: no indexed dummy read of the chip)
+?g      lda.l PALRAW_EXT,x
+        tay
+        lda [zp_ptr],y
+        sta VBXE_CG
+?b      lda.l PALRAW_EXT,x
+        tay
+        lda [zp_ptr],y
+        sta VBXE_CB                  ; commits the colour, CSEL steps
+        inx
+        bne ?r
+        plx
+        dex
+        bpl ?pal
+        pla
+        sta zp_ptr+2
+        pla                          ; (pei pushed the word: its low byte comes first)
+        sta zp_ptr
+        pla
+        sta zp_ptr+1
         rts
 .endp
         .endseg
@@ -240,37 +382,8 @@ lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
 ;--------------------------------------------------------------
 ltsf_resume = *
         org LTSEGF_BASE
-        .segment B1                  ; DRAC_PLAN 2b: its only jump comes from process_seg (bank $01)
-.proc lt_seg_flash
-        ldy #4                       ; BUG FIX 2026-09-15: before the visor test, as
-                                      ; 2026-09-22: never reached with the visor lit
-        lda (zp_ptr),y
-        eor #$FF                     ; row = (255 - light) >> 3
-        lsr @
-        lsr @
-        lsr @
-        sec                          ; ... minus the flash's 2 or 4 rows --
-        sbc EXTRALIGHT               ;   DOOM's lightnum+extralight on this
-        bcs ?cl                      ;   port's 32-row ladder
-        lda #0                       ; brighter than row 0 IS row 0 (r_main.c
-                                      ;   clamps lightnum the same way)
-?cl     ora #>CMAP_EXT               ; 2026-09-22: ora as lt_seg (row 0..31, the base's
-?st
-        sta zp_cm+1
-        iny                          ; floor_pal @5
-        lda (zp_ptr),y
-        tay
-        lda [zp_cm],y
-        sta rs_floorcol
-        ldy #6                       ; ceil_pal @6
-        lda (zp_ptr),y
-        tay
-        lda [zp_cm],y
-        sta rs_ceilcol
-        rts
-.endp
-        .endseg
-
+                                     ; (2026-09-28: lt_seg_flash sits ahead of lt_seg,
+                                     ;   in the reach of a branch)
 ;--------------------------------------------------------------
 ; wp_flight -- wp_fenter's tail (P_SetPsprite for ps_flash ends here): read the
 ;   NEW flash state's extralight off WS_LIGHT and point process_seg's lt_seg

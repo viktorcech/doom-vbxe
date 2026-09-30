@@ -4,9 +4,9 @@
 Booting FROM this ATR cold-starts the Atari OS properly (valid VIMIRQ + serial
 IRQ vectors), so the engine's own SIO level streaming (load_level) works.
 Running the bare XEX without a clean OS boot left VIMIRQ pointing into RAM
-(-> BRK on every IRQ -> SIO hang). Mirrors woll3d's bootable-ATR approach.
+(-> BRK on every IRQ -> SIO hang).
 
-Level handling is the SAME as woll3d (src/diskio.asm + atr_layout.inc): all
+Level handling (diskio.asm + atr_layout.inc): all
 levels are padded to a common LVL_SECTORS and laid out at a FIXED stride, so the
 engine finds level n at  base_sec = LVL_SEC1 + n*LVL_SECTORS  (no per-level
 directory needed). LVL_SEC1/LVL_SECTORS/NUM_LEVELS are emitted as MADS equ in
@@ -30,24 +30,38 @@ import struct
 import sys
 import zlib
 
+import code_map
+import doomgamma
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJ = os.path.dirname(_HERE)
 WADMAPS = os.path.join(_PROJ, 'build', 'assets', 'wadmaps')
-BOOT_BIN = os.path.join(_PROJ, 'build', 'boot.bin')
-XEX = os.path.join(_PROJ, 'build', 'doom_bsp.xex')
-OUT_ATR = os.path.join(_PROJ, 'build', 'doom.atr')
+BOOT_BIN = code_map.img('build', 'assets', 'code', 'boot.bin')  # this image's
+                                     #   loader (ANTONIA II: + the mul/div check)
+XEX = code_map.XEX                   # this pass's image (code_map.IMG)
+OUT_ATR = (code_map.img('build', 'doom_bsp.atr') if code_map.IMG
+           else os.path.join(_PROJ, 'build', 'doom.atr'))
 OUT_INC = os.path.join(_PROJ, 'atr_layout.inc')
 
 SECTOR_SIZE = 128
 ATR_SIGNATURE = 0x0296
-BOOT_SECTORS = 3
-XEX_SEC = BOOT_SECTORS + 1           # XEX starts at sector 4
+# the boot loader's size in sectors: boot.asm counts its own, and its header
+# (byte 1) says how many the OS loads -- the XEX follows them
+try:
+    BOOT_SECTORS = open(BOOT_BIN, 'rb').read(2)[1]
+except (OSError, IndexError):
+    BOOT_SECTORS = 12
+XEX_SEC = BOOT_SECTORS + 1
 # (MAP_SLOT_END lived here: load_level's $8600 ceiling. Dead since 2026-07-31 --
 #  nothing read it, and the slot ends at $4C00 now. pack_map.py LOW_LIMIT is the
 #  live constant, and it is the one that fails the pack.)
-XEX_WIN_END = 544                    # FIXED: XEX window = sectors 4..543 (~67.5 KB;
-                                     #   512 until ENDOOM's text, 2026-09-27).
-LVL_SEC1 = 33000                     # VIRTUAL (2026-09-26): the per-level slots
+XEX_WIN_END = 640                    # FIXED: the XEX window ends here (560 until
+                                     #   inflate816.asm's decode tables, 2026-09-28).
+LVL_SEC1 = 32000                     # 2026-09-28: was 33000 -- MAP_SEGLEN grew the
+                                     # slot by 38 sectors a level and the virtual
+                                     # chain ran 54 past 65535; the physical image
+                                     # ends near 24,200.
+                                     # VIRTUAL (2026-09-26): the per-level slots
                                      # left the disk (lvl_pak depacks them), so
                                      # their sector numbers only address the
                                      # SDRAM cache (pre_map). Above every real
@@ -90,7 +104,7 @@ def _sectors(n):
 
 
 def lvl_sectors(names):
-    """Common stride = max sectors over all included levels (woll3d pads all the
+    """Common stride = max sectors over all included levels (pads all the
     same; here the slot is sized to the biggest so every level fits its slot)."""
     return max(_sectors(os.path.getsize(os.path.join(WADMAPS, nm + '.bin'))) for nm in names)
 
@@ -144,7 +158,7 @@ HUD_BIN = os.path.join(_PROJ, 'build', 'assets', 'hud', 'hud.bin')
 # base at boot -- that pool is empty until the first load_level, which is
 # exactly why the menu costs no main RAM. Parked LAST on the disk so adding
 # it shifts no existing region's sector numbers.
-MENU_BIN = os.path.join(_PROJ, 'build', 'assets', 'menu', 'menu.bin')
+MENU_BIN = code_map.img('build', 'assets', 'menu', 'menu.bin')
 # The end-of-episode FINALE's PAGES (tools/pack_fin.py): HELP2, VICTORY2, PFUB1,
 # PFUB2 and the seven END letters. Its small half -- hu_font, the three flats and
 # the three story texts -- is fin.bin, and that one rides menu.bin's boot stream
@@ -258,6 +272,24 @@ def _equ_int(inc, name):
 _PAKC = {}                           # md5(data) -> its best DEFLATE stream;
 _PAKC_STATE = {}                     # backed by tools/cache/paks.cache so the
                                      # zopfli cost is paid once per changed blob
+# 2026-09-28: the streams packed WITHOUT zopfli are remembered under this key
+# (a set of md5s) and packed again once zopfli is there. A machine without it
+# grew the ATR by 100+ KB in a day, one re-packed blob at a time, and said
+# nothing.
+_PAKC_WEAK = b'zlib-only'
+
+
+def _zopfli():
+    """zopfli.zlib, or None -- with ONE warning a run."""
+    if 'zopfli' not in _PAKC_STATE:
+        try:
+            import zopfli.zlib as zz
+        except ImportError:
+            zz = None
+            print('  WARNING: zopfli is not installed -- every re-packed stream is '
+                  'zlib -9 only, 3-7 % bigger (python -m pip install zopfli)')
+        _PAKC_STATE['zopfli'] = zz
+    return _PAKC_STATE['zopfli']
 
 
 def _pak_cache():
@@ -282,14 +314,56 @@ def _pak_cache():
     atexit.register(save)
 
 
+_PAKC_FAR = b'far1:'                 # + md5(data) -> (stream, md5(stream))
+
+
+def _i816(z):
+    """True when inflate816.asm can depack the stream (inflate816_ok.py). The
+    walk is 0.2 s a stream, so it is made once: the cache keeps the md5 of
+    every stream that passed, under the checker's own md5."""
+    import hashlib
+    from inflate816_ok import problem
+    if 'i816' not in _PAKC_STATE:
+        src = open(os.path.join(_HERE, 'inflate816_ok.py'), 'rb').read()
+        _PAKC_STATE['i816'] = b'i816:' + hashlib.md5(src).digest()
+    seen = _PAKC.setdefault(_PAKC_STATE['i816'], set())
+    h = hashlib.md5(z).digest()
+    if h not in seen:
+        if problem(z) is not None:
+            return False
+        seen.add(h)
+        _PAKC_STATE['dirty'] = True
+    return True
+
+
 def _deflate(data):
-    """Raw DEFLATE (RFC 1951, no zlib header): what inflate816.asm depacks at
-    boot. zlib -9 (both strategies) and zopfli compete, the smallest stream
-    wins -- measured 2026-09-26: zopfli -3..-7 % across the boot blobs, and
-    Z_FILTERED wins only the SFX samples. Round-tripped HERE, so a packer bug
-    can never reach the ATR."""
+    """What inflate816.asm depacks: the best DEFLATE stream (_deflate_near),
+    with FAR matches in when that saves a sector (tools/deflate_far.py). The
+    far stream is unpacked against the data when it is made; the cache keeps
+    its md5 beside it."""
     if not data:
         return b''
+    import hashlib
+    import deflate_far
+    base = _deflate_near(data)
+    key = _PAKC_FAR + hashlib.md5(data).digest()
+    hit = _PAKC.get(key)
+    if hit is not None and hit[1] == hashlib.md5(hit[0]).digest() and hit[2] == len(base):
+        return hit[0]
+    far = deflate_far.pack(base, data)
+    if _sectors(len(far)) >= _sectors(len(base)):
+        far = base
+    assert _i816(far), 'inflate816 cannot depack the far stream'
+    _PAKC[key] = (far, hashlib.md5(far).digest(), len(base))
+    _PAKC_STATE['dirty'] = True
+    return far
+
+
+def _deflate_near(data):
+    """Raw DEFLATE (RFC 1951, no zlib header). zlib -9 (both strategies) and
+    zopfli compete, the smallest stream wins -- measured 2026-09-26: zopfli
+    -3..-7 % across the boot blobs, and Z_FILTERED wins only the SFX samples.
+    Round-tripped HERE, so a packer bug can never reach the ATR."""
     import hashlib
     if not _PAKC_STATE:
         _pak_cache()
@@ -297,29 +371,60 @@ def _deflate(data):
     # inflate816.asm counts the codes of each length in ONE byte, and a block
     # with 256+ codes of one length (E3M1's map: 258 of length 9) hangs it.
     # zlib never notices, so the check picks among the candidates here.
-    from inflate816_ok import problem as _i816
     key = hashlib.md5(data).digest()
+    zz = _zopfli()
+    weak = _PAKC.setdefault(_PAKC_WEAK, set())
     hit = _PAKC.get(key)
-    if hit is not None and zlib.decompress(hit, wbits=-15) == data and _i816(hit) is None:
+    if hit is not None and zlib.decompress(hit, wbits=-15) == data and _i816(hit) \
+            and not (zz is not None and key in weak):
         return hit
     cands = []
     for strat in (zlib.Z_DEFAULT_STRATEGY, zlib.Z_FILTERED):
         c = zlib.compressobj(9, zlib.DEFLATED, -15, 9, strat)
         cands.append(c.compress(data) + c.flush())
-    try:
-        import zopfli.zlib as _zz
-        cands.append(_zz.compress(data, numiterations=15)[2:-4])  # strip header + adler
-    except ImportError:              # no zopfli on this machine: zlib alone
-        pass
+    if zz is not None:
+        cands.append(zz.compress(data, numiterations=15)[2:-4])  # strip header + adler
+        weak.discard(key)
+    else:                            # no zopfli on this machine: zlib alone
+        weak.add(key)
     c = zlib.compressobj(9, zlib.DEFLATED, -15, 9, zlib.Z_FIXED)
     cands.append(c.compress(data) + c.flush())   # fixed codes: always inflate816-safe
-    ok = [z for z in cands if _i816(z) is None]
+    ok = [z for z in cands if _i816(z)]
     assert ok, 'no DEFLATE candidate inflate816 can depack'
     best = min(ok, key=len)
     assert zlib.decompress(best, wbits=-15) == data, 'deflate round-trip failed'
     _PAKC[key] = best
     _PAKC_STATE['dirty'] = True
     return best
+
+
+def _with_reloc(xex):
+    """The XEX with the VBXE-at-$D7xx table (tools/vbxe_reloc.py) as one more
+    data segment, in front of the RUN vector: it loads into BOOT_RELOC, RAM no
+    other segment touches, and the boot loader walks it before it starts main
+    (boot.asm b_reloc). ONLY the ATR's copy carries it -- build/doom_bsp.xex
+    stays what check_xex.py and the simulators read."""
+    import boot_cfg
+    path = code_map.img('build', 'assets', 'code', 'vbxe_reloc.bin')
+    if not os.path.exists(path):
+        sys.exit(f'missing {path} -- run tools/vbxe_reloc.py')
+    tab = open(path, 'rb').read()
+    lo, hi = boot_cfg.BOOT_RELOC, boot_cfg.BOOT_RELOC + len(tab) - 1
+    i, run = 2 if xex[:2] == b'\xff\xff' else 0, None
+    while i + 4 <= len(xex):
+        s, e = struct.unpack_from('<HH', xex, i)
+        if s == 0xFFFF:
+            i += 2
+            continue
+        if s == 0x02E0:
+            run = i
+        elif s != 0x02E2 and s <= hi and e >= lo:
+            sys.exit(f'the XEX loads ${s:04X}-${e:04X} over the VBXE table at '
+                     f'${lo:04X}-${hi:04X} -- move BOOT_RELOC (tools/boot_cfg.py)')
+        i += 4 + e - s + 1
+    if run is None:
+        sys.exit('the XEX has no RUN vector')
+    return xex[:run] + struct.pack('<HH', lo, hi) + tab + xex[run:]
 
 
 def sky_of(name):
@@ -349,7 +454,7 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
              pool_pak_secs=0, wim_pak_secs=0, snd_pak0_secs=0, snd_pak1_secs=0,
              weap_pak_secs=0, mus_pak_secs=0, menu_plain_sec=0, menu_pakb_sec=0,
              menu_disk_secs=0, hud_pak_secs=0, fin_pak_secs=(),
-             fin_disk_secs=0):
+             fin_disk_secs=0, gam_chunks=0, gam_ext=0):
     tex_chunks = tex_stride // CHUNK_SECTORS      # tex_stride is a whole multiple of 32
     # (The old fixed-slot assert died with the pool split: per-level tex+spr
     # bounds are enforced in emit_levels_inc, against the SAME .tex bytes the
@@ -360,7 +465,7 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         f.write('; `python tools/ram_map.py`. Some RAM looks free to MADS and is NOT ($B000' + chr(10))
         f.write('; TEX_STAGE, $4000 map slot, $9000 MEMAC window): code assembled there is' + chr(10))
         f.write('; overwritten at runtime with no error and boots to a flat pink screen.' + chr(10))
-        f.write('; Level layout on the bootable ATR (woll3d-style fixed stride):\n')
+        f.write('; Level layout on the bootable ATR (fixed stride):\n')
         f.write(';   level n at sector LVL_SEC1 + n*LVL_SECTORS, read by load_level.\n')
         f.write(f'LVL_SEC1     equ {LVL_SEC1}\n')
         f.write(f'LVL_SECTORS  equ {stride}\n')
@@ -430,19 +535,15 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         f.write('HUD_CHUNKS   equ %d' % hud_chunks + chr(10))
         f.write('HUD_PAK_SECT equ %d' % (hud_pak_secs
                                          or hud_chunks * CHUNK_SECTORS) + chr(10))
-        f.write('PAL_SEC1     equ %d' % (hud_sec1 + (hud_pak_secs
-                                         or hud_chunks * CHUNK_SECTORS)) + chr(10))
-        f.write('PAL_SECTORS  equ 6                  ; 768 B per palette -> staging' + chr(10))
         f.write('PAL_COUNT    equ %d' % pal_count + chr(10))
         f.write(';   DOOM ships 14 palettes in PLAYPAL (st_stuff.c: normal, 8 red,'+chr(10))
         f.write(';   4 gold, 1 green); VBXE holds 4 at once, so pack_textures.py'+chr(10))
-        f.write(';   PAL_SLOTS picks the four and load_palette streams them one at'+chr(10))
-        f.write(';   a time -- the staging buffer is 1 KB, a palette 768 B.'+chr(10))
+        f.write(';   PAL_SLOTS picks them. They ride the GAMMA block into SDRAM'+chr(10))
+        f.write(';   (GAMMA_EXT below), not sectors of their own (2026-09-28).'+chr(10))
         f.write('; Digitized SFX (tools/wadsound.py), map-independent:'+chr(10))
         f.write(';   SND_CHUNKS x 4KB streamed into Rapidus SRAM bank $02 (SND_EXT;'+chr(10))
         f.write(';   the Timer-1 IRQ reads samples with lda.l, no VBXE involved).'+chr(10))
-        snd_sec1 = (hud_sec1 + (hud_pak_secs or hud_chunks * CHUNK_SECTORS)
-                    + pal_count * 6)
+        snd_sec1 = hud_sec1 + (hud_pak_secs or hud_chunks * CHUNK_SECTORS)
         f.write('SND_SEC1     equ %d' % snd_sec1 + chr(10))
         f.write('SND_CHUNKS   equ %d' % snd_chunks + chr(10))
         f.write(';   On the disk each wadsound REGION is its own DEFLATE'+chr(10))
@@ -461,8 +562,9 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         f.write('MENU_CHUNKS  equ %d' % menu_chunks + chr(10))
         f.write(';   chunks 0-33 and 83-93 are TWO DEFLATE streams, depacked'+chr(10))
         f.write(';   into the MENU_BOUNCE SDRAM and spr_fcopy-ed to VRAM'+chr(10))
-        f.write(';   (menu.asm mn_dist); chunks 34-82 (READ THIS! pages) stay'+chr(10))
-        f.write(';   plain at MENU_PLAIN_SEC for rd_pages.'+chr(10))
+        f.write(';   (menu.asm mn_dist); chunk 34 is plain at MENU_PLAIN_SEC,'+chr(10))
+        f.write(';   a READ THIS! page is a DEFLATE stream at the start of'+chr(10))
+        f.write(';   its own 512 sectors behind it (menu.asm rd_pages).'+chr(10))
         f.write('MENU_PLAIN_SEC equ %d' % (menu_plain_sec or menu_sec1) + chr(10))
         f.write('MENU_PAKB_SEC equ %d' % (menu_pakb_sec or menu_sec1) + chr(10))
         f.write('MENU_DISK_SECT equ %d' % (menu_disk_secs
@@ -500,8 +602,15 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
         f.write('SAVE_SLOTS   equ %d' % SAVE_SLOTS + chr(10))
         f.write('SAVE_SECTORS equ %d' % SAVE_SECTORS + chr(10))
         f.write('WEAP_SEC1    equ %d' % weap_sec1 + chr(10))
-        f.write('WEAP_CHUNKS  equ %d' % (weap_chunks + cmap_chunks + sky_chunks) + chr(10))
+        f.write('WEAP_CHUNKS  equ %d' % (weap_chunks + cmap_chunks + sky_chunks
+                                         + gam_chunks) + chr(10))
         f.write('WEAP_PAK_SECT equ %d' % weap_pak_secs + chr(10))
+        f.write(';   ...the last %d of them the GAMMA block (tools/doomgamma.py):' % gam_chunks
+                + chr(10))
+        f.write(';   v_video.c gammatable[5][256], then the PAL_COUNT palettes as'+chr(10))
+        f.write(';   R/G/B planes -- lights.asm gm_apply installs them from here.'+chr(10))
+        f.write('GAMMA_EXT    equ $%06X' % gam_ext + chr(10))
+        f.write('PALRAW_EXT   equ $%06X' % (gam_ext + doomgamma.PAL_OFF) + chr(10))
         f.write(';   ...and the last %d behind THOSE are the sky (tools/pack_sky.py):'
                 % sky_chunks + chr(10))
         f.write(';   SKY1-3 as painter run columns + the view column offsets,'+chr(10))
@@ -512,8 +621,8 @@ def emit_inc(names, stride, tex_sec1, tex_stride, pool_sec=0, pool_secs=0,
                 % cmap_chunks + chr(10))
         f.write(';   (tools/pack_cmap.py), 32 light rows x 256, rides in behind'+chr(10))
         f.write(';   them so it needs no loader of its own. lights.asm reads it'+chr(10))
-        f.write(';   at CMAP_EXT: colour = [CMAP_EXT + row*256 + colour], row ='+chr(10))
-        f.write(';   (255 - sector light) >> 3.'+chr(10))
+        f.write(';   at CMAP_EXT: colour = [CMAP_EXT + row*256 + colour], the row'+chr(10))
+        f.write(';   off lights.asm LT_ROW.'+chr(10))
         f.write('CMAP_EXT     equ $%06X' % cmap_ext + chr(10))
         f.write('CMAP_ROWS    equ 32' + chr(10))
         # ---- SDRAM preload (2026-08-03): the whole episode -> Rapidus SDRAM
@@ -636,9 +745,9 @@ def main():
     snd_pak0, snd_pak1 = _deflate(snd_a), _deflate(snd_b)
     snd_pak0_secs = _sectors(len(snd_pak0))
     snd_pak1_secs = _sectors(len(snd_pak1))
-    pal_len = os.path.getsize(PAL_BIN) if os.path.exists(PAL_BIN) else 768
-    pal_count = max(1, pal_len // 768)                        # pack_textures.py
-    snd_sec1 = hud_sec1 + hud_pak_secs + pal_count * 6   # after PLAYPAL
+    pal_dat = open(PAL_BIN, 'rb').read() if os.path.exists(PAL_BIN) else bytes(768)
+    pal_count = max(1, len(pal_dat) // 768)                   # pack_textures.py
+    snd_sec1 = hud_sec1 + hud_pak_secs   # (PLAYPAL left the disk, 2026-09-28)
     weap_dat = open(WEAP_BIN, 'rb').read() if os.path.exists(WEAP_BIN) else b''
     weap_len = len(weap_dat)
     weap_chunks = (_sectors(weap_len) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
@@ -656,12 +765,19 @@ def main():
     # PACKED WEAPONS run (2026-09-26): weapons + colormap + sky are ONE linear
     # $04:0000.. SRAM run, so they pack as ONE stream. Chunk padding between
     # the three blobs is kept (the SRAM layout is priced off the chunk map).
+    # ... and the gamma block behind the sky (2026-09-28, tools/doomgamma.py):
+    # gammatable + the palettes themselves, which left their own sectors
+    gam_dat = doomgamma.block(pal_dat)
+    gam_chunks = (_sectors(len(gam_dat)) + CHUNK_SECTORS - 1) // CHUNK_SECTORS
+    gam_ext = sky_ext + sky_chunks * CHUNK_SECTORS * SECTOR_SIZE
     weap_plain = (weap_dat.ljust(weap_chunks * 4096, b'\0')
                   + cmap_dat.ljust(cmap_chunks * 4096, b'\0')
-                  + sky_dat.ljust(sky_chunks * 4096, b'\0'))
+                  + sky_dat.ljust(sky_chunks * 4096, b'\0')
+                  + gam_dat.ljust(gam_chunks * 4096, b'\0'))
     weap_pak = _deflate(weap_plain)
     weap_pak_secs = (_sectors(len(weap_pak)) if weap_pak else
-                     (weap_chunks + cmap_chunks + sky_chunks) * CHUNK_SECTORS)
+                     (weap_chunks + cmap_chunks + sky_chunks + gam_chunks)
+                     * CHUNK_SECTORS)
 
     menu_dat = open(MENU_BIN, 'rb').read() if os.path.exists(MENU_BIN) else b''
     menu_len = len(menu_dat)
@@ -680,6 +796,21 @@ def main():
     menu_b = menu_dat[(MENU_A_CH + MENU_PLAIN_CH) * 4096:]
     menu_b = menu_b.ljust(-(-len(menu_b) // 4096) * 4096 if menu_b else 0, b'\0')
     menu_paka, menu_pakb = _deflate(menu_a), _deflate(menu_b)
+    # PACKED READ THIS!: a DEFLATE stream a page, at the start of the page's
+    # own slot -- the sectors rd_pages asks for stay where they were, SIO
+    # reads the packed ones only. What is left of the middle stays plain.
+    rd_paks = []
+    if menu_dat:
+        help_ch = _equ_int('menu_syms.inc', 'MENU_HELP_CH')
+        hch = _equ_int('menu_syms.inc', 'MENU_HCHUNKS')
+        hpages = _equ_int('menu_syms.inc', 'MENU_HPAGES')
+        if help_ch < MENU_A_CH or help_ch + hpages * hch > MENU_A_CH + MENU_PLAIN_CH:
+            sys.exit('the READ THIS! pages left the middle chunks of menu.bin')
+        for n in range(hpages):
+            c0 = help_ch + n * hch
+            page = menu_dat[c0 * 4096:(c0 + hch) * 4096].ljust(hch * 4096, bytes(1))
+            rd_paks.append((c0 * CHUNK_SECTORS, _deflate(page)))
+        menu_mid = menu_mid[:(help_ch - MENU_A_CH) * 4096]
     # FIXED OFFSETS inside the menu region. split_menu_ovl.py rewrites
     # menu.bin's overlay chunks BETWEEN this script's --dir pass and its disk
     # pass, so the packed sizes differ between the passes -- any downstream
@@ -808,17 +939,22 @@ def main():
                  weap_pak_secs=weap_pak_secs, mus_pak_secs=mus_pak_secs,
                  menu_plain_sec=menu_plain_sec, menu_pakb_sec=menu_pakb_sec,
                  menu_disk_secs=menu_disk_secs, hud_pak_secs=hud_pak_secs,
+                 gam_chunks=gam_chunks, gam_ext=gam_ext,
                  fin_pak_secs=fin_pak_secs, fin_disk_secs=fin_disk_secs)
         return
 
     for p, what in ((BOOT_BIN, 'boot.bin (assemble boot.asm)'),
-                    (XEX, 'doom_bsp.xex (run build.ps1)')):
+                    (XEX, 'doom_bsp.xex (run build_atr.ps1)')):
         if not os.path.exists(p):
             sys.exit(f'missing {p} -- build {what} first')
     boot = open(BOOT_BIN, 'rb').read()
+    stock = os.path.join(_PROJ, 'build', 'assets', 'code', 'boot.bin')
+    if BOOT_BIN != stock and os.path.exists(stock) and open(stock, 'rb').read(2)[1] != BOOT_SECTORS:
+        sys.exit(f"{os.path.basename(BOOT_BIN)} is {BOOT_SECTORS} sectors, boot.bin "
+                 f"{open(stock, 'rb').read(2)[1]}: the layout is the stock image's")
     if len(boot) > BOOT_SECTORS * SECTOR_SIZE:
         sys.exit(f'boot loader too large ({len(boot)} B > {BOOT_SECTORS * SECTOR_SIZE})')
-    xex = open(XEX, 'rb').read()
+    xex = _with_reloc(open(XEX, 'rb').read())
     xex_sec = _sectors(len(xex))
     if XEX_SEC + xex_sec > XEX_WIN_END:
         sys.exit(f'XEX too large: {xex_sec} sectors > {XEX_WIN_END - XEX_SEC}-sector window '
@@ -837,11 +973,6 @@ def main():
         o = (sec - 1) * SECTOR_SIZE
         disk[o:o + len(pak)] = pak
 
-    if os.path.exists(PAL_BIN):                      # PLAYPAL (installed at boot)
-        o = (hud_sec1 + hud_pak_secs - 1) * SECTOR_SIZE
-        d = open(PAL_BIN, 'rb').read()
-        disk[o:o + len(d)] = d
-
     if hud_len:                                      # status bar: one deflate
         o = (hud_sec1 - 1) * SECTOR_SIZE             #   stream (2026-09-26)
         disk[o:o + len(hud_pak)] = hud_pak
@@ -851,6 +982,9 @@ def main():
         disk[o:o + len(menu_paka)] = menu_paka       #   middle, then pakB
         o = (menu_plain_sec - 1) * SECTOR_SIZE
         disk[o:o + len(menu_mid)] = menu_mid
+        for sec, pak in rd_paks:                     # the READ THIS! pages
+            o = (menu_sec1 + sec - 1) * SECTOR_SIZE
+            disk[o:o + len(pak)] = pak
         o = (menu_pakb_sec - 1) * SECTOR_SIZE
         disk[o:o + len(menu_pakb)] = menu_pakb
 
@@ -913,6 +1047,7 @@ def main():
              weap_pak_secs=weap_pak_secs, mus_pak_secs=mus_pak_secs,
              menu_plain_sec=menu_plain_sec, menu_pakb_sec=menu_pakb_sec,
              menu_disk_secs=menu_disk_secs, hud_pak_secs=hud_pak_secs,
+                 gam_chunks=gam_chunks, gam_ext=gam_ext,
              fin_pak_secs=fin_pak_secs, fin_disk_secs=fin_disk_secs)
     def _pk(tag, sec1, pak, plain, where):
         print(f'  {tag}: sector {sec1}.., {_sectors(len(pak))} packed sectors '
@@ -926,12 +1061,16 @@ def main():
     print(f'  menu: sector {menu_sec1}.., {menu_disk_secs} disk sectors '
           f'(pakA {len(menu_paka)} B + plain {len(menu_mid)} B + '
           f'pakB {len(menu_pakb)} B <- {menu_len} B) -> VRAM via MENU_BOUNCE')
+    print('  read: the READ THIS! pages, on demand: '
+          + ', '.join(f'{_sectors(len(p))} sectors' for _, p in rd_paks)
+          + ' (each was 512)')
     _pk('mus ', mus_sec1, mus_pak, mus_dat, 'SDRAM MUS_BANK0')
     _pk('wim ', wim_sec1, wim_pak, wim_dat, f'SDRAM WIMAP_BANK ({wim_chunks} x 4 KB)')
     _pk('pool', pool_sec, pool_pak, pool_plain,
         f'SDRAM LVL_TEXSD_C ({poolsecs_all} sectors)')
     _pk('weap', weap_sec1, weap_pak, weap_plain,
-        f'SRAM $040000 (+cmap ${cmap_ext:06X}, sky ${sky_ext:06X})')
+        f'SRAM $040000 (+cmap ${cmap_ext:06X}, sky ${sky_ext:06X}, '
+        f'gamma ${gam_ext:06X})')
     _pk('snd ', snd_sec1, snd_pak0 + snd_pak1, snd_dat, 'SRAM banks $02+$06')
     print(f'  spr : sector {spr_sec1}.., {spr_stride} sectors/level | '
           f'things: sector {thg_sec1}.., {thg_stride} sectors/level | '

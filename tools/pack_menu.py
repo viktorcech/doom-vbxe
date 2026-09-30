@@ -204,10 +204,17 @@ MESSAGES = (
                                           # 41 chars (the 160 strips' limit).
     # ---- NOT a bonus id: the locked-door refusal (door_keymsg, doors.asm) ----
     # EV_VerticalDoor's PD_BLUEK/YELLOWK/REDK (d_englsh.h:128-130), as ONE
-    # colour-blind line: the HU line directory holds 64 (pack_wi.py
-    # MSG_STRIDE) and three colour lines are one over. The door's own trim
+    # colour-blind line (the HU line directory held 64 when it was written,
+    # pack_wi.py MSG_STRIDE). The door's own trim
     # carries the colour on screen.
     'You need a key for this door',       # 36 PD_*K, colour-blind
+    # ---- m_menu.c gammamsg[] (2026-09-28): the '8' key, DOOM's F11
+    # (lights.asm gm_next: line 37 + usegamma) ----
+    'Gamma correction OFF',               # 37 GAMMALVL0
+    'Gamma correction level 1',           # 38 GAMMALVL1
+    'Gamma correction level 2',           # 39 GAMMALVL2
+    'Gamma correction level 3',           # 40 GAMMALVL3
+    'Gamma correction level 4',           # 41 GAMMALVL4
 )
 LEVEL_NAMES = ()                 # set_levels fills it; EPI_FIRST needs it
 MSG_IDX0 = len(TITLES) - 1       # line index of bonus id 1 is MSG_IDX0+1, so
@@ -518,38 +525,26 @@ def _text_line(wt, img, w, h, text, y, scale):
 
 # The credit block: (text, top row, EPX scale). One table so the layout can be
 # nudged in one place -- `python tools/pack_menu.py --preview` renders it.
-#
-# SIZE (2026-08-13, "je to moc velke, nemoze to byt na celu screen"): this ran
-# W1K at scale 4 and everything else at 2, from row 40 down to row 197. Three
-# glyphs at scale 4 are ~120 of the 160 columns and the block reached both
-# edges of the page, so the screen WAS the text. One step down each (W1K 2, the
-# rest 1) leaves it a centred group in the middle half with black all round --
-# which is also what it looks like next to DOOM's own two HELP pages, since
-# those are full-bleed artwork and this one is not meant to compete with them.
-#
-# TITLE (2026-08-21, "dalo by sa to zmenit na DOOM VBXE, author: w1k"): the
-# headline was the bare handle W1K, so the page named the author and never the
-# port. It now names the PORT at scale 2 and the author on a line of its own
-# underneath, which is the order a title screen credits in. "DOOM VBXE" is 138
-# of the 160 columns at scale 2 -- WIDER than W1K was, but still narrower than
-# "CODE: OPUS 4.7, 4.8, 5," (140), so it changes nothing about how far the
-# block reaches: the ink still runs cols 10..149. The seventh line costs 24
-# rows, so everything below moved down 12 and the title up 10; the block sits
-# at rows 30..168, i.e. margins 30/31, as centred as the six-line one was.
-#
-# The model line is WRAPPED, not shrunk: "CODE: OPUS 4.7, 4.8, 5, FABLE 5" is
-# 195 px of the 160 the page has, so it breaks at the comma between the two
-# families -- 141 px and 51 px, both with room to spare. The trailing comma is
-# kept so the second line reads as the rest of one list rather than a new
-# credit. The two halves sit 2 rows apart where every other gap is 4 or more,
-# which is what makes them read as one entry.
-CREDITS = (('DOOM VBXE',               56, 2),     # the port, one size up
-           ('AUTHOR: W1K',             84, 1),     # ... and the rest in the
-           ('CODE: OPUS 4.7, 4.8, 5, FABLE 5', 96, 1),   # in-game message font
-           ('SPECIAL THANKS: DRAC030', 108, 1),    # (the 65816 review, 2026-09)
-           ('2026',                   120, 1),
-           ('V%s',                  132, 1),      # %s = VERSION
-           ('%s',                     144, 1))      # %s = the build stamp
+# {ver} = VERSION, {stamp} = the build stamp. The first line names the PORT and
+# the second the author: the startup console's bar is built from them.
+# 2026-09-28: the controls, every key the game reads (read_keys.asm, fps.asm,
+# automap.asm, menu.asm, doors.asm plr_steps).
+CREDITS = (('DOOM VBXE AI (65816)',            14, 2),
+           ('AUTHOR: W1K',                     42, 1),
+           ('SPECIAL THANKS: DRAC030',         54, 1),
+           ('V{ver}  {stamp}',                 66, 1),
+           ('JOYSTICK: WALK AND TURN',         90, 1),
+           ('FIRE: SHOOT   SHIFT: RUN',        102, 1),
+           ('SPACE: USE / OPEN DOOR',         114, 1),
+           ('1 - 7: SELECT WEAPON',           126, 1),
+           ('TAB: AUTOMAP   ESC: MENU',       138, 1),
+           ('- = OR < >: SCREEN SIZE / MAP ZOOM', 150, 1),
+           ('8: GAMMA   T: TEXTURES   F: FPS', 162, 1),
+           ('MENU: JOYSTICK, RETURN, ESC',    174, 1))
+
+
+def _credits_text(text, ver, stamp):
+    return text.replace('{ver}', ver).replace('{stamp}', stamp)
 
 
 def _credits_page(wt, ver):
@@ -561,23 +556,19 @@ def _credits_page(wt, ver):
     w, h = SR_W, SR_H
     img = bytearray(w * h)                        # palette 0 = black
     stamp = datetime.datetime.now().strftime('%d.%m.%Y %H:%M')
-    fill = {'V%s': f'V{ver}', '%s': stamp}
     for text, y, scale in CREDITS:
-        _text_line(wt, img, w, h, fill.get(text, text), y, scale)
+        _text_line(wt, img, w, h, _credits_text(text, ver, stamp), y, scale)
     return img, stamp
 
 
 def _console_version(ver, stamp):
-    """(2026-09-26) console_ver.inc: the startup console's top BAR (console.asm) -- DOS
-    DOOM v1.9's red-on-grey "DOOM System Startup v1.9", carrying the port's
-    name, VERSION and author (the CREDITS table's first two lines) and
-    nothing else. The SAME version the READ THIS! credits page shows, so
-    the two can never disagree. Padded to the full 80 columns: the whole
-    row is the inverted bar, as on the PC."""
-    port = CREDITS[0][0]                          # 'DOOM VBXE'
+    """console_ver.inc: the startup console's top BAR (console.asm) -- the
+    port's name, VERSION, author and build stamp, from the CREDITS table, so
+    it can never disagree with the READ THIS! page. Padded to the full 80
+    columns: the whole row is the inverted bar."""
+    port = CREDITS[0][0]                          # the port's name
     author = CREDITS[1][0].split(':')[-1].strip() # 'AUTHOR: W1K' -> 'W1K'
-    # 2026-09-27: + the build stamp, the one the READ THIS! credits page prints
-    text = f'{port} System Startup v{ver} by {author}  ({stamp})'
+    text = f'{port} v{ver} by {author}  ({stamp})'
     bar = text.center(80)
     if len(bar) != 80:
         sys.exit(f'  ERROR: console bar is {len(bar)} columns: {bar!r}')
@@ -730,7 +721,7 @@ def emit(wt):
     page3, stamp = _credits_page(wt, ver)         # ...and the credits page
     _console_version(ver, stamp)                  # ...and the SAME text for
     blob += _rd_page(page3, SR_W, SR_H)           #   the startup console
-    shown = ' / '.join(t.replace('V%s', f'V{ver}').replace('%s', stamp)
+    shown = ' / '.join(_credits_text(t, ver, stamp)
                        for t, _y, _s in CREDITS)   # from the table, so the log
     sizes.append((f'CREDITS "{shown}"',            #   cannot drift off the page
                   SR_W, SR_H, len(page3)))

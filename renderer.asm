@@ -110,6 +110,8 @@ rwc2    sta ybotc_arr,x              ; open window bottom (status bar starts bel
 ?vcok   lda vc_frame                 ; 2026-09-26: the stamp into VC_LOOK's two
         sta.l B1CODE_BASE+process_seg.VC_LOOK0.ps_v1stc+1   ;   `cmp #` operands, once a
         sta.l B1CODE_BASE+process_seg.VC_LOOK1.ps_v2stc+1   ;   frame (no load per lookup)
+        lda #$FF                     ; the frame's first portal patches the column
+        sta ps_shut                  ;   loop for itself (seg_draw.asm ?shp)
         stz frame_done
         stz bsp_sp
 	stz ms_n

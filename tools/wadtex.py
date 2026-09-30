@@ -16,7 +16,7 @@ This is the data side of putting textures back on the walls (Rapidus makes the
 per-pixel loop feasible again). It does NOT change the .bin -- it's read straight
 from the WAD, indexed the same way pack_map.py resolves a seg's texture name.
 
-CLI (verify):  python wadtex.py [TEXNAME]   -> _pomocne/preview/<name>.png
+CLI (verify):  python wadtex.py [TEXNAME]   -> tools/tests/out/<name>.png
                python wadtex.py --list       -> list texture names
 """
 import os
@@ -357,7 +357,7 @@ def _dump(wt, name):
     for x in range(w):
         for y in range(h):
             px[x, y] = wt.playpal[tex[x][y]]
-    out_dir = os.path.join(os.path.dirname(_HERE), '_pomocne', 'preview')
+    out_dir = os.path.join(_HERE, 'tests', 'out')
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f'{name.upper()}.png')
     img.resize((w * 3, h * 3), Image.NEAREST).save(out)

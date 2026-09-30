@@ -139,6 +139,9 @@
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc ai_door
+        lda #>TH_FLY                 ; a lost soul's flight is P_TryMove alone:
+        jsr ai_get                   ;   no P_Move, so no P_UseSpecialLine
+        bne ?out
         ldy #SEG_BACK
         lda [zp_sptr],y
         cmp #NO_SECTOR               ; one-sided wall: nothing behind it

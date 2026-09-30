@@ -337,6 +337,9 @@ PJ_ROCKR equ 11                      ; info.c MT_ROCKET radius
                                      ;   [64,127], so dist ~ 96 << sh), and
                                      ;   pj_ctab turns it into "sub-steps per
                                      ;   drawn frame".
+        lda pj_vic                   ; a WALL shot flies along the facing, as its
+        cmp #$FF                     ;   aim ray did (sh_dist): out of line
+        beq ?wall
         lda pj_ax                    ; step X = |dx| * k7 * 2 (Q8), re-signed:
         ldy pj_dx+1                  ;   k7 normalises the larger leg to 7 u/VB
         jsr pj_leg                   ;   and the doubling makes it 14 -- the
@@ -365,18 +368,60 @@ PJ_ROCKR equ 11                      ; info.c MT_ROCKET radius
         bpl ?py
         dex
 ?py     stx pj_sye
-        lda #250                     ; ~5 s guard; arrival ends it long before
+?arm    lda #<PJ_GUARD               ; the guard; arrival ends it long before
         sta pj_ttl
+        lda #>PJ_GUARD
+        sta pj_ttl+1
         lda pj_fid
         sta pj_frm                   ; the CONTEXT's frame, not pj_rec+6: that
                                      ;  record is shared scratch and pj_draw1 ...
         lda #1
         sta pj_on
         jmp pj_zaim                  ; the z leg (its own island), and it ends
-.endp                                ;   `jmp pj_leaf` -- seeding pj_ss + the
-        .endseg
+                                     ;   `jmp pj_leaf` -- seeding pj_ss + the
                                      ;   record NOW, because the draw hook runs
                                      ;   before the first pj_frame.
+?wall   rep #$20                     ; PJ_SPD along the facing, per axis: Q8 and
+        .LONGA ON                    ;   the sign's byte above it
+        lda #PJ_SPD
+        sta m_a
+        lda zp_cos
+        sta m_b
+        .LONGA OFF
+        sep #$20
+        jsr smul_14                  ; (keeps X; returns 16-bit)
+        .LONGA ON
+        sta pj_sx
+        ldx #0
+        asl @                        ; C = the sign
+        bcc ?wx
+        dex
+?wx     stx pj_sxe
+        lda #PJ_SPD
+        sta m_a
+        lda zp_sin
+        sta m_b
+        .LONGA OFF
+        sep #$20
+        jsr smul_14
+        .LONGA ON
+        sta pj_sy
+        ldx #0
+        asl @
+        bcc ?wy
+        dex
+?wy     stx pj_sye
+        .LONGA OFF
+        sep #$20
+        bra ?arm
+.endp
+        .endseg
+PJ_SPD  equ 3594                     ; info.c MT_ROCKET speed 20 a tic = 14.04
+                                     ;   units a PAL VBLANK, Q8
+PJ_GUARD equ 600                     ; sub-steps: past the aim ray's reach
+    .if PJ_GUARD*14 < SH_NROCK*SH_STEP
+        ert 'PJ_GUARD: the flight guard must outlast a shot at the end of the aim ray'
+    .endif
 
 ;--------------------------------------------------------------
 ; pj_frameb -- the frame loop's mv_frameb call, retargeted once more
@@ -469,14 +514,14 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         jsr pj_zstep                 ; ...and the z leg (p_mobj.c gives the
                                      ;   missile a momz, so it CLIMBS to a
                                      ;   monster on a ledge)
-        dec pj_ttl
-        beq ?gone
-        rep #$20                     ; ---- 16-bit A. arrived? |x - tx| < 16 AND
-        .LONGA ON                    ;   |y - ty| < 16 (the step is 14, the
-        sec                          ;   window 32 wide -- no sample can jump
-        lda pj_x                     ;   across it). Each: subtract, negate in
-        sbc pj_tx                    ;   A, compare -- pj_a16 + m_neg + the
-        bpl ?a1                      ;   high-byte test collapsed to that
+        rep #$20                     ; ---- 16-bit A. The guard (a word), then:
+        .LONGA ON                    ;   arrived? |x - tx| < 16 AND |y - ty| < 16
+        dec pj_ttl                   ;   (a step is 14 at most: none jumps it)
+        beq ?g16
+        sec
+        lda pj_x
+        sbc pj_tx
+        bpl ?a1
         eor #$FFFF
         inc @
 ?a1     cmp #16
@@ -498,8 +543,9 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         bne ?step 
         ;bra ?step
 ?done   bra pj_leaf                  ; track the leaf + refresh the record
-?gone                                ; guard ran out mid-air: burst where it is,
-                                     ;   so the shot still LANDS
+        .LONGA ON
+?g16    sep #$20                     ; the guard ran out mid-air: burst where it
+        .LONGA OFF                   ;   is, so the shot still LANDS
 ?burst  jsr pj_hit                   ; P_ExplodeMissile: NOW it hurts
         ert *<>pj_burst             ;   next byte of this segment -- fall through
 .endp
@@ -592,10 +638,8 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         sta pj_rec
         lda pj_y
         sta pj_rec+2
-        sec                          ; anchor = flight z - 8, like the ball
-        lda pj_z
-        sbc #8
-        sta pj_rec+4
+        lda pj_z                     ; r_things.c: the picture's top is the
+        sta pj_rec+4                 ;   thing's z + its topoffset (spr_proj)
         sep #$20
         .LONGA OFF
         rts

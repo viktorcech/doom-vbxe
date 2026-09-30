@@ -83,17 +83,21 @@
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc cm_defer
         inc cm_n
-        lda cm_nt
+        lda cm_solid
+        beq ?open                    ; portal still open -> its new window
+        sta solid_arr,x              ; closed: same early-out bookkeeping as the
+        dec cols_open                ;   drawing paths do
+        bne ?scl
+        sta frame_done
+?scl    jmp sscl_col                 ; the wall's scale at THIS column; the window
+                                     ;   is the run source's, already in ytopc/ybotc
+                                     ;   (2026-09-30, .claude/skills/6502-idioms/
+                                     ;   SKILL.md "jsr X / rts -> jmp X": same bank)
+?open   lda cm_nt
         sta ytopc_arr,x
         lda cm_nb
         sta ybotc_arr,x
-        lda cm_solid
-        beq ?done                    ; portal still open -> nothing else to do
-        sta solid_arr,x              ; closed: same early-out bookkeeping as the
-        dec cols_open                ;   drawing paths do
-        bne ?done
-        sta frame_done
-?done   rts
+        rts
 .endp
         .endseg
 
@@ -117,7 +121,7 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         lsr                          ;   frame of spin, _probe_bwait). X = the open
         tax                          ;   buffer's restore list (0 = A, 1 = B)
         lda cm_rc,x
-        cmp #CM_RMAX
+        cmp #CM_RMAX-1               ; (2026-09-28: a flush may record TWO links)
         jcc ?link                    ; room: out of line below; full: the old way
         jsr ptc_fire_wait            ; the source column's spans may still sit in
                                      ;   the OPEN chain: launch it, then wait
@@ -182,9 +186,64 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         ; copy needs IS the template: SRC_STEPX 0 (the source column fans out),
         ; DST_STEPY 160, DST_STEPX 1, XOR 0, ZOOM 0, CTRL COPY|NEXT, and the DST
         ; bank byte the frame's stamp chain wrote. Y is kept (cm_flush's contract).
+        ; 2026-09-28: ONLY THE ROWS THE COLUMN PAINTED. A closed column painted
+        ; its whole window; an OPEN portal only top..nt-1 and nb+1..bot -- the
+        ; window between is a later seg's (or bg_fill's) and was copied for
+        ; nothing: a portal that painted no row still sent 159 x 168 through
+        ; the blitter, 83k cycles a copy, and ptc_fire spun on it (_probe_bwait
+        ; --fire: 26k cyc a frame standing, 62k walking). No strip = no link.
 ?link   phy
-        txa                          ; entry = list*CM_RMAX + count (count < CM_RMAX)
-        asl
+        lda cm_solid
+        bne ?whole                   ; closed: cm_nt/cm_nb hold the scale
+        sec
+        lda cm_nt
+        sbc cm_top                   ; rows above the window (nt >= top)
+        beq ?lo
+        dec @
+        tay                          ; rows-1
+        lda cm_bot                   ; a second strip to come and ONE slot left:
+        cmp cm_nb                    ;   launch what is open first (ptc_fire
+        beq ?up                      ;   keeps Y), both links go in one chain
+        lda zp_pt
+        cmp #<[BCB_SIZE*PT_LINKS+BCB_DST_ADDR]
+        bne ?up
+        jsr ptc_fire
+?up     lda cm_nt                    ; (the links run BOTTOM-UP, paint.asm: a
+        dec @                        ;   strip is named by its LAST row)
+        jsr ?emit
+        sec
+        lda cm_bot
+        sbc cm_nb                    ; rows below the window (nb <= bot)
+        beq ?fire
+        bra ?lo2
+?lo     sec
+        lda cm_bot
+        sbc cm_nb
+        beq ?lnf                     ; no row painted: no link, no launch
+?lo2    dec @
+        bra ?em
+?whole  sec
+        lda cm_bot
+        sbc cm_top
+?em     tay
+        lda cm_bot
+        jsr ?emit
+?fire   jsr ptc_fire                 ; FIRE EARLY: launch the chain now, the copy as its
+?lnf    ply                          ;   last link (holding it open to fill up measured
+                                     ;   +8.8k cyc a frame: the blitter started later)
+        stz cm_n
+        ldx cm_savex
+        bra ?none
+        ; ---- one copy link: A = the LAST row, Y = rows-1. Clobbers A/X/Y.
+?emit   phy
+        pha
+        lda tw_chn                   ; X = the OPEN buffer's restore list, read here:
+        sec                          ;   ?link's launch above flips the buffer
+        sbc #>[MEMW+MEMW_CHA_OFF]
+        lsr
+        lsr
+        tax
+        asl                          ; entry = list*CM_RMAX + count (count < CM_RMAX)
         asl
         ora cm_rc,x
         tay
@@ -211,7 +270,7 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         sta.l B1CODE_BASE+ptc_rsh+2
         .LONGA OFF
         sep #$20
-        ldx cm_top                   ; row -> framebuffer offset. A:B = row*160 + x:
+        plx                          ; row -> framebuffer offset. A:B = row*160 + x:
         lda row_hi,x                 ;   the carry goes into B by the xba pair
         xba                          ;   (<= $7CFF: no carry out)
         lda row_lo,x
@@ -226,22 +285,21 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         inc @                        ; the destination starts one column right
         ldy #BCB_DST_ADDR
         sta [zp_pt],y                ; [6-7]
-        lda zback_hi                 ; [2] SRC bank = the back buffer, [3] SRC_STEPY
-        and #$00FF                   ;   lo = 160: walk the SOURCE down a column too
-        ora #SCREEN_WIDTH<<8         ;   ([4], its high byte, is the template's 0)
-        ldy #BCB_SRC_ADDR+2
+        lda #$2000-SCREEN_WIDTH      ; [3-4] SRC_STEPY = -160: the SOURCE walks UP a
+        ldy #BCB_SRC_STEPY           ;   column as the slot's DST does (2026-09-28)
         sta [zp_pt],y
         .LONGA OFF
         sep #$20
+        lda zback_hi                 ; [2] SRC bank = the back buffer
+        dey
+        sta [zp_pt],y
         lda cm_n                     ; [12] WIDTH-1 = deferred columns - 1 ([13] is
         dec @                        ;   the template's 0)
         ldy #BCB_WIDTH
         sta [zp_pt],y
         lda #$FF                     ; [15] AND = $FF: a straight copy
         xba
-        lda cm_bot                   ; [14] HEIGHT-1 = bot - top
-        sec
-        sbc cm_top
+        pla                          ; [14] HEIGHT-1 = the strip's rows-1
         rep #$21
         .LONGA ON
         ldy #BCB_HEIGHT
@@ -251,12 +309,7 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         sta zp_pt
         .LONGA OFF
         sep #$20
-        jsr ptc_fire                 ; FIRE EARLY: launch the chain now, the copy as its
-?lnf    ply                          ;   last link (holding it open to fill up measured
-                                     ;   +8.8k cyc a frame: the blitter started later)
-        stz cm_n
-        ldx cm_savex
-        jmp ?none
+        rts
     .endif
 .endp
         .endseg
@@ -294,14 +347,16 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         .LONGA ON
         lda #VRAM_BCB_FF&$FFFF       ; [0-1] SRC = the painter links' $FF byte
         sta [zp_pt]
-        lda #[VRAM_BCB_FF>>16]       ; [2] its bank, [3] SRC_STEPY lo 0
-        ldy #BCB_SRC_ADDR+2
+        lda #$0000                   ; [3-4] SRC_STEPY 0 (2026-09-28: both bytes,
+        ldy #BCB_SRC_STEPY           ;   the copy's is -160)
         sta [zp_pt],y
         .LONGA OFF
         sep #$20
-                                      ; 2026-09-22 (drac030 RELOAD): A is still [2]'s bank byte, 0 --
-        ert [VRAM_BCB_FF>>16]<>0     ;   = [12] WIDTH-1 = 0: one column
-        ldy #BCB_WIDTH
+                                      ; A = 0 = the $FF byte's bank [2] ...
+        ert [VRAM_BCB_FF>>16]<>0
+        dey
+        sta [zp_pt],y
+        ldy #BCB_WIDTH               ; ... = [12] WIDTH-1 = 0: one column
         sta [zp_pt],y
         ply
         iny

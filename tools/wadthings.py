@@ -14,7 +14,7 @@ XXXXA2A8 hold frame A rot 2 and, mirrored, rot 8 (flip=True).
 
 CLI (verification):
   python wadthings.py --verify   -> resolve EVERY MOBJ entry against the WAD
-  python wadthings.py --dump BAR1A0 -> _pomocne/preview/<lump>.png
+  python wadthings.py --dump BAR1A0 -> tools/tests/out/<lump>.png
 """
 import math
 import os
@@ -321,7 +321,7 @@ def _dump(sp, lumpname):
             for k, c in enumerate(pix):
                 if 0 <= td + k < ph:
                     px[x, td + k] = pal[c] + (255,)
-    out_dir = os.path.join(os.path.dirname(_HERE), '_pomocne', 'preview')
+    out_dir = os.path.join(_HERE, 'tests', 'out')
     os.makedirs(out_dir, exist_ok=True)
     out = os.path.join(out_dir, f'{lumpname.upper()}.png')
     img.resize((pw * 3, ph * 3), Image.NEAREST).save(out)

@@ -201,18 +201,25 @@ dsq_hi  .rept DOOR_DTMAX+1, #
     .if DOOR_DTMAX*DOOR_SPEED_Q8 > 65535
         ert 'frame_dt: dt_vbl*DOOR_SPEED_Q8 no longer fits the dsq table words'
     .endif
+psq     .rept PSPD_DTMAX+1, #        ; plr_steps' dt_vbl * PSPD_Q8, words
+        dta a(#*PSPD_Q8)
+        .endr
+pn_tab  dta 0, 1, 3, 7               ; ...and its calls but the last, by halvings
+    .if 2*PSPD_DTMAX*PSPD_Q8 > 65535 || [2*PSPD_DTMAX*PSPD_Q8]/8 > PSTEP_MAX*256 || PSPD_AIR > PSPD_DTMAX
+        ert 'plr_steps: a frame of running is a word, and an eighth of it one call'
+    .endif
         .endseg
 
 ;--------------------------------------------------------------
-; plr_steps -- PLR_STEP/TRN_STEP for this frame: the ORIGINAL fixed per-frame
-;   amounts (SPD=24 units, TURN=3 BAM).
+; plr_steps -- TRN_STEP for the next read_input, and THE WALK: what DOOM's
+;   player covers in the frame's VBLANKs (PSPD_Q8, the run key doubling it), as
+;   1, 2, 4 or 8 equal move_player calls of PSTEP_MAX units at most. frame_dt
+;   falls in here BEFORE check_triggers: a crossing sees the whole travel.
 ;--------------------------------------------------------------
 plrs_resume = *
         org PSTEP_BASE
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc plr_steps
-        lda #SPD
-        sta PLR_STEP
         ; --- THE SLOW TURN (g_game.c G_BuildTiccmd).
         ldx #0                       ; the turnheld to store back
         lda stick_save               ; bit 2 = left, bit 3 = right, 0 = pressed;
@@ -237,17 +244,77 @@ plrs_resume = *
 ?arm    stx trn_held                 ; nothing held -> turnheld = 0 (X is 0) and
         lda #TURN_SLOW               ;   the next press starts with ONE BAM
         sta TRN_STEP                 ; (trn_acc is left alone: a whole-BAM step
-?run                                 ;  has no fraction to carry)
-        lda SKSTAT                   ; DOOM's run key: SHIFT doubles forwardmove
-        and #SK_SHIFT                ;   (0x19 -> 0x32). The port takes a SECOND
-        bne ?out                     ;   24-unit step rather than one 48-unit
-        jmp move_player              ;   step, because move_player's halfway
-?out    rts                          ;   collision probe only holds for step<=24
-.endp                                ;   (gap 12 < PLAYER_R). frame_dt tail-calls
+                                     ;  has no fraction to carry)
+?run    lda pl_air                   ; in the air: the keys he left the ground
+        bne ?air                     ;   with, for PSPD_AIR VBLANKs a frame
+        lda stick_save               ; on the ground: bits 0-1 the stick's forward
+        and #$03                     ;   and back, bit 3 SET = no run key (DOOM's:
+        sta pl_akey                  ;   SHIFT doubles forwardmove, $19 -> $32)
+        lda SKSTAT
+        and #SK_SHIFT
+        tsb pl_akey
+        lda dt_vbl                   ; ...for the frame's VBLANKs, PSPD_DTMAX at
+        cmp #PSPD_DTMAX              ;   most
+        bcc ?dt
+        lda #PSPD_DTMAX
+        bra ?dt
+?air    lda #PSPD_AIR
+?dt     asl @                        ; the word table's index (<= 32: C = 0 out)
+        tax
+        lda pl_akey
+        and #$03
+        cmp #$03
+        beq ?idle                    ; neither way
+        lda pl_akey
+        and #SK_SHIFT
+        cmp #1                       ; C = 0: the run key. rep, ldy and lda keep it
+        rep #$20
+        .LONGA ON
+        ldy pl_air
+        bne ?d
+        lda zp_cos                   ; the heading, on the ground
+        sta pl_acos
+        lda zp_sin
+        sta pl_asin
+?d      lda psq,x                    ; PSPD_Q8 * dt
+        bcs ?one
+        asl @                        ; (a word still: psq's ert)
+?one    ldy #0
+        cmp #PSTEP_MAX*256+1
+        bcc ?fit
+?half   lsr @                        ; twice the calls, half as long each
+        iny
+        cmp #PSTEP_MAX*256+1
+        bcs ?half
+?fit    sta pl_step
+        .LONGA OFF
+        sep #$20
+        lda pl_akey
+        lsr @                        ; C = the forward bit, SET = not pressed
+        bcs ?back
+?cnt    lda pn_tab,y
+        sta pl_n                     ; (the store keeps Z)
+        beq ?last
+?call   jsr move_player
+        jsr spr_pickup               ; what he ran over on the way: the frame's
+        dec pl_n                     ;   own spr_pickup takes the last stop
+        bne ?call
+?last   jmp move_player
+?idle   lda pl_air                   ; the ONE call: on the ground it spends a
+        beq ?last                    ;   shove (pl_idle), in the air it walks
+        stz pl_step                  ;   nothing
+        stz pl_step+1
+        bra ?last
+?back   rep #$20                     ; walking back: the distance negative
+        .LONGA ON                    ;   (C = 1: the bcs took it here)
+        lda #$0000
+        sbc pl_step
+        sta pl_step
+        .LONGA OFF
+        sep #$20
+        bra ?cnt
+.endp
         .endseg
-                                     ;   us AFTER the frame's first move_player
-                                     ;   and BEFORE check_triggers, so a crossing
-                                     ;   still sees the whole frame's travel.
 ;--------------------------------------------------------------
 ; skipx_ref -- move_player's between-axes cur_floor refresh. Grounded: a
 ;   committed X step may have raised the player (stairs), so the Y step-up is
@@ -476,6 +543,29 @@ dap_resume = *
 
 
 ;--------------------------------------------------------------
+; use_refused -- C = 1 if zp_sptr is one of the door faces USE is refused
+;   through that DOOR_DENY cannot name (MAP_DOORX, pack_map _doors). A free
+;   slot holds 0, and no seg record lives at $0000. X survives.
+;--------------------------------------------------------------
+        .segment B1
+.proc use_refused
+        ldy #256-DOORX_N*2           ; the index counts up to zero
+        rep #$20
+        .LONGA ON
+        lda zp_sptr
+?l      cmp MAP_DOORX+DOORX_N*2-256,y
+        beq ?out                     ; equal: C = 1
+        iny
+        iny
+        bne ?l
+        clc
+?out    sep #$20
+        .LONGA OFF
+        rts
+.endp
+        .endseg
+
+;--------------------------------------------------------------
 ; use_leaf -- test every seg of the subsector in zp_nid against the USE ray.
 ;   OUT: A = door index if a crossed seg is a door line ($FF = none),
 ;        USE_BLK = 1 if a crossed seg blocks the ray.
@@ -525,10 +615,11 @@ dap_resume = *
         lda [zp_sptr],y              ;   false` -- a manual door answers the
         cmp.l DOOR_DENY,x            ;   FRONT sector of the line that carries the
         beq ?plain                   ;   special, and its other face has special 0
-        txa                          ;   and only says "oof". pack_map names that
-        rts                          ;   face's sector in DOOR_DENY, because a seg
-                                     ;   cannot tell the two faces apart: BOTH
-                                     ;   have the door as their back sector.
+        jsr use_refused              ;   and only says "oof". pack_map names that
+        bcs ?plain                   ;   face's sector in DOOR_DENY, because a seg
+        txa                          ;   cannot tell the two faces apart: BOTH
+        rts                          ;   have the door as their back sector. The
+                                     ;   faces a sector cannot name: use_refused.
 ?plain  jsr use_shut                 ; not a switch face: does its opening block?
         beq ?next
 ?block  lda #1
@@ -742,7 +833,7 @@ dkm_resume = *
         org udg_resume
 
 ;==============================================================
-; SWITCHES (S1/SR) + walkover doors -- 1:1 with _pomocne/_doomsrc:
+; SWITCHES (S1/SR) + walkover doors -- 1:1 with _doomsrc:
 ;   p_switch.c P_UseSpecialLine:  103 S1 EV_DoDoor(open)   62 SR EV_DoPlat(DWU)
 ;                                  29 S1 EV_DoDoor(normal)  63 SR EV_DoDoor(normal)
 ;   p_spec.c  P_CrossSpecialLine:   2 W1 EV_DoDoor(open)    90 WR EV_DoDoor(normal)

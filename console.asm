@@ -3,7 +3,7 @@
 ;   An 80x25 VBXE TEXT overlay (XDLC_TMON: 2 B a cell -- char + attribute,
 ;   font at CHBASE<<11, 8x8 cells) shows D_DoomMain's own startup lines
 ;   while the boot streams load, with R_Init's dots fed by the depacker
-;   (one dot per 32 KB pulled through inflate's ?ifill). The title screen
+;   (one dot per 32 KB pulled through inflate's ?rdsec). The title screen
 ;   takes the display over at the end exactly as before -- everything here
 ;   lives in VRAM $004000-$005FFF, which the first frame clear reuses.
 ;
@@ -35,6 +35,13 @@ CON_H     equ 25
 ;   segment (b1 DATA reads fine long); the table and the state stay bank 0.
 ;   Exactly 25 rows: bar 1, WAD 2, box 4, M/R_Init 2, I_Startup 6, sound
 ;   and net 7, HU/ST 2, the cursor 1.
+;   2026-09-28: three of the lines say what THIS machine is -- the CPU and its
+;   speed, the VBXE core and where it sits, one POKEY or two. $0A-$0D in a
+;   string is such a fact, printed by con_fld.
+CF_MHZ  equ $0A                      ; the CPU's speed, measured: "19.5 MHz"
+CF_VBX  equ $0B                      ; the FX core: "1.26"
+CF_VBA  equ $0C                      ; VBXE's registers: "D640"
+CF_POK  equ $0D                      ; "stereo" / "mono"
 CON_NDOTS equ [[POOL_PAK_SECT+7]/8]/32   ; R_Init's dots: one per 32 KB of
                                          ;   the pool stream (con_tick)
         .segment D0                  ; DRAC_PLAN 3a: bank-0 data
@@ -45,8 +52,8 @@ con_stab dta a(con_s0), a(con_s1), a(con_s2), a(con_s3)
 con_next dta 0
         .endseg
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-con_s0                               ; the BAR: "DOOM VBXE System Startup
-        icl 'console_ver.inc'        ;   v<VERSION> by <author>", 80 columns,
+con_s0                               ; the BAR: the port's name, version, author
+        icl 'console_ver.inc'        ;   and build stamp, 80 columns, from
         dta 0                        ;   pack_menu.py (the credits' own text)
 con_s1  dta c'        adding doom.wad', $9B
         dta c'        registered version.', $9B
@@ -63,11 +70,11 @@ con_s4  dta c'R_Init: Init DOOM refresh daemon - ['
         dta c']', 0
 con_s5  dta $9B, c'P_Init: Init Playloop state.', $9B
         dta c'I_Init: Setting up machine state.', $9B
-        dta c'I_StartupDPMI', $9B
-        dta c'I_StartupMouse', $9B
+        dta c'I_StartupCPU: 65C816, ', CF_MHZ, $9B
+        dta c'I_StartupVBXE: FX core ', CF_VBX, c' at $', CF_VBA, $9B
         dta c'I_StartupJoystick', $9B
         dta c'I_StartupKeyboard', $9B, 0
-con_s6  dta c'I_StartupSound', $9B
+con_s6  dta c'I_StartupSound: ', CF_POK, c' POKEY', $9B
         dta c'I_StartupTimer()', $9B
         dta c'  calling DMX_Init', $9B
         dta c'D_CheckNetGame: Checking network game status.', $9B
@@ -156,22 +163,8 @@ con_lb   :CON_LNMAX dta 0            ;   cursor's cell) ... and its chars
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc con_init
-        lda #1                       ; palette 1 (NEVER 0 -- FL_PAL_GOLD): the
-        sta VBXE_PSEL                ;   opaque text mode inks a cell in entry
-        ldx #CON_PALN-4              ;   attr&$7F and papers it in $80, or in
-?pal    lda.l B1CODE_BASE+con_palt,x ;   $80+ink when attr bit 7 is set
-        sta VBXE_CSEL                ;   (vbxe.cpp:2943-2946). PLAYPAL takes
-        lda.l B1CODE_BASE+con_palt+1,x   ;   all four back at load_palette,
-        sta VBXE_CR                  ;   after the console's last line.
-        lda.l B1CODE_BASE+con_palt+2,x
-        sta VBXE_CG
-        lda.l B1CODE_BASE+con_palt+3,x
-        sta VBXE_CB                  ; (CB commits the entry)
-        dex
-        dex
-        dex
-        dex
-        bpl ?pal
+        ldx #CON_PALN-4              ; the DOS text colours
+        jsr con_pal
 
         lda #BANK_EN|[CON_MAP>>12]   ; the whole $004000-$005FFF block sits
         sta VBXE_BANK_SEL            ;   in ONE 16 KB window page
@@ -186,22 +179,22 @@ con_lb   :CON_LNMAX dta 0            ;   cursor's cell) ... and its chars
         ora #1
         sta PORTB
         ldx #0                       ; ROM font $E000 -> CON_FONT (128 chars,
-?fnt    lda $E000,x                  ;   1 KB x 4 copies fill the 2 KB slot
-        sta MEMW16+[CON_FONT&$3FFF],x         ;   so bit 7 codes stay harmless)
+                                     ;   1 KB x 4 copies fill the 2 KB slot so
+                                     ;   bit 7 codes stay harmless). 8-bit: the
+                                     ;   ROM is in. 2026-09-28: long,x stores --
+                                     ;   an abs,x one reads the window first
+?fnt    lda $E000,x
+        sta.l MEMW16+[CON_FONT&$3FFF],x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$400,x
         lda $E100,x
-        sta MEMW16+[CON_FONT&$3FFF]+$100,x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$100,x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$500,x
         lda $E200,x
-        sta MEMW16+[CON_FONT&$3FFF]+$200,x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$200,x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$600,x
         lda $E300,x
-        sta MEMW16+[CON_FONT&$3FFF]+$300,x
-        lda $E000,x
-        sta MEMW16+[CON_FONT&$3FFF]+$400,x
-        lda $E100,x
-        sta MEMW16+[CON_FONT&$3FFF]+$500,x
-        lda $E200,x
-        sta MEMW16+[CON_FONT&$3FFF]+$600,x
-        lda $E300,x
-        sta MEMW16+[CON_FONT&$3FFF]+$700,x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$300,x
+        sta.l MEMW16+[CON_FONT&$3FFF]+$700,x
         inx
         bne ?fnt
         pla                          ; PORTB back the way it was (ROM out) ...
@@ -211,19 +204,8 @@ con_lb   :CON_LNMAX dta 0            ;   cursor's cell) ... and its chars
         plp
         ; the map + the blank row: char 0 (the internal SPACE) on attr 0 --
         ;   no ink, $80 paper: black. Map and XDL share one window page.
-        lda #<[MEMW16+[CON_MAP&$3FFF]]
-        sta zp_ptr
-        lda #>[MEMW16+[CON_MAP&$3FFF]]
-        sta zp_ptr+1
         ldx #[[CON_H*CON_W*2+CON_W*2+255]/256]
-        ldy #0
-        tya
-?clr    sta (zp_ptr),y
-        iny
-        bne ?clr
-        inc zp_ptr+1
-        dex
-        bne ?clr
+        jsr con_clr
         ; the XDL, THREE entries: 24 blank lines, the 25 text rows (ONE
         ;   entry: the text mode steps OVADR itself on every 8th line,
         ;   vbxe.cpp:2073), 16 blank lines. 240 = the title list's span;
@@ -231,13 +213,11 @@ con_lb   :CON_LNMAX dta 0            ;   cursor's cell) ... and its chars
         ;   CRT's overscan ate the bar's top 4 lines (Altirra shows them).
         ldx #CON_XDLN-1
 ?xdl    lda.l B1CODE_BASE+con_xdlt,x
-        sta MEMW16+[CON_XDL&$3FFF],x
+        sta.l MEMW16+[CON_XDL&$3FFF],x
         dex
         bpl ?xdl
         lda #BANK_EN|BANK_OVERHEAD   ; the window back on the BCB bank
         sta VBXE_BANK_SEL
-        stz con_cx
-        stz con_cy
         stz con_next
         stz con_nd
         lda #CON_COL
@@ -253,12 +233,84 @@ con_lb   :CON_LNMAX dta 0            ;   cursor's cell) ... and its chars
         sta VBXE_VCTL
         rts
 .endp
-; the DOS text colours: entry, R, G, B
+;--------------------------------------------------------------
+; con_pal -- con_palt's entries from X down to the first into palette 1 (NEVER
+;   0 -- FL_PAL_GOLD). The opaque text mode inks a cell in entry attr&$7F and
+;   papers it in $80, or in $80+ink when attr bit 7 is set (vbxe.cpp:2943).
+;   PLAYPAL takes the palette back after the console's last line.
+;--------------------------------------------------------------
+.proc con_pal
+        lda #1
+        sta VBXE_PSEL
+?pal    lda.l B1CODE_BASE+con_palt,x
+        sta VBXE_CSEL
+        lda.l B1CODE_BASE+con_palt+1,x
+        sta VBXE_CR
+        lda.l B1CODE_BASE+con_palt+2,x
+        sta VBXE_CG
+        lda.l B1CODE_BASE+con_palt+3,x
+        sta VBXE_CB                  ; (CB commits the entry)
+        dex
+        dex
+        dex
+        dex
+        bpl ?pal
+        rts
+.endp
+
+;--------------------------------------------------------------
+; con_clr -- X pages of the map blank, from its first row, the cursor home.
+;   The window is on the map's bank. Words through [zp_ptr],y: a (dp),y store
+;   reads the window first (2026-09-28).
+;--------------------------------------------------------------
+.proc con_clr
+        stz zp_ptr+2
+        rep #$20
+        .LONGA ON
+        lda #MEMW16+[CON_MAP&$3FFF]
+        sta zp_ptr
+        lda #0
+        tay
+        sta con_cx                   ; (and con_cy: the pair)
+?clr    sta [zp_ptr],y
+        iny
+        iny
+        bne ?clr
+        inc zp_ptr+1                 ; (a word: the page never wraps into +2)
+        dex
+        bne ?clr
+        .LONGA OFF
+        sep #$20
+        rts
+.endp
+    .if con_cy <> con_cx+1
+        ert 'con_clr homes the cursor with one word: con_cy follows con_cx'
+    .endif
+
+; the text colours: entry, R, G, B -- DOS's four ...
 con_palt dta CON_COL, $AA, $AA, $AA  ; ink: light grey
         dta $80, $00, $00, $00       ; paper: black
         dta CON_BARI, $AA, $00, $00  ; the bar's ink: DOS red
         dta $80+CON_BARI, $AA, $AA, $AA  ; ... on light grey paper
 CON_PALN equ * - con_palt
+; ... and ENDOOM's CGA ones behind them (con_end): attr $88+n inks in entry
+;   8+n, papers in $88+n
+con_epal dta $09, $FF, $FF, $55      ; $01: yellow ...
+        dta $89, $AA, $00, $00       ;   ... on red
+        dta $0A, $FF, $FF, $FF       ; $02: white on red
+        dta $8A, $AA, $00, $00
+        dta $0B, $FF, $FF, $55       ; $03: yellow on blue ("id")
+        dta $8B, $00, $00, $AA
+        dta $0C, $55, $FF, $FF       ; $04: cyan on red
+        dta $8C, $AA, $00, $00
+        dta $0D, $AA, $00, $00       ; $05: red on black (row 0's half blocks)
+        dta $8D, $00, $00, $00
+CON_PALA equ * - con_palt
+    .if CON_PALA > 128
+        ert 'con_pal counts with dex/bpl'
+    .endif
+; the map's rows in the window (con_putc)
+con_rowt :CON_H dta a(MEMW16+[CON_MAP&$3FFF]+#*CON_W*2)
 ; ctrl1 = TMON|MAP_OFF|RPTL|OVADR. Field order per entry (vbxe.cpp:556-
 ;   671): repeat, OVADR+step (5), CHBASE (1), OVATT (2) -- the first entry
 ;   loads the font and the attributes (OV_NORMAL|OV_PAL1|PF_PAL1, PRI_ALL).
@@ -271,35 +323,6 @@ CON_XDLN equ * - con_xdlt
         ert 'con_xdlt: the copy loop counts with dex/bpl'
     .endif
 
-;--------------------------------------------------------------
-; con_row160 -- A = row -> A = low byte of row*160, con_r1 = high byte.
-;--------------------------------------------------------------
-.proc con_row160
-        sta con_r0                   ; row*160 = row*128 + row*32
-        stz con_r1
-        rep #$20                     ; 16-bit: (row << 2 + row) << 5
-        .LONGA ON
-        lda con_r0
-        and #$00FF
-        asl @
-        asl @
-        adc con_r0
-        and #$00FF                   ; (con_r1 is the high byte cell: keep
-        asl @                        ;  the pair -- row*5 <= 120 fits a byte)
-        asl @
-        asl @
-        asl @
-        asl @
-        sta con_r0
-        .LONGA OFF
-        sep #$20
-        lda con_r0
-        rts
-.endp
-        .endseg
-        .segment D0
-con_r0  dta 0
-con_r1  dta 0
         .endseg
 
 ;--------------------------------------------------------------
@@ -310,36 +333,32 @@ con_r1  dta 0
 ;--------------------------------------------------------------
         .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
 .proc con_msg
-        lda con_next
+        ldx con_next
         inc con_next
-        pha                          ; the id, for the fixups after the print
-        cmp #5                       ; entry 5 (P_Init): the dots are done
+        phx                          ; the id, for the fixups after the print
+        cpx #5                       ; entry 5 (P_Init): the dots are done
         bne ?n5
         lda #$80
         trb con_on
-?n5     pla
-        pha
+?n5     txa
         bne ?n0                      ; entry 0: the bar, red on grey
         lda #CON_BAR
         sta con_attr
-        lda #0                       ; A = the id again, for the asl
-?n0     asl @
+?n0     txa
+        asl @
         tax
         lda con_stab,x               ; the string sits in the B1 bank: walk
-        sta zp_ptr                   ;   it [zp_ptr],y long (no loader runs
+        sta zp_ptr                   ;   it [zp_ptr] long (no loader runs
         lda con_stab+1,x             ;   mid-print, the cell is free)
         sta zp_ptr+1
         lda #B1CODE_BANK
         sta zp_ptr+2
-        ldy #0
-?lp     lda [zp_ptr],y
-        beq ?done
-        cmp #$9B
-        bne ?ch
-        jsr con_nl                   ; EOL (scrolls on the last row)
+        bra ?lp
+        ; the rare ones, out of line: a glyph falls through the loop
+?eol    jsr con_nl                   ; (scrolls on the last row)
         bra ?nx
-?ch     cmp #7
-        bcs ?pc                      ; $07+ = a glyph
+?ctl    cmp #CF_MHZ
+        bcs ?fld                     ; $0A-$0D = a fact about the machine
         cmp #6
         bne ?at
         lda #7                       ; $06: ENDOOM's box starts at column 7
@@ -348,7 +367,15 @@ con_r1  dta 0
 ?at     ora #$88                     ; $01-$05: ink entry 8+n, paper $88+n,
         sta con_attr                 ;   opaque (con_epal)
         bra ?nx
-?pc     jsr con_putc
+?fld    jsr con_fld
+        bra ?nx
+?lp     lda [zp_ptr]
+        beq ?done
+        cmp #$10
+        bcc ?ctl                     ; below $10: a control code
+        cmp #$9B
+        beq ?eol
+        jsr con_putc
 ?nx     inc zp_ptr
         bne ?lp
         inc zp_ptr+1
@@ -362,10 +389,9 @@ con_r1  dta 0
         rts
 ?d0     cmp #4
         bne ?d4
-        lda con_cx                   ; R_Init: the cursor back inside [ ],
-        sec                          ;   the dots' room, and the ticker armed
-        sbc #CON_NDOTS+1
-        sta con_cx
+        lda con_cx                   ; R_Init: the cursor back inside [ ], the
+        sbc #CON_NDOTS+1             ;   dots' room, and the ticker armed. C = 1:
+        sta con_cx                   ;   the cmp was equal
         lda #CON_NDOTS
         sta con_nd
         stz con_dots
@@ -375,52 +401,215 @@ con_r1  dta 0
 .endp
 
 ;--------------------------------------------------------------
-; con_putc -- A = ASCII: one glyph at the cursor, advance. Clobbers A/X.
-;   Preserves Y (the loaders' invariant). Scrolling is not needed: the
-;   script prints 24 lines at most -- the ert below counts them.
+; con_fld -- A = CF_*: that fact about the machine, at the cursor (2026-09-28).
+;   Clobbers A/X; Y = 0 out, as con_putc leaves it.
+;--------------------------------------------------------------
+.proc con_fld
+        cmp #CF_VBX
+        jcc con_fmhz
+        jeq con_fvbx
+        cmp #CF_POK
+        jcc con_fvba
+        jmp con_fpok
+.endp
+
+; con_fmhz -- the CPU's speed: the passes of a 22-cycle loop in one VBLANK
+;   (RTCLOK3 to RTCLOK3). CON_MHZP passes (PAL; CON_MHZN on NTSC) are 0.1 MHz,
+;   so a 41 MHz CPU counts 37,500 of them -- a word holds that. The SAME loop
+;   waits for the tick's edge first: 65,536 passes of it are 1.4 M cycles, a
+;   frame at 70 MHz (a shorter wait gave up before the tick came at 41 MHz).
+;   No tick at all: no figure.
+CON_MHZP equ 91                      ; 20,056 us a frame / 220 cycles
+CON_MHZN equ 76                      ; 16,688 us
+.proc con_fmhz
+        jsr ?tick                    ; to a tick's edge ...
+        jsr ?tick                    ; ... and the passes to the next: Y:X
+        txa
+        bne ?top
+        tya
+        bne ?top
+        rts                          ; (the count ran over)
+?tick   lda RTCLOK3
+        ldx #0
+        ldy #0
+?l      pha                          ; 3 + 4 + 2 + 2: the loop's other half
+        pla
+        nop
+        nop
+        inx                          ; 2 + 3 + 3 + 3
+        bne ?c
+        iny
+        beq ?tr
+?c      cmp RTCLOK3
+        beq ?l
+?tr     rts
+?top    lda #CON_MHZP
+        sta zp_tmp
+        lda PAL                      ; GTIA: bits 1-3 clear on a PAL machine
+        and #$0E
+        beq ?pal
+        lda #CON_MHZN
+        sta zp_tmp
+?pal    stz zp_tmp+1                 ; zp_tmp = 0.1 MHz in passes
+        tya
+        xba
+        txa                          ; A = the passes' low byte, B their high
+        rep #$21                     ; (C = 0)
+        .LONGA ON
+        pha
+        lda zp_tmp
+        asl @
+        asl @
+        adc zp_tmp                   ; (C = 0: a byte, shifted twice)
+        asl @
+        sta m_a                      ; m_a = 1 MHz
+        pla
+        ldx #0
+?i      cmp m_a                      ; X = the MHz
+        bcc ?id
+        sbc m_a                      ; (C = 1)
+        inx
+        bne ?i
+?id     ldy #0
+?f      cmp zp_tmp                   ; Y = the tenths (the rest is < m_a: 0-9)
+        bcc ?fd
+        sbc zp_tmp
+        iny
+        bne ?f
+?fd     .LONGA OFF
+        sep #$21                     ; (C = 1)
+        txa
+        ldx #$FF
+?t      inx                          ; X = the tens
+        sbc #10
+        bcs ?t
+        adc #10                      ; (C = 0) the ones
+        pha
+        txa
+        beq ?nt                      ; no leading 0
+        ora #'0'
+        jsr con_putc                 ; (keeps Y)
+?nt     pla
+        ora #'0'
+        jsr con_putc
+        lda #'.'
+        jsr con_putc
+        tya
+        ora #'0'
+        jsr con_putc
+        ldx #CON_T_MHZ
+        jmp con_str
+.endp
+
+; con_fvbx -- the FX core's version: 1.xx off MINOR_REVISION ($26 = 1.26; bit 7
+;   is the RAMBO core's).   con_fvba -- where its registers are.
+.proc con_fvbx
+        lda #'1'
+        jsr con_putc
+        lda #'.'
+        jsr con_putc
+        lda VBXE_XDLA0               ; (read: MINOR_REVISION)
+        pha
+        lsr @
+        lsr @
+        lsr @
+        lsr @
+        and #7
+        ora #'0'
+        jsr con_putc
+        pla
+        and #$0F
+        ora #'0'
+        jmp con_putc
+.endp
+.proc con_fvba
+        lda #'D'
+        jsr con_putc
+        lda #>VBXE_VCTL              ; the page, $D6 or $D7 (the boot loader's find)
+        and #$0F
+        ora #'0'
+        jsr con_putc
+        lda #'4'
+        jsr con_putc
+        lda #'0'
+        jmp con_putc
+.endp
+
+; con_fpok -- one POKEY or two (Seban's test): timer 1 of the chip at $D21x is
+;   started and allowed to interrupt. On a mono machine that IS the chip at
+;   $D20x, whose IRQST shows it at once; a second POKEY's never gets there.
+;   No interrupt is taken (sei), and IRQEN goes back to the engine's 0.
+.proc con_fpok
+        php
+        sei
+        lda #3
+        sta $D21F                    ; SKCTL: out of the init state
+        sta $D210                    ; AUDF1: a short period
+        stz $D211
+        lda #1
+        sta $D21E                    ; IRQEN: timer 1
+        sta $D219                    ; STIMER
+        ldx #0
+        ldy #16                      ; (A = 1: IRQST's bit, all through the loop)
+?l      bit $D20E                    ; IRQST bit 0 = 0: the ONE POKEY's timer
+        beq ?one
+        inx
+        bne ?l
+        dey
+        bne ?l
+        ldx #CON_T_ST                ; nothing in 4,096 reads: there are two
+        bra ?say
+?one    ldx #CON_T_MO
+?say    stz $D21E
+        stz $D20E
+        plp
+        jmp con_str
+.endp
+
+;--------------------------------------------------------------
+; con_putc -- A = ASCII: one glyph at the cursor, advance. Clobbers A/X,
+;   keeps Y (the loaders' invariant). 2026-09-28: the cell's address off
+;   con_rowt in one 16-bit block, and char + attribute as ONE word through
+;   (zp_tmp) -- an indexed store reads the window first, and the second byte
+;   rides the first one's chip cycle.
 ;--------------------------------------------------------------
 .proc con_putc
         cmp #$60
         bcs ?cv                      ; $60+ = internal already
         sbc #$1F                     ; C = 0 (the bcs fell through): -$20
-?cv     pha
+?cv     xba                          ; the char to B
         lda con_cy
         cmp #CON_H
         bcs ?off                     ; past the screen: swallow (belt)
-        jsr con_row160               ; A = low of row*160, con_r1 = high
-        clc
-        adc con_cx                   ; + column*2
-        sta zp_tmp
-        lda con_r1
-        adc #0
-        sta zp_tmp+1
+        asl @
+        tax                          ; X = con_rowt's index
+        lda con_attr
+        xba                          ; A = the char, B = its attribute
+        rep #$21                     ; (C = 0)
+        .LONGA ON
+        pha
         lda con_cx
-        clc
-        adc zp_tmp
+        and #$00FF
+        asl @                        ; 2 B a cell
+        adc.l B1CODE_BASE+con_rowt,x
         sta zp_tmp
-        bcc ?a1
-        inc zp_tmp+1
-?a1     lda #BANK_EN|[CON_MAP>>12]
-        sta VBXE_BANK_SEL
-        lda zp_tmp+1                 ; the cell offset is < $1000: the window
-        ora #>MEMW16                 ;   address is simply MEMW16 + offset
-        sta zp_tmp+1                 ;   ((CON_MAP >> 12) & 3 = 0)
         pla
-        sta (zp_tmp)                 ; the char...
-        lda con_attr                 ; ...and its attribute
-        ldy #1
-        sta (zp_tmp),y
-        ldy #0                       ; the invariant, back on
-        lda #BANK_EN|BANK_OVERHEAD
-        sta VBXE_BANK_SEL
+        ldx #BANK_EN|[CON_MAP>>12]
+        stx VBXE_BANK_SEL
+        sta (zp_tmp)
+        ldx #BANK_EN|BANK_OVERHEAD
+        stx VBXE_BANK_SEL
+        .LONGA OFF
+        sep #$20
         inc con_cx
-        rts
-?off    pla
-        rts
+?off    rts
 .endp
+    .if [CON_MAP>>12] & 3
+        ert 'con_rowt: the map sits in the first 4 KB of the 16 KB window'
+    .endif
 
 ;--------------------------------------------------------------
-; con_tick -- inflate's ?ifill calls this once per KB of packed stream.
+; con_tick -- inflate's ?rdsec calls this once per KB of packed stream.
 ;   While the R_Init gate is up, every 32nd KB prints one dot into the
 ;   [ ] room -- CON_NDOTS of them over the pool, and never past the ].
 ;--------------------------------------------------------------
@@ -429,8 +618,9 @@ con_r1  dta 0
         bpl ?ret                     ; dots not armed (or console gone)
         lda con_nd
         beq ?ret                     ; the room is full
-        inc con_dots
         lda con_dots
+        inc @
+        sta con_dots
         and #31
         bne ?ret
         dec con_nd
@@ -452,25 +642,13 @@ con_r1  dta 0
 ; con_end -- I_Quit's ENDOOM (DOS DOOM): the console back up (con_init: the
 ;   ROM font, the map, the XDL), ENDOOM's inks on top, the screen printed,
 ;   then a key -- the reboot after QUIT DOOM would wipe it at once.
-;   No SIO: TEX_STAGE is the overlay that calls this (sg_quit), and it
+;   No SIO: TEX_STAGE is the overlay that calls this (quit_doom), and it
 ;   returns there -- after the quit sound, as DOS DOOM orders it.
 ;--------------------------------------------------------------
 .proc con_end
         jsr con_init
-        ldx #CON_EPALN-4             ; (PSEL is still 1: con_init)
-?pal    lda.l B1CODE_BASE+con_epal,x
-        sta VBXE_CSEL
-        lda.l B1CODE_BASE+con_epal+1,x
-        sta VBXE_CR
-        lda.l B1CODE_BASE+con_epal+2,x
-        sta VBXE_CG
-        lda.l B1CODE_BASE+con_epal+3,x
-        sta VBXE_CB
-        dex
-        dex
-        dex
-        dex
-        bpl ?pal
+        ldx #CON_PALA-4              ; ENDOOM's inks (and DOS's four again)
+        jsr con_pal
         lda #8                       ; con_s8
         sta con_next
         jsr con_msg                  ; (the cursor ends on row 23, where
@@ -480,7 +658,7 @@ con_r1  dta 0
         lda #1                       ; a key still held from the menu is not
         sta con_kd                   ;   typing
 ; --- COMMAND.COM (MS-DOS 6.22, PROMPT $P$G), just enough of it. Returns only
-;   when DOOM is typed: sg_bye's reboot is DOOM.EXE starting over.
+;   when DOOM is typed: quit_boot's reboot is DOOM.EXE starting over.
 ?pr     ldx #CON_T_PR                ; the prompt
         jsr con_str
         stz con_ln
@@ -640,10 +818,14 @@ con_r1  dta 0
         bcs ?sc
         inc con_cy
         rts
-?sc     pei (zp_ptr)                 ; con_msg walks its string with zp_ptr
-        lda #BANK_EN|[CON_MAP>>12]
+?sc     lda #BANK_EN|[CON_MAP>>12]
         sta VBXE_BANK_SEL
-        ldx #CON_H-1
+        phy
+        lda zp_ptr+2                 ; con_msg walks its string with zp_ptr
+        pha
+        pei (zp_ptr)
+        stz zp_ptr+2                 ; [zp_ptr],y in bank 0: a (dp),y store
+        ldx #CON_H-1                 ;   reads the window first (2026-09-28)
         rep #$20                     ; the whole scroll in words: zp_ptr = the
         .LONGA ON                    ;   row, zp_tmp = the one below
         sec
@@ -653,7 +835,7 @@ con_r1  dta 0
         sta zp_tmp
         ldy #0
 ?cp     lda (zp_tmp),y
-        sta (zp_ptr),y
+        sta [zp_ptr],y
         iny
         iny
         cpy #CON_W*2
@@ -665,12 +847,15 @@ con_r1  dta 0
         lda #0                       ;   (Y = CON_W*2 from the copy, counted down)
 ?cl     dey
         dey
-        sta (zp_ptr),y
+        sta [zp_ptr],y
         bne ?cl                      ; (Z from the dey: sta leaves it)
         pla
         sta zp_ptr
         .LONGA OFF
         sep #$20
+        pla
+        sta zp_ptr+2
+        ply
         lda #BANK_EN|BANK_OVERHEAD
         sta VBXE_BANK_SEL
         rts
@@ -682,21 +867,8 @@ con_r1  dta 0
 .proc con_cls
         lda #BANK_EN|[CON_MAP>>12]
         sta VBXE_BANK_SEL
-        lda #<[MEMW16+[CON_MAP&$3FFF]]
-        sta zp_ptr
-        lda #>[MEMW16+[CON_MAP&$3FFF]]
-        sta zp_ptr+1
         ldx #[[CON_H*CON_W*2+255]/256]
-        ldy #0
-        tya
-?clr    sta (zp_ptr),y
-        iny
-        bne ?clr
-        inc zp_ptr+1
-        dex
-        bne ?clr
-        stz con_cx
-        stz con_cy
+        jsr con_clr
         lda #BANK_EN|BANK_OVERHEAD
         sta VBXE_BANK_SEL
         rts
@@ -710,6 +882,12 @@ CON_T_BAD equ *-con_txt
         dta c'Bad command or file name', 0
 CON_T_VER equ *-con_txt
         dta c'MS-DOS Version 6.22', 0
+CON_T_MHZ equ *-con_txt
+        dta c' MHz', 0
+CON_T_ST  equ *-con_txt
+        dta c'stereo', 0
+CON_T_MO  equ *-con_txt
+        dta c'mono', 0
 con_cmds dta c'DOOM', 0, c'CLS', 0, c'VER', 0, c'DIR', 0, $FF
 ; hardware key code (bits 0-5) -> ASCII, CAPS on as the Atari boots; 0 = not
 ;   a key DOS prints
@@ -720,20 +898,8 @@ con_kmap dta c'LJ;', 0, 0, c'K+*O', 0, c'PU', 0, c'I-='
     .if * - con_kmap <> 64
         ert 'con_kmap must cover all 64 key codes'
     .endif
-; ENDOOM's CGA colours: attr $88+n inks in entry 8+n, papers in $88+n
-con_epal dta $09, $FF, $FF, $55      ; $01: yellow ...
-        dta $89, $AA, $00, $00       ;   ... on red
-        dta $0A, $FF, $FF, $FF       ; $02: white on red
-        dta $8A, $AA, $00, $00
-        dta $0B, $FF, $FF, $55       ; $03: yellow on blue ("id")
-        dta $8B, $00, $00, $AA
-        dta $0C, $55, $FF, $FF       ; $04: cyan on red
-        dta $8C, $AA, $00, $00
-        dta $0D, $AA, $00, $00       ; $05: red on black (row 0's half blocks)
-        dta $8D, $00, $00, $00
-CON_EPALN equ * - con_epal
 
-con_end_w1 jsr con_end               ; savegame.asm sg_quit jsl's it
+con_end_w1 jsr con_end               ; quit.asm quit_doom jsl's it
         rtl
 con_init_w1 jsr con_init             ; the bank-0 boot code jsl's these
         rtl

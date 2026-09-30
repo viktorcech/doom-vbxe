@@ -1,11 +1,12 @@
-﻿# Build the BOOTABLE DOOM ATR: boot loader + engine XEX + episode-1 map(s).
+# Build the BOOTABLE DOOM ATR: boot loader + engine XEX + episode-1 map(s).
 #   Boots from the ATR so the OS cold-starts cleanly (valid VIMIRQ) and the
 #   engine's SIO level streaming works. Mount the result as D1: and boot it.
 # Usage:  .\build_atr.ps1               # every level, INCREMENTAL (~3 s)
 #         .\build_atr.ps1 -Full         # re-pack every asset from the WAD
 #         .\build_atr.ps1 -Check        # + the slow gates (boot sim, _verify_*)
 #         .\build_atr.ps1 -Time         # + seconds per step
-#         .\build_atr.ps1 -Antonia2     # ANTONIA II hw mul/div -> build/doom_bsp_ant2.atr
+# EVERY run writes BOTH images: build/doom.atr (stock, Rapidus) and
+# build/doom_bsp_ant2.atr (ANTONIA II hardware mul/div).
 #
 # WHY THE SWITCHES (2026-08-11). A full run is ~42 s and 35 of them are three
 # packers that only ever read DOOM1.WAD:
@@ -29,10 +30,8 @@ param(
   [switch]$Full,          # re-pack every asset even if it is up to date
   [switch]$Check,         # run the slow verification gates
   [switch]$Time,          # print seconds per step
-  [switch]$Antonia2       # swap umul16/udiv24 for drac030's ANTONIA II
-                          #   hardware mul/div versions ($FFF00C/$FFF008).
-                          #   Writes doom_bsp_ant2.atr, which does NOT run on
-                          #   Rapidus -- those registers are Antonia's.
+  [switch]$Antonia2       # accepted and ignored: the ANTONIA II image is
+                          #   built on every run (step 3-ant)
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
@@ -42,6 +41,7 @@ Set-Location $PSScriptRoot
 # re-run through the EXE, which carries the interpreter, numpy and PIL with it.
 # Unset = exactly what this script always did.
 $py = if ($env:DOOM_PY) { $env:DOOM_PY } else { 'python' }
+$env:PYTHONDONTWRITEBYTECODE = '1'   # no __pycache__ folders next to the tools
 $mads = Join-Path (Split-Path $PSScriptRoot -Parent) 'mads.exe'
 if (-not (Test-Path $mads)) { $mads = Join-Path $PSScriptRoot 'mads.exe' }
 if (-not (Test-Path build)) { New-Item -ItemType Directory build | Out-Null }
@@ -57,27 +57,12 @@ $lvls = if ($Levels -and $Levels.Count) { @($Levels) } else {
 # E, 1, M, 9 and died with "map E not in WAD", so the documented
 # unrolls it correctly for one, many or none.
 
-# THE GATES ARE SIM RUNS AND THE SIM HAS NO ANTONIA. tools/sim6502 models a
-# 65816 and RAM, not the $FFF008/$FFF00C mul/div ports, so every _verify_*
-# that renders would read open bus through the new umul16/udiv24 and 'fail'
-# on hardware that is simply absent. -Antonia2 therefore drops them.
-if ($Antonia2 -and $Check) {
-  Write-Host 'gates OFF: -Antonia2 needs hardware sim6502 does not model' -ForegroundColor Yellow
-  $Check = $false
-}
-
 $swAll = [Diagnostics.Stopwatch]::StartNew()
 $swStep = [Diagnostics.Stopwatch]::StartNew()
 function Lap([string]$what) {                    # -Time: one line per step
   if ($Time) { Write-Host ("  [{0,6:N2}s] {1}" -f $swStep.Elapsed.TotalSeconds, $what) -ForegroundColor DarkGray }
   $script:swStep.Restart()
 }
-
-# 1. boot loader -> raw boot.bin (strip the 6-byte XEX header, like woll3d)
-& $mads -i:. boot.asm -o:build/boot.xex
-if ($LASTEXITCODE -ne 0) { Write-Error 'boot assemble failed'; exit 1 }
-& $py -c "open('build/boot.bin','wb').write(open('build/boot.xex','rb').read()[6:])"
-Lap 'boot loader'
 
 # 1b. digitized SFX blob + sound_tables.inc (both are inputs to the layout below:
 #     SND_CHUNKS sizes the ATR slot, the tables are icl'd by sound.asm)
@@ -88,7 +73,7 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'sound extract failed'; exit 1 }
 #     the WPF_*/WEAP_BKn equs are icl'd by weapon.asm)
 # Skipped when its blobs are already there and newer than the packer + WAD.
 # pack_weap imports pack_things, which reads the DOOM source tree at import
-# time (doomstates.doom -> _pomocne\_doomsrc\info.c). That tree is not a
+# time (doomstates.doom -> _doomsrc\info.c). That tree is not a
 # build output, so without it a checkout could not build at all even though
 # every asset it produces was already packed. -Full forces the repack.
 $weapOut = 'build\assets\weap\weap.bin', 'build\assets\weap\weap.tab'
@@ -163,12 +148,6 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'finale pack failed'; exit 1 }
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu pack failed'; exit 1 }
 Lap 'menu + version'
 
-# (no music step: the songs were in the build for one afternoon and came back
-#  out -- the RMT renderings sounded wrong. `python tools\pack_musstream.py`
-#  writes build/assets/music/music.stream and make_atr_doom.py picks it up on
-#  its own, so re-enabling the ATR side is just running that once; the engine
-#  side is the two tail calls named in music.asm's header.)
-
 # 1d. the per-level blobs -- THE 35 SECONDS. These used to be run by hand and it
 #     format silently left E1M2..E1M9 on the previous build's bytes. Both packers
 #     take the level list, so pass it and there is nothing to forget.
@@ -240,6 +219,10 @@ if ($repack) {
   if ($LASTEXITCODE -ne 0) { Write-Error 'texture pack failed'; exit 1 }
   & $py tools\pack_things.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'things pack failed'; exit 1 }
+  # ...and the guard over what they packed: every face of every door answers
+  # the spacebar the way DOOM does (~1 s, only when the levels were re-packed).
+  & $py tools\tests\_verify_useside.py $lvls | Select-Object -First 8
+  if ($LASTEXITCODE -ne 0) { Write-Error 'a door opens from a face DOOM refuses'; exit 1 }
   Set-Content $stamp "$($env:DOOMWAD)|$($env:DOOMPWAD)|$($lvls -join ' ')" -Encoding ascii
 } else {
   Write-Host 'level assets up to date -- pack_map/pack_textures/pack_things skipped (~35 s). Force with -Full' -ForegroundColor DarkGray
@@ -250,18 +233,60 @@ Lap 'level assets'
 & $py tools\make_atr_doom.py --dir $lvls
 if ($LASTEXITCODE -ne 0) { Write-Error 'layout emit failed'; exit 1 }
 
+# 2b. the boot loader -> raw boot.bin (strip the 6-byte XEX header), with the
+#     build's other BIN files in build/assets/code. AFTER the
+#     layout: its machine check probes the linear RAM up to the top bank THIS
+#     build uses, and its screen carries the build's version (boot_cfg.py).
+& $py tools\boot_cfg.py
+if ($LASTEXITCODE -ne 0) { Write-Error 'boot config failed'; exit 1 }
+& $mads -i:. boot.asm -o:build/boot.xex
+if ($LASTEXITCODE -ne 0) { Write-Error 'boot assemble failed'; exit 1 }
+if (-not (Test-Path build\assets\code)) { New-Item -ItemType Directory build\assets\code | Out-Null }
+& $py -c "open('build/assets/code/boot.bin','wb').write(open('build/boot.xex','rb').read()[6:])"
+#     ... and the ANTONIA II image's: the same loader, its CPU check also probes
+#     the card's multiplier/divider (boot.asm, drac030 2026-09-30). The SAME
+#     sector count, or the layout above would not fit it (make_atr_doom checks).
+& $mads -i:. -d:ANTONIA2=1 boot.asm -o:build/boot_ant2.xex
+if ($LASTEXITCODE -ne 0) { Write-Error 'boot assemble (ANTONIA II) failed'; exit 1 }
+& $py -c "open('build/assets/code/boot_ant2.bin','wb').write(open('build/boot_ant2.xex','rb').read()[6:])"
+Lap 'boot loader'
+
 # 3. engine XEX (now atr_layout.inc is correct)
 #    -t writes build/doom_bsp.lab, which is what sim6502.load_syms reads: every
 #    _verify_* that runs the shipped bytes resolves its symbols through it, and
 #    a .lab left over from an older build resolves them to the WRONG addresses
 #    without saying so. It costs nothing to emit here (2026-08-16).
-# [string[]] IS LOAD-BEARING: `$x = if (..) { @('a') }` unrolls the one-element
-# array back to a STRING, and `@$x` then splats a string -- mads got garbage
-# arguments and printed its usage instead of assembling (2026-09-10).
-[string[]]$madsDef = @()
-if ($Antonia2) { $madsDef = @('-d:ANTONIA2=1') }
-& $mads -i:. bsp_main.asm @madsDef -o:build/doom_bsp.xex -l:build/doom_bsp.lst -t:build/doom_bsp.lab
-if ($LASTEXITCODE -ne 0) { Write-Error 'assemble failed'; exit 1 }
+#    ALL FOUR assemblies start here, side by side, each into its own files:
+#    the engine, the same with VBXE_D7 (3-bis), and the ANTONIA II pair that
+#    step 4-ant picks up once the stock image is written.
+function MadsStart([string]$opts) {
+  $psi = New-Object Diagnostics.ProcessStartInfo
+  $psi.FileName = $mads
+  $psi.Arguments = "-i:. bsp_main.asm $opts"
+  $psi.WorkingDirectory = $PSScriptRoot
+  $psi.UseShellExecute = $false
+  $psi.RedirectStandardOutput = $true
+  $psi.CreateNoWindow = $true
+  $p = [Diagnostics.Process]::Start($psi)
+  @{ P = $p; Out = $p.StandardOutput.ReadToEndAsync() }
+}
+function MadsEnd($job, [string]$what, [switch]$Show) {
+  $job.P.WaitForExit()
+  if ($Show -or $job.P.ExitCode -ne 0) { $job.Out.Result.TrimEnd() }
+  if ($job.P.ExitCode -ne 0) { Write-Error "$what failed"; exit 1 }
+}
+$asm = MadsStart '-o:build/doom_bsp.xex -l:build/doom_bsp.lst -t:build/doom_bsp.lab'
+$asmD7 = MadsStart '-d:VBXE_D7=1 -o:build/doom_bsp_d7.xex'
+$ant = MadsStart '-d:ANTONIA2=1 -o:build/doom_bsp_ant2.xex -l:build/doom_bsp_ant2.lst -t:build/doom_bsp_ant2.lab'
+$antD7 = MadsStart '-d:ANTONIA2=1 -d:VBXE_D7=1 -o:build/doom_bsp_d7_ant2.xex'
+MadsEnd $asm 'assemble' -Show
+# 3-bis. ... and the one for a VBXE at $D7xx: the same engine with VBXE_D7
+#         set, only to learn which bytes differ -- vbxe_reloc.py turns them
+#         into the tables the boot loader and menu_boot step (boot.asm
+#         b_reloc, menu.asm mn_vrel). BEFORE the splits below.
+MadsEnd $asmD7 'assemble (VBXE_D7)'
+& $py tools\vbxe_reloc.py
+if ($LASTEXITCODE -ne 0) { Write-Error 'VBXE relocation failed'; exit 1 }
 Lap 'mads'
 
 # 3a. the menu CODE overlay out of the XEX and into menu.bin's reserved chunk.
@@ -308,6 +333,32 @@ Lap 'overlay split + RAM guards'
 if ($LASTEXITCODE -ne 0) { Write-Error 'atr build failed'; exit 1 }
 Lap 'ATR image'
 
+# 4-ant. THE ANTONIA II IMAGE, on every run, AFTER the stock one: the same
+#        engine with umul16/udiv24 on the card's hardware ($FFF00C/$FFF008)
+#        -> build/doom_bsp_ant2.atr, which does NOT run on a Rapidus. DOOM_IMG
+#        gives every file of this pass its own name (tools/code_map.py img),
+#        so the stock build's files stay as step 4 left them. Quiet unless it
+#        fails. Its two assemblies have been running since step 3.
+function AntStep([string]$what, [scriptblock]$cmd) {
+  $o = & $cmd
+  if ($LASTEXITCODE -ne 0) {
+    $env:DOOM_IMG = ''
+    $o | Select-Object -Last 20
+    Write-Error "ANTONIA II image: $what failed"; exit 1
+  }
+}
+MadsEnd $ant 'ANTONIA II image: assemble'
+MadsEnd $antD7 'ANTONIA II image: assemble (VBXE_D7)'
+$env:DOOM_IMG = '_ant2'
+AntStep 'VBXE relocation' { & $py tools\vbxe_reloc.py }
+AntStep 'menu overlay split' { & $py tools\split_menu_ovl.py }
+AntStep 'bank $01 split' { & $py tools\split_b1.py }
+AntStep 'b1_check' { & $py tools\b1_check.py }
+AntStep 'check_overlap' { & $py tools\tests\check_overlap.py build/doom_bsp_ant2.xex }
+AntStep 'atr build' { & $py tools\make_atr_doom.py $lvls }
+$env:DOOM_IMG = ''
+Lap 'ANTONIA II image'
+
 # 5. THE MEASUREMENTS, -Check only. Everything below runs the real code on
 #    sim6502 instead of just assembling it, which is why it is off by default.
 #      * _verify_xdl / _verify_menu: the display list still covers 240 lines, a
@@ -317,11 +368,7 @@ Lap 'ATR image'
 #        segment, VBI NMIs injected, RAM under the ROM virgin, simulated all the
 #        way to main ($2000). 3.1 s.
 #      * _verify_save: BOOTS a level and runs the real two-phase LOAD (~1 min).
-#    NOT here either way: the two music checks. _verify_musstream.py needs the
-#    stream on disk and the hooks in the engine, _verify_musram.py boots a level
-#    and runs real frames (18 s) -- both are for whoever puts the songs back.
 if ($Check) {
-  $env:PYTHONPATH = '_pomocne/_tmp_pyc'
   # wpgive: P_GiveWeapon's "full ammo -> the gun stays on the floor" (runs the
   #   shipped bytes on sim6502). doorside: which SIDE of a door the spacebar
   #   opens it from, over every door face in the episode -- both are under a
@@ -404,7 +451,10 @@ if ($Check) {
   # hudlt: hud_entry/bar_blit BCB bytes, lt_seg rows, update_lights rules.
   # sr320: every 320 SR screen's list walked as VBXE walks it -- READ THIS!,
   #   the loading screen, the finale pages, the bunny scroll and THE END.
-                 'newdir', 'hudlt', 'sr320') {
+  # inflate: inflate816.asm against zlib on streams built to reach what the
+  #   ATR's own never hold -- stored and fixed blocks, 256 codes of one
+  #   length, codes of 15 bits, a match across a bank line (2026-09-28).
+                 'newdir', 'hudlt', 'sr320', 'inflate') {
     # a missing test file is an ENVIRONMENT failure, not a test failure -- the
     # same treatment _verify_save gets below (2026-08-10: most of tools/tests
     # went missing and the E1M6 build died here instead of building)
@@ -443,41 +493,19 @@ if ($Check) {
   } else {
     Write-Host 'SKIP _verify_save (tools/tests/_verify_save.py is missing)' -ForegroundColor Yellow
   }
-  & $py tools\check_boot.py
+  & $py tools\tests\check_boot.py
   if ($LASTEXITCODE -ne 0) { Write-Error 'boot check failed -- this ATR would not boot'; exit 1 }
   Lap 'verify gates'
 } else {
   Write-Host 'gates skipped: boot sim + _verify_* (-Check runs them)' -ForegroundColor DarkGray
 }
 
-# make_atr_doom.py always writes build/doom.atr. RENAME, do not copy: an
-# Antonia image left sitting under the stock name is the one mistake this
-# switch can cause. The stock doom.atr is rebuilt right below, so a -Antonia2
-# run leaves BOTH images correct and doom.atr untouched in content.
-if ($Antonia2) {
-  Move-Item -Force build/doom.atr     build/doom_bsp_ant2.atr
-  Move-Item -Force build/doom_bsp.xex build/doom_bsp_ant2.xex
-  # ... and PUT THE STOCK IMAGE BACK. build/doom.atr is what every test,
-  # every emulator shortcut and every 'is it fixed yet' run reaches for;
-  # leaving an Antonia-only build under that name (or no build at all)
-  # would break all of them silently. Same assets, so this is ~3 s.
-  & $mads -i:. bsp_main.asm -o:build/doom_bsp.xex -l:build/doom_bsp.lst -t:build/doom_bsp.lab | Out-Null
-  if ($LASTEXITCODE -ne 0) { Write-Error 'stock re-assemble failed'; exit 1 }
-  & $py tools\split_menu_ovl.py | Out-Null
-  if ($LASTEXITCODE -ne 0) { Write-Error 'stock overlay split failed'; exit 1 }
-  & $py tools\split_b1.py | Out-Null
-  if ($LASTEXITCODE -ne 0) { Write-Error 'stock bank $01 split failed'; exit 1 }
-  & $py tools\make_atr_doom.py $lvls | Out-Null
-  if ($LASTEXITCODE -ne 0) { Write-Error 'stock atr rebuild failed'; exit 1 }
-  Write-Host ('OK -> build/doom_bsp_ant2.atr  ANTONIA II ONLY, not Rapidus  ({0:N1}s)' -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
-} else {
-  Write-Host ("OK -> build/doom.atr  ({0:N1}s)" -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
-}
+Write-Host ('OK -> build/doom.atr + build/doom_bsp_ant2.atr (ANTONIA II ONLY, not Rapidus)  ({0:N1}s)' -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
 
 # build/ holds the BUILD and nothing else -- name whatever does not belong there.
-$buildOk = '.build.lock', '.packed.stamp', 'assets', 'exe', 'b1code.bin', 'b1code.map',
-           'boot.bin', 'boot.xex', 'doom.atr', 'doom_bsp.xex', 'doom_bsp.lst', 'doom_bsp.lab',
-           'doom_bsp_ant2.atr', 'doom_bsp_ant2.xex', 'doom_test.atr', 'doom-test-level.atr'
+$buildOk = '.build.lock', '.packed.stamp', 'assets', 'exe',
+           'boot.xex', 'boot_ant2.xex', 'doom.atr', 'doom_bsp.xex', 'doom_bsp.lst', 'doom_bsp.lab',
+           'doom_bsp_ant2.atr', 'doom_bsp_ant2.xex', 'doom_bsp_ant2.lst', 'doom_bsp_ant2.lab', 'doom_test.atr', 'doom-test-level.atr'
 $stray = @(Get-ChildItem build -Force | Where-Object { $buildOk -notcontains $_.Name })
 if ($stray.Count) {
   Write-Host ('build/ has files that do not belong there: ' +

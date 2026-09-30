@@ -128,11 +128,12 @@ sprld2_resume = *
         sta spr_sdram+1              ;   tables died with the 10-level build
         lda #[LVL_SPRSD_C>>16]       ;   (they ran WEAPLD2 into PJHK_BASE)
         sta spr_sdram+2
-        lda #<LVL_TEXSD_C
-        sta tex_sdram
-        lda #>LVL_TEXSD_C
+                                      ; 2026-09-28: lower by PT_XB -- paint_col's run
+        lda #<[LVL_TEXSD_C-PT_XB]    ;   index starts there (paint.asm), and every
+        sta tex_sdram                ;   wall/lower address is this + an offset
+        lda #>[LVL_TEXSD_C-PT_XB]
         sta tex_sdram+1
-        lda #[LVL_TEXSD_C>>16]
+        lda #[[LVL_TEXSD_C-PT_XB]>>16]
         sta tex_sdram+2
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>arena_prefetch       ;   next byte of this segment -- fall through

@@ -1,12 +1,12 @@
-"""Can inflate816.asm depack this raw-DEFLATE stream? (2026-09-27)
+"""Can inflate816.asm depack this raw-DEFLATE stream?
 
-inflate816.asm (zlib6502) keeps "codes of each length" in ONE BYTE per length
-(inf_tcnt / inf_lcnt / inf_ccnt). A dynamic block whose literal/length or
-distance tree has 256 or more codes of the SAME length wraps that byte, the
-tree is garbage and the depacker never finds the end of the stream -- the
-E3M1 freeze: block 4 of its map stream had 258 codes of length 9 (252
-literals + 6 lengths). zlib decodes such a stream fine, so only this check
-catches it before the 65816 does.
+inflate816.asm counts the codes of each length in WORDS since 2026-09-28
+(the zlib6502 depacker before it kept one BYTE per length, and a block with
+256 or more codes of one length -- E3M1's map stream had 258 of 9 bits --
+never ended). What is left to refuse is what no DEFLATE reader takes: the
+reserved block type and a stream that does not parse.
+tools/tests/_verify_inflate.py runs a block of 256 nine-bit codes on the
+built code.
 
 problem(stream) -> None if inflate816 can take it, else a one-line reason.
 Used by tools/make_atr_doom.py (_deflate picks only streams that pass) and
@@ -17,9 +17,9 @@ LBASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59
          67, 83, 99, 115, 131, 163, 195, 227, 258]
 LEXT = [0] * 8 + [1] * 4 + [2] * 4 + [3] * 4 + [4] * 4 + [5] * 4 + [0]
 DEXT = [0, 0, 0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 10,
-        11, 11, 12, 12, 13, 13]
+        11, 11, 12, 12, 13, 13,
+        16, 21]                       # 30, 31: the FAR matches (tools/deflate_far.py)
 ORDER = [16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]
-MAXCNT = 255                         # one byte per length in inflate816.asm
 
 
 class _Bits:
@@ -69,7 +69,7 @@ def problem(stream):
     if not stream:
         return None
     if _FIXED is None:
-        _FIXED = (_table([8] * 144 + [9] * 112 + [7] * 24 + [8] * 8), _table([5] * 30))
+        _FIXED = (_table([8] * 144 + [9] * 112 + [7] * 24 + [8] * 8), _table([5] * 32))
     bs, blk = _Bits(stream), 0
     try:
         while True:
@@ -99,14 +99,10 @@ def problem(stream):
                             lens += [0] * (3 + bs.get(3))
                         else:
                             lens += [0] * (11 + bs.get(7))
+                    if len(lens) != hlit + hdist:
+                        return (f'block {blk}: a repeat runs past the '
+                                f'{hlit + hdist} code lengths')
                     ll, dl = lens[:hlit], lens[hlit:]
-                    for L in range(1, 16):
-                        for what, seq in (('literal/length', ll), ('distance', dl),
-                                          ('literal', ll[:256])):
-                            n = seq.count(L)
-                            if n > MAXCNT:
-                                return (f'block {blk}: {n} {what} codes of length {L} '
-                                        f'(inflate816 counts them in one byte)')
                     lt, dt = _table(ll), _table(dl)
                 while True:
                     s = _dec(bs, lt)

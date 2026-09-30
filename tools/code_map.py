@@ -23,8 +23,22 @@ from collections import defaultdict
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-LST = os.path.join(ROOT, 'build', 'doom_bsp.lst')
-XEX = os.path.join(ROOT, 'build', 'doom_bsp.xex')
+
+# THE IMAGE a build pass makes: '' = the stock one, '_ant2' = ANTONIA II
+# (build_atr.ps1 sets DOOM_IMG). Every file that differs between the two
+# carries it in its name, so one pass never writes the other's files.
+IMG = os.environ.get('DOOM_IMG', '')
+
+
+def img(*path):
+    """ROOT/path, the image's suffix in front of the extension"""
+    stem, ext = os.path.splitext(os.path.join(ROOT, *path))
+    return stem + IMG + ext
+
+
+LST = img('build', 'doom_bsp.lst')
+LAB = img('build', 'doom_bsp.lab')
+XEX = img('build', 'doom_bsp.xex')
 
 # 65816 instruction mnemonics + MADS long-branch/skip/repeat forms + the MADS
 # macro commands (they list as one line with all the bytes of the expansion).

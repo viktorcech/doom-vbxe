@@ -20,6 +20,9 @@
         ldx #>TH_THRS
         stx zp_ptr+1
         sta [zp_ptr],y
+        ldx #>TH_FLY                 ; ...and no lost soul in the air (a save
+        stx zp_ptr+1                 ;   loads over a fresh level: this is its
+        sta [zp_ptr],y               ;   reset too)
         iny
         bne ?clr
         jmp sg_seen                  ; ...and nothing is in sight of anything

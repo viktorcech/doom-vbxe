@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """doom -- guard against XEX segments landing in reserved RAM (adapted from
-doom2d/wolf3d tools/check_xex.py).
+doom2d tools/check_xex.py).
 
 MADS does not error when separate `org` blocks overlap each other or land in
 regions that are ROM / get overwritten at runtime -- the result is a silent
 "black screen" or a KIL much later. This parses the segmented XEX and fails
 the build if any segment overlaps a reserved range, AND if any two segments
-overlap each other. Run by build.ps1 / build_atr.ps1.
+overlap each other. Run by build_atr.ps1.
 
 Reserved ranges (see memory_map.inc, the single source of truth):
   $0700-$08FF  ATR boot loader + its sector buffer (alive WHILE the XEX loads)

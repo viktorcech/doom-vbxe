@@ -89,7 +89,7 @@ EPI_FIRST3   equ 18    ; E3M1
 TITLE_H      equ 8
 TITLE_Y      equ 159   ; hu_stuff.c HU_TITLEY = 167 - font height
 MSG_IDX0     equ 26    ; HU line index of a message = bonus id + this
-MSG_N        equ 36   ; bonus ids 1..N have one
+MSG_N        equ 41   ; bonus ids 1..N have one
 MSG_Y        equ 0    ; hu_stuff.c HU_MSGY: the top of the view
 ; --- the INTERMISSION (wi_stuff.c, tools/pack_wi.py): the WI
 ;     patches into free VRAM at WI_VRAM, with the wi.asm CODE

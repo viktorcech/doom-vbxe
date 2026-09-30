@@ -17,7 +17,7 @@
 ; jsr -- that is why collision sits at $0900, check_bbox at $1B00 and tw_setup at
 ; $8D00 -- instead of letting the segment creep into the next thing.
 ;
-; Guards, all three wired into build.ps1 / build_atr.ps1:
+; Guards, all three wired into build_atr.ps1:
 ;   * the RESERVED list in tools/ram_map.py (check_xex.py enforces it)
 ;   * tools/check_xex.py                    (fails the build on any overlap)
 ;   * tools/ram_map.py --update             (regenerates these figures)
