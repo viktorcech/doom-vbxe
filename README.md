@@ -39,6 +39,12 @@ After that, `.\build_atr.ps1` rebuilds incrementally.
 
 Free software under the GNU GPL v2 (see [LICENSE](LICENSE)). DOOM game data is not included and remains © id Software.
 
+## WAD onliine converter
+
+If you have your own wad with maps/addons, you can convert it to ATR and play in your ATARI.
+
+https://atari.turiecfoto.sk/wad/
+
 ## Credits
 
 DOOM © id Software, 1993. Atari port: **w1k**.
