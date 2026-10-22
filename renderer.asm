@@ -6,7 +6,7 @@ ZNEAR     equ 4
 ;--------------------------------------------------------------
 ; frame_setup -- load sin/cos for zp_ang.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc frame_setup
         lda zp_ang                    ; tips #4: skip the ~7.5k-cyc rebuild when the
         cmp frame_ang                ;   angle is unchanged (walking straight) -- zp_sin/
@@ -30,8 +30,7 @@ ZNEAR     equ 4
 ; walk_init -- rs_mpass = 0, then on into the frame entry it displaced.
 ;--------------------------------------------------------------
 wki_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc walk_init
         stz rs_mpass
     .if TEX_RUNS
@@ -41,13 +40,12 @@ wki_resume = *
     .endif
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org wki_resume
 
 ;--------------------------------------------------------------
 ; render_world -- clear occlusion, walk the BSP from the root.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc render_world
         ; Only the VIEW WINDOW is re-opened (viewsize.asm): outside it every ...
                                       ; 2026-09-22 (6502-idioms: an index counting UP to
@@ -142,7 +140,7 @@ rwc2    sta ybotc_arr,x              ; open window bottom (status bar starts bel
 ;--------------------------------------------------------------
 ; calc_nodeptr -- zp_nodeptr = MAP_NODES + (zp_nid & $7FFF)*NODE_SIZE
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc calc_nodeptr
         ; 16-BIT A (2026-08-31, from a reader of the disassembly): the old ...
         rep #$20
@@ -170,7 +168,7 @@ cnp_w16                              ; (2026-09-22: 16-bit callers enter here)
 ;   vs the node partition. side0 iff (ndy*dxp - dyp*ndx) > 0.
 ;   node: x@0 y@2 dx@4 dy@6.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc point_on_side
                                       ; 2026-09-22 (65816-windows): rep FIRST, so the
 	rep #$20                     ;   16-bit callers (calc_nodeptr returns 16-bit now)
@@ -213,7 +211,8 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
         eor cx_d+1
         bmi ?s0                      ; opposite signs -> -dyp*ndx>0 -> side0
         bpl ?s1                      ; same signs     -> side1
-?gen    jsr cross_pos                ; general node: A=1 if cross>0 (side0)
+?gen    rep #$20                     ; general node: A=1 if cross>0 (side0) --
+        jsr cross_pos.cp_sign        ;   the sign shortcut (2026-10-05), 8-bit out
         eor #1                       ; -> 0 = side0, 1 = side1
         rts
 ?s0     lda #0
@@ -231,7 +230,7 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
 ;   tests as point_on_side in 16-bit A (a word's Z/N = the byte pair's ora/eor),
 ;   and no 0/1 answer to test again: one jsr/rts and two rep/sep pairs less.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc node_side
         .LONGA ON
         asl @                        ; zp_nodeptr = MAP_NODES + nid*28 (calc_nodeptr)
@@ -282,8 +281,8 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
         ldy #4                       ; cx_d = node.dx
         lda [zp_nodeptr],y
         sta cx_d
-        jsr cross_pos.cp_w16         ; A=1 (Z=0) if cross>0 -> side0; returns 8-bit
-        rep #$20
+        jsr cross_pos.cp_sign        ; A=1 (Z=0) if cross>0 -> side0; returns 8-bit
+        rep #$20                     ;   (the sign shortcut, 2026-10-05)
         bne ?s0
 ?s1     ldy #10
         rts
@@ -297,30 +296,75 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
 ; tips #5: ITERATIVE walk with an explicit far-child stack (bsp_stack) instead of
 ; recursion -> no per-node jsr/rts, frees the CPU stack for deep maps. Same
 ; near-first (front-to-back) visit order as the old recursion -> identical render.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc render_node
-        bra ?walk                    ; (the leaf half sits in front of the walk,
-?done   rts                          ;   so ?live reaches it with a short bmi;
-                                      ;   2026-09-27: ?done too, so ?walk's frame_done
-                                      ;   test falls through on the 99 % path)
-?leaf   jsr render_subsector
-?pop    ldx bsp_sp                   ; pop next far child (LIFO)
+        ; 2026-10-05: the walk stays 16-BIT from node to node (65816-windows:
+        ; one block per run of 16-bit work -- the sep/rep pair a node paid is
+        ; gone). frame_done is only ever set inside render_subsector
+        ; (process_seg) and cleared by render_world, so it is tested once per
+        ; LEAF (?pop), not per node: a descent cannot have changed it
+        ; (6502-idioms: a flag/value you can prove needs no test). The near
+        ; descent arrives with A = the node word and N its leaf bit (6502-idioms
+        ; "use what a routine already produced": no reload); the pop reads the
+        ; stacked word as one 16-bit load. -18 cycles a node.
+        rep #$20                     ; (the leaf half sits in front of the walk,
+        .LONGA ON                    ;   so ?live reaches it with a short bmi)
+        lda zp_nid
+        bra ?live
+        .LONGA OFF
+?done   rts                          ; (8-bit: reached from ?pop only)
+?leaf   sep #$20                     ; ---- A LEAF: render_subsector INLINE (2026-10-05,
+        .LONGA OFF                   ;   6502-cycles-layout: one caller, -12 a leaf)
+        jsr spr_add                  ; things first, then the segs (R_Subsector
+                                     ;   order; spr_add stays a proc: written out
+                                     ;   here it put ?live's bmi out of reach)
+        ; --- the segs: ONE 16-bit window, subsector to seg pointer
+        ;     (2026-08-31, drac030)
+        rep #$20
+        .LONGA ON
+        lda zp_nid
+        asl @
+        asl @                        ; ssid*4 (the leaf bit just fell out)
+;       clc
+        adc #MAP_SSECT
+        sta zp_ptr
+        ldy #2                       ; count -> zp_segcnt, one 16-bit read
+        lda [zp_ptr],y
+	beq ?sdone
+        sta zp_segcnt
+	lda [zp_ptr]
+        sta rs_segi                  ;   seg loop below only tracks the pointer)
+        asl @
+        asl @
+        asl @                        ; *8 = SEG_SIZE
+;       clc
+        adc #MAP_SEGS
+        sta zp_sptr
+?sloop	jsr process_seg.ps_w16	; 16-bit on both ways in: past process_seg's rep #$20
+	rep #$21		;absorb CLC
+	.LONGA ON
+        lda zp_sptr
+        adc #SEG_SIZE
+        sta zp_sptr
+        inc rs_segi                  ; the seg index walks with the pointer
+	dec zp_segcnt
+	bne ?sloop
+?sdone	sep #$20
+	.LONGA OFF
+?pop    lda frame_done               ; early-out: whole screen already solid
+        bne ?done
+        ldx bsp_sp                   ; pop next far child (LIFO)
         beq ?done                    ; stack empty -> whole tree walked
         dex
         dex
         stx bsp_sp
-        lda bsp_stack,x
-        sta zp_nid
-        lda bsp_stack+1,x
-        sta zp_nid+1
-?walk   lda frame_done               ; early-out: whole screen already solid
-        bne ?done
-?live   bit zp_nid+1                 ; bit 15 = leaf (A is no input there)
-        bmi ?leaf
-        ; calc_nodeptr + point_on_side INLINED (2026-09-15): ONE 16-bit window ...
         rep #$20
         .LONGA ON
-        lda zp_nid                   ; zp_nodeptr = MAP_NODES + nid*28
+        lda bsp_stack,x              ; one word: N = bit 15 = leaf
+        sta zp_nid
+?live   bmi ?leaf                    ; (A = zp_nid, 16-bit, on every way in)
+        ; calc_nodeptr + point_on_side INLINED (2026-09-15): ONE 16-bit window ...
+                                     ; zp_nodeptr = MAP_NODES + nid*28
         asl @
         asl @
         sta m_ma
@@ -368,8 +412,8 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
         ldy #4                       ; cx_d = node.dx
         lda [zp_nodeptr],y
         sta cx_d
-        jsr cross_pos.cp_w16         ; general node: A=1 if cross>0 (side0), 8-bit
-        .LONGA OFF
+        jsr cross_pos.cp_sign        ; general node: A=1 if cross>0 (side0), 8-bit
+        .LONGA OFF                   ;   (the sign shortcut, 2026-10-05)
         eor #1                       ; -> 0 = side0, falls into the test below
 
                                       ; 2026-09-15: the side picks the LOAD ORDER
@@ -401,25 +445,21 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
         sta cb_off
 ?have; R_CheckBBox on the FAR child only, exactly like DOOM's R_RenderBSPNode:
         ; the near side always gets walked, the far side is skipped when every
-        ; screen column its bounding box covers is already solid.
-        jsr check_bbox               ; A=1 -> subtree wholly invisible (cb_off was
-                                     ;   set with the children above)
-	rep #$20
-	.LONGA ON
-        bne ?skipfar
-        ldx bsp_sp                   ; push far child onto the walk stack
+        ; screen column its bounding box covers is already solid. The body is
+        ; INLINE since 2026-10-05 (checkbbox.asm, its exits jump to ?push /
+        ; ?skipfar: no jsr/rts, no 0/1 to test -- 6502-cycles-layout).
+        icl 'checkbbox.asm'
+?push   ldx bsp_sp                   ; push far child onto the walk stack
         lda zp_far
         sta bsp_stack,x
         inx
         inx
         stx bsp_sp
 ?skipfar
-        lda zp_near                  ; descend near side first
-        sta zp_nid
-	sep #$20
-	.LONGA OFF
-        jmp ?walk
-
+        lda zp_near                  ; descend near side first: A = the node, N
+        sta zp_nid                   ;   its leaf bit, still 16-bit (2026-10-05)
+        jmp ?live
+        .LONGA OFF
 .endp
         .endseg
 
@@ -429,8 +469,8 @@ pos_w16 sec                          ; dxp = px - node.x  -> cx_b
 ; $2000 PC, org away, org back.
 ;==============================================================
 cb_resume = *
-        org CHECKBBOX_BASE           ; R_CheckBBox: cold-ish (once per far child),
-        icl 'checkbbox.asm'          ;   and it must NOT sit in the $2000 segment
+        org CHECKBBOX_BASE           ; (R_CheckBBox lived here as a proc; it is
+                                     ;   inline in render_node since 2026-10-05)
     .if * > CHECKBBOX_END+1
         ert 'checkbbox.asm outgrew CHECKBBOX_BASE..END (memory_map.inc)'
     .endif
@@ -456,10 +496,38 @@ cb_resume = *
 ;   column. The two weights t1 = scaleR*(x-sxL) and t2 = scaleL*(sxR-x) are
 ;   linear in screen x (tracked in the column loop), and
 ;       u = L * t1 / (t1 + t2)
+;   rs_uacc = u in Q8 (byte 0 the fraction) + DOOM's seg->offset.
+; 2026-10-20: the ratio in Q16, as two 8-bit quotients of the same division
+;   (q8, then (remainder << 8) / den). A Q8 ratio stepped u by L/256 -- over a
+;   pixel on a 300-unit seg -- and cu_anchor's lines between two such anchors
+;   were the close-up "pila" (1..5.png): the texture up to 26 columns off at a
+;   grazing wall (tools/tests/_verify_view.py --png). The fraction byte rides
+;   into cu_anchor's step, so the lines between anchors are exact as well.
 ;==============================================================
+;--------------------------------------------------------------
+; UDIV_RATIO -- one quotient of calc_u's division: A = the dividend's top 16
+;   bits (< m_den), m_prod = [0, A lo, A hi]. OUT 16-bit A = m_quot, m_rem set.
+;   The stock build takes udiv24's 8-step entry; drac030's udiv24a_v2.asm has
+;   no 16-bit entry, so the ANTONIA II build goes through udiv24 in 8-bit A.
+;   The same quotient and remainder either way: the picture is one.
+;--------------------------------------------------------------
+.macro UDIV_RATIO
+  .ifdef ANTONIA2
+	sep #$20
+	.LONGA OFF
+	jsr udiv24
+	rep #$20
+	.LONGA ON
+	lda m_quot
+  .else
+	jsr udiv24.udiv24_q8         ; (16-bit A back: no rep, 2026-10-16)
+	.LONGA ON
+	UDQ                          ; A = m_quot (2026-09-26: no reload)
+  .endif
+.endm
 cu_resume = *
         org CALCU_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc calc_u
         phx                          ; (2026-09-15: the stack, not cu_savex, -1/call)
 	rep #$21		;absorb CLC
@@ -473,85 +541,52 @@ cu_resume = *
         lda rs_t1+1                  ;   bytes 1-2 = t1 >> 8 -- and A still holds
         sta m_prod+1                 ;   them, which is what udiv24_q8 takes:
 	.LONGA OFF                   ;   no sep/rep, no prelude (2026-09-15)
-  .ifdef ANTONIA2
-	sep #$20                     ; drac030's udiv24a_v2.asm is icl'd verbatim and
-	jsr udiv24                   ;   has no 16-bit entry: it starts in 8-bit A
-  .else
-	jsr udiv24.udiv24_q8         ; m_quot = 256 * t1/(t1+t2)  (Q8 ratio 0..256)
-  .endif
-
-	rep #$20
-	.LONGA ON
-	UDQ                          ; A = m_quot (2026-09-26: no reload), so the
-        ldy rs_uflip                 ;   flag goes through Y (UMUL16I clobbers it)
-	beq ?have
-	eor #$FFFF                   ; flipped seg: u runs L .. 0 -- 256 - ratio
-	sec                          ;   = ~q + 1 + 256, straight to m_b
-	adc #256
-?have	sta m_b
-	lda rs_seglen                ; u = (L * ratio) >> 8
+        UDIV_RATIO                   ; m_quot = 256 * t1/(t1+t2) (0..256), m_rem
+        cmp #256
+        jcs ?one                     ; t2 = 0, the seg's right end: ratio 1 -> $FFFF
+                                     ;   (Jcc: the multiply's inline body puts ?one
+                                     ;   out of a branch's reach)
+        xba                          ; q8 << 8 (B is 0: q8 < 256)
+        pha                          ; parked on the stack (65816-style: no cell)
+        stz m_prod                   ; the remainder << 8 is the next dividend:
+        lda m_rem                    ;   bytes 1-2, and A = its top 16 bits, under
+        sta m_prod+1                 ;   den -- udiv24_q8's 8-step entry
+        UDIV_RATIO                   ; m_quot = the ratio's next 8 bits (< 256)
+        ora 1,s                      ; | q8 << 8 = the Q16 ratio
+?q16    ldy rs_uflip                 ; (the flag through Y: the multiply takes A)
+        beq ?have
+        eor #$FFFF                   ; flipped seg: u runs L .. 0 -- $FFFF - ratio
+?have   sta m_b                      ; u = (L * ratio) >> 16, with 8 fraction bits
+        pla                          ; (the parked word goes; m_b holds the ratio)
+        lda rs_seglen
         sta m_a
-	sep #$20
-	.LONGA OFF
+        sep #$20
+        .LONGA OFF
         UMUL16I 0, 1 ; (inlined 2026-09-26; A = m_a lo already: no reload)
-	                       ; u = seg_offset + L*ratio. rs_segoff is
-        stz rs_uacc                  ;   DOOM's seg->offset: how far along the
-        rep #$21                     ;   LINEDEF this seg starts, so a wall the
-        .LONGA ON                    ;   BSP cut in half keeps one continuous
+        rep #$21                     ; u = seg_offset + L*ratio. rs_segoff is
+        .LONGA ON                    ;   DOOM's seg->offset: how far along the
+                                     ;   LINEDEF this seg starts, so a wall the
+                                     ;   BSP cut in half keeps one continuous
                                      ;   texture instead of restarting at 0 on
-                                     ;   each piece (9 % of E1's segs had a
-        lda m_prod+1                 ;   visible seam). u is Q8, the offset is
-        adc rs_segoff                ;   whole world units -> it lands in bytes
-        sta rs_uacc+1                ;   1-2, same as the product.
-	sep #$20
-	.LONGA OFF
-        plx
+        lda m_prod+1                 ;   each piece. Bytes 1-2 of the product:
+        sta rs_uacc                  ;   u's fraction and its low byte; bytes 2-3
+        lda m_prod+2                 ;   + the offset (whole units): the integer
+        adc rs_segoff                ;   (C = 0 from the rep)
+        sta rs_uacc+1
+        .LONGA OFF                   ; OUT 16-bit A (2026-10-16, drac030: few
+        plx                          ;   rep/sep pairs)
         rts
+        .LONGA ON
+?one    lda #$FFFF                   ; (out of line, once a seg at most: the pla
+        pha                          ;   above drops it like the parked q8)
+        jmp ?q16
+        .LONGA OFF
 .endp
         .endseg
         org cu_resume
 
-;--------------------------------------------------------------
-; render_subsector -- draw all segs of subsector (zp_nid & $7FFF).
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc render_subsector
-        jsr spr_add                  ; things first, then the segs (R_Subsector order)
-        ; ONE 16-bit window, subsector to seg pointer (2026-08-31, drac030): ...
-        rep #$20
-        .LONGA ON
-        lda zp_nid
-        asl @
-        asl @                        ; ssid*4 (the leaf bit just fell out)
-;       clc
-        adc #MAP_SSECT
-        sta zp_ptr
-        ldy #2                       ; count -> zp_segcnt, one 16-bit read
-        lda [zp_ptr],y
-	beq ?done
-        sta zp_segcnt
-	lda [zp_ptr]
-        sta rs_segi                  ;   seg loop below only tracks the pointer)
-        asl @
-        asl @
-        asl @                        ; *8 = SEG_SIZE
-;       clc
-        adc #MAP_SEGS
-        sta zp_sptr
-?sloop	jsr process_seg.ps_w16	; 16-bit on both ways in: past process_seg's rep #$20
-	rep #$21		;absorb CLC
-	.LONGA ON
-        lda zp_sptr
-        adc #SEG_SIZE
-        sta zp_sptr
-        inc rs_segi                  ; the seg index walks with the pointer
-	dec zp_segcnt
-	bne ?sloop
-?done	sep #$20
-	.LONGA OFF
-	rts
-.endp
-        .endseg
+; (render_subsector -- the things, then every seg of subsector zp_nid & $7FFF
+;  -- is INLINE in render_node's ?leaf since 2026-10-05, spr_add with it.)
 
 ;--------------------------------------------------------------
 ; locate_floor -- floor height of the sector containing (zp_px, zp_py).
@@ -559,7 +594,7 @@ cu_resume = *
 ;--------------------------------------------------------------
 lf_resume = *
         org LOCFLOOR_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc locate_floor
                                       ; 2026-09-26: the whole descent in 16-bit A, one
         rep #$20                     ;   node_side per node (calc_nodeptr + point_on_side
@@ -578,9 +613,9 @@ lf_resume = *
         adc #MAP_SSECT
         sta zp_ptr
 	lda [zp_ptr]
-        asl @                         ;   accumulator -- the m_a staging, the
-        asl @                         ;   jsr m_x8 and the byte-halved adds are
-        asl @                         ;   gone (drac030's fused form)
+        asl @                         ;   accumulator
+        asl @
+        asl @
 ;       clc
         adc #MAP_SEGS
         sta zp_sptr
@@ -613,7 +648,7 @@ lf_resume = *
 ;--------------------------------------------------------------
 upz_resume = *
         org UPDPZ_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc update_pz
         jsr pl_zfloor                 ; locate_floor, then P_ZMovement (gravity,
                                       ;   the fall, the landing) and zp_pz =
@@ -640,9 +675,7 @@ upz_resume = *
 ; code (load_vertex..) keeps packing the $2000 segment. Keeps RAM tidy.
 ;==============================================================
 coll_seg_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         icl 'collision.asm'
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org coll_seg_resume          ; back to the $2000 engine-code segment
 
 seg_resume = *

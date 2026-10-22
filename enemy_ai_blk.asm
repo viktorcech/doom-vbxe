@@ -4,7 +4,7 @@
 ;--------------------------------------------------------------
 ; blk_tgt -- en_solid's entry: which blockmap cell is the move target in?
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc blk_tgt
         lda coll_cx+1                ; the SAME grid blk_push files things on:
         lsr                          ;   (coord >> 9) & 7
@@ -25,7 +25,7 @@
 ; blk_fill -- file EVERY thing in the blockmap cell pages. Once per level, from
 ;   en_init (which has three bytes left, hence the jsr and not the loop).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc blk_fill
         lda #<TH_CELL                ; (every bank $01 page has low byte 0)
         sta zp_ptr
@@ -65,7 +65,7 @@
 ;   the whole map once a frame instead -- 6k cycles against the 30k a single
 ;   monster step used to pay, and no unlink to get wrong.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc blk_push
         ldy #1                       ; cell = ((y >> 9) & 7) << 3 | (x >> 9) & 7
         lda (sp_ptr),y

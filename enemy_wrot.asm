@@ -10,7 +10,7 @@
 ;   change. C=0 = a live thing, use the real sprite table. Preserves X.
 ;   zp_ptr is saved/restored -- the BSP walk owns it while spr_add runs.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_dyn
                                       ; 2026-09-23: X parked on the stack (under the
         phx                          ;   pei), not in sp_dsx
@@ -81,7 +81,7 @@ sp_dsx  dta 0
 ;   and sets sp_dflip bit7 when the view is a MIRRORED one (DOOM rots 6 and 7).
 ;   was cleared by spr_dyn. Preserves Y (the thing index). X is free here.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_wrot
         sta swr_row
         lda sp_dfix                  ; draw-time REPLAY: spr_one hands back the
@@ -128,19 +128,14 @@ sp_dsx  dta 0
         .endseg
 
 ;--------------------------------------------------------------
-; oct_of -- A = the 8-sector angle (octant) of the 16-bit signed vector
-;   (swr_vx, swr_vy): 0 = +x (east), counting CCW, each sector 45 deg wide
-;   centred on its axis/diagonal. No atan: sign quadrant + |dx| vs |dy|*2.25
-;   compares (the 2.25 sits the boundary at 24 deg instead of 22.5 -- 1.4 deg
-;   of skew, pinned by tools/_verify_rot.py). Clobbers A/X, preserves Y.
+; b1_oct_of (bank01.asm) -- A = the 8-sector angle (octant) of the 16-bit
+;   signed vector (swr_vx, swr_vy): 0 = +x (east), counting CCW, each sector
+;   45 deg wide centred on its axis/diagonal. No atan: sign quadrant + |dx| vs
+;   |dy|*2.25 compares (the 2.25 sits the boundary at 24 deg instead of 22.5 --
+;   1.4 deg of skew, pinned by tools/_verify_rot.py). Clobbers A/X, preserves
+;   Y. (Its bank-$01 thunk oct_of had no caller left and went 2026-10-16.)
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc oct_of                          ; THE THUNK -- see bank01.asm.
-        jsl B1CODE_BASE+b1_oct_of
-        rts                          ; a bank-0 `jmp oct_of` still works: it lands
-.endp
-        .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 swr_vx  dta a(0)
 swr_vy  dta a(0)
 
@@ -152,7 +147,7 @@ swr_vy  dta a(0)
 ;   Clobbers A/X/Y and the sp_tab scratch -- X because the *8 below is a dex/bne
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_kind_of
 	rep #$20
 	.LONGA ON
@@ -178,7 +173,7 @@ swr_vy  dta a(0)
 ; aif_oct -- A = octant(ai_t -> ITS TARGET), and it leaves swr_vx/vy holding
 ;   that vector with swr_ax/ay = its normalised |legs| (oct_of's own scratch).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_oct
         jsr aif_tpos                 ; ai_tx/ai_ty = the target (player or the
                                     ; 2026-09-22 (65816-windows): aif_tpos returns 16-bit
@@ -205,7 +200,7 @@ swr_vy  dta a(0)
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ; DOOM rot (0 = facing the viewer) -> stored slot (bits 0-1) + mirror (bit 7).
 ; pack_things STORED_ROTS stores lump digits 1/2/3/5, so SIX of DOOM's eight
 ; views are its own pixels: rot 0 the front, 1 the 3/4 front and 7 that same
@@ -237,7 +232,7 @@ swr_t    dta a(0)
 ;   1 for a front-only build; 0 means a pre-rotation .dtab -- treat as 1.
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wrot_init
         lda #<WTAB_N
         sta zp_ptr
@@ -257,7 +252,7 @@ swr_t    dta a(0)
 ;   the record's flags bits 4-6 (P_SpawnMapThing's ANG45*(mthing->angle/45),
 ;   packed by pack_things).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wrot_dir
                                       ; 2026-09-23: the page first, Y on the stack --
         lda #>TH_DIR                 ;   the facing stays in A to its store
@@ -284,7 +279,7 @@ swr_t    dta a(0)
 ;   its spawn angle, DOOM's P_SpawnMapThing), so give it walk image 0's
 ;   rotation group instead of the flat sprtab row.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wrot_idle
         lda #>TH_KIND
         sta zp_ptr+1
@@ -320,7 +315,7 @@ swr_t    dta a(0)
 ;   so wrot_idle and ai_wake read one byte per frame instead of probing hp
 ;   and walking the sprite table. Tail-jumps ai_reset (en_init used to).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_kfill
         lda th_things
         sta sp_ptr
@@ -376,7 +371,7 @@ swr_t    dta a(0)
 ?done   jmp ai_reset                 ; ...and nothing chases in a fresh level
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 swr_y2  dta 0
 
 ;--------------------------------------------------------------
@@ -386,7 +381,7 @@ swr_y2  dta 0
 ;   is private (sp_drow), so the left-offset byte is simply rewritten there.
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wrot_left                       ; (2026-09-23: inlined in spr_dyn, its only caller)
 .endp
         .endseg

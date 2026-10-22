@@ -16,7 +16,7 @@ mtx_resume = *
 ;   IN : ms_i (mseg_draw's cursor), zp_pz.  OUT: rs_wtop/rs_wbot/rs_worldh.
 ;   in its dominant colour -- ugly, not fatal. Clobbers A/X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mid_planes
         ldx ms_i                     ; the entry mseg_draw is replaying ...
         lda ms_ixa,x                 ; ... and its MIDTEX row
@@ -54,7 +54,7 @@ mtx_resume = *
 ;--------------------------------------------------------------
 mtx_peg_resume = *
         org MTXPEG_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mtx_pegf                       ; = lda rs_pegf
         lda rs_mpass
         beq ?wall
@@ -71,77 +71,18 @@ mtx_peg_resume = *
     .endif
         org mtx_peg_resume
 
-;--------------------------------------------------------------
-; mtx_hook -- = jsr seg_yoff, plus the two-sided MIDDLE texture's own business
-;   at the same point: the WALK defers such a seg (mseg_snap), the masked pass
-;   prepares the window arrays for it (mseg_prime).
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mtx_hook
-        jsr seg_yoff
-        lda rs_mpass
-        bne ?prime                   ; the masked pass was primed by mtx_occ
-        rep #$10                     ; MAP_SEGMID[seg]: which MIDTEX row this seg
-        ldx rs_segi                  ;   uses, $FF = it has no middle texture.
-        lda.l SEGMID_EXT,x           ;   $FF for every one-sided seg too, so no
-        sep #$10                     ;   separate test is needed.
-        sta rs_midtex
-        cmp #$FF
-                                      ; 2026-09-23: straight to mseg_snap, not a branch
-        jne mseg_snap                ;   onto a `bra` (in range: a plain bne)
-?prime
-?ret    rts
-.endp
-        .endseg
-
-
-; --- the other stand-ins. They lived in win2 ("nowhere fast left") until
-;     2026-08-31, when the day's evictions opened the $1EF0/$4D3C holes and
-;     MTXBACK_BASE/MTXPEG_BASE moved there -- ~1 ms/frame of x11.2 fetches
-;     back at ~29 mid-segs (memory_map.inc).
-mtx_back_resume = *
-        org MTXBACK_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mtx_back                       ; = cmp #NO_SECTOR
-        ldy rs_mpass
-        beq ?real
-        lda #NO_SECTOR               ; the masked pass answers ONE-SIDED
-?real   cmp #NO_SECTOR
-        rts
-.endp
-        .endseg
-
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mtx_occ                        ; = ldx zp_xa
-        lda rs_mpass
-        beq ?keep
-        jsr mseg_prime               ; the walk closed every one of these columns
-?keep   ldx zp_xa                    ;   -- put the snapshot back before the
-        rts                          ;   "all solid, drop the seg" scan sees them
-.endp
-        .endseg
-
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mtx_flat                       ; = lda tex_flat
-        lda rs_mpass                 ; 'T' FLATTENS WALLS, NOT STRUTS. The toggle
-        bne ?on                      ;   exists to take the per-column texture
-        lda tex_flat                 ;   work off thousands of wall columns; a
-        rts                          ;   frame has a handful of masked segs, so
-?on     lda #0                       ;   painting those properly costs nothing
-        rts                          ;   measurable -- and flat is the one thing
-                                     ;   a see-through texture cannot be.
-.endp
-        .endseg
-    .if * > MTXBACK_END+1
-        ert 'mtx_back/mtx_occ outgrew MTXBACK_BASE..END (memory_map.inc)'
-    .endif
-        org mtx_back_resume
+; (mtx_hook, mtx_back, mtx_occ and mtx_flat -- the stand-ins process_seg
+;  called in place of `jsr seg_yoff`, `cmp #NO_SECTOR`, `ldx zp_xa` and
+;  `lda tex_flat` -- are INLINE in process_seg since 2026-09-15 (seg_draw.asm
+;  ?have_planes, ?real, ?occl, ?wtex). The dead copies went 2026-10-05:
+;  6502-idioms "code size is RAM". The masked pass still answers ONE-SIDED,
+;  reopens its columns with mseg_prime and never flattens a strut.)
 
 ;--------------------------------------------------------------
 ; mseg_snap -- this seg has a middle texture: remember it for the masked pass.
 ;   IN: zp_xa/zp_xb, rs_segi. Clobbers A/X/Y, cx_b/cx_d.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mseg_snap
         lda ms_n
         cmp #MSEG_MAX
@@ -250,7 +191,7 @@ mtx_back_resume = *
 ;   ceiling and floor fills to empty ranges (see the header). C = 1 -> nothing
 ;   open in this column and the loop skips it. Preserves X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mseg_win
         lda #$FF                     ; never merge a masked column: the copy
         sta cm_x                     ;   would carry the background showing
@@ -290,7 +231,7 @@ mtx_back_resume = *
 ;   Clobbers A/X/Y.
 ;--------------------------------------------------------------
         org MSEGPRE_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mseg_prime
         lda ms_cur                   ; sp_clip+1 is $07 already and cannot be
         and #$FE                     ;   anything else: CLIP_BASE is page
@@ -337,7 +278,7 @@ mtx_back_resume = *
 ;   after spr_draw -- vanilla's own order.
 ;--------------------------------------------------------------
         org MSEGDRW_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mseg_draw
         lda ms_n
         bne ?go
@@ -352,6 +293,17 @@ mtx_back_resume = *
     .endif
         lda #1
         sta rs_mpass
+    .ifdef FX127
+        lda #FX_CTL_M                ; the wall links: MODE 1 (texture pixel 0 see-through)
+        sta.l B1CODE_BASE+paint_col.pcctl+2   ;   for the pass (paint.asm)
+        lda #$29                     ; ...and cmask 0: paint_col's `sbc #CMAP_EXT`
+        sta.l B1CODE_BASE+paint_col.pccm      ;   -> `and #0` (a MODE 1 mask reads the
+        lda #0                       ;   dest: 3 PCLK a texture pixel, not 2). The operand's
+        sta.l B1CODE_BASE+paint_col.pccm+2    ;   low byte is 0 either way
+    .if <[CMAP_EXT&$FFFF]
+        ert 'the pccm patch writes only the opcode and the operand high byte'
+    .endif
+    .endif
                                       ; 2026-09-22: process_seg's column loop takes
         lda #$80                     ;   the masked path by a patched `bra msko` at
         sta.l B1CODE_BASE+process_seg.mskj   ;   mskj, for the whole pass
@@ -377,6 +329,14 @@ mtx_back_resume = *
         lda ms_i
         bne ?loop
         sta rs_mpass                 ; A = 0 -- the loop just ended on it
+    .ifdef FX127
+        lda #FX_CTL_W                ; the wall links back to MODE 7 (shaded)
+        sta.l B1CODE_BASE+paint_col.pcctl+2
+        lda #$E9                     ; ...and the colormap row back into cmask:
+        sta.l B1CODE_BASE+paint_col.pccm      ;   `sbc #CMAP_EXT&$FFFF` again (its
+        lda #>[CMAP_EXT&$FFFF]       ;   low byte never left)
+        sta.l B1CODE_BASE+paint_col.pccm+2
+    .endif
         lda #$86                     ; ...and mskj back to `stx zp_col` ($86 = stx dp)
         sta.l B1CODE_BASE+process_seg.mskj
         lda #zp_col

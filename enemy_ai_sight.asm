@@ -12,7 +12,7 @@
 ;   (USE_PT_A = the monster, USE_PT_B = the player) and the sample step, then
 ;   falls into sg_walk. Clobbers A/X/Y, sp_ptr, zp_px/zp_py (put back).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_sight
         lda #$FF                     ; no leaf tested yet ($FFFF is not a leaf
         sta USE_SS                   ;   id). Primed here and not in sg_walk:
@@ -50,9 +50,12 @@
 ?px     cmp sg_t
         bcs ?far
         lda sg_t
-?far    cmp #4                       ; 1024 units and out: nothing notices you
-        bcs ?no                      ;   that far off (DOOM has no such limit,
-        jsr sg_set                   ;   but no E1 sightline is longer)
+?far    cmp #4                       ; 1024 units and out: the PLAYER is not
+        bcc ?near                    ;   noticed that far off (DOOM has no limit);
+        lda #>TH_TARG                ;   a MONSTER target has none either, or a
+        jsr ai_get                   ;   far attacker is never shot back at
+        beq ?no                      ;   (p_enemy.c:201 P_CheckSight, any range)
+?near   jsr sg_set
         bra sg_bsp                   ; (sg_set: p_sight.c's z, for sh_leaf's sill
                                      ;  test -- and sp_ptr is still the monster's
                                      ;  record here, which is what it reads)
@@ -68,7 +71,7 @@
 ;   your back. On screen still answers yes for free; off screen costs the ray,
 ;   and only for a monster that is already chasing.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_pvis
         jsr aif_pchk                 ; is there still a player to shoot at, and
         beq ?no                      ;   was it drawn this frame? (2026-08-20:
@@ -99,7 +102,7 @@ sg_sa   dta 0                        ; which side of this node USE_PT_A is on
 ; sg_bsp -- ai_sight's tail: p_sight.c P_CrossBSPNode, iterative.
 ;   C=1 = nothing crossed the ray USE_PT_A..USE_PT_B, i.e. they see each other.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_bsp
         stz sg_sp
         lda #SG_LEAFN
@@ -199,7 +202,7 @@ sgtgt_resume = *
 ; sg_tgt -- ai_sight's head: sg_pl = the player, USE_PT_B = ai_t's target.
 ;   Clobbers A/X/Y, sp_ptr, m_prod, zp_ptr (aif_tpos' own list).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_tgt
         rep #$20                     ; the player, parked for sg_bsp's restore:
         .LONGA ON                    ;   two word moves (2026-09-15)
@@ -225,7 +228,7 @@ sgtgt_resume = *
 ;--------------------------------------------------------------
 ; aif_mvis -- aif_isvis' MONSTER-target arm: Y = the target's thing index.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_mvis
         jsr aif_live                 ; `target->health <= 0` first: it is the
         bcc ?no                      ;   cheaper test and the one A_SpidRefire's
@@ -241,7 +244,7 @@ sgtgt_resume = *
 ;   there for why a page that only ai_look ever wrote had to start being
 ;   cleared -- bank $01 keeps the previous level's answers otherwise.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_seen
         lda #<TH_SEEN                ; 0: the page is 256 B aligned like every
         sta zp_ptr                   ;   other per-thing page (zp_ptr+2 is on
@@ -279,7 +282,7 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
 ;   In: ai_t = the monster, sp_ptr = its thing record, sg_dx/sg_dy = the ray.
 ;   Clobbers A/X/Y, m_a, sp_ptr, zp_ptr.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_set
         lda #>TH_TARG                ; ONLY A PLAYER TARGET gets a z. A_Look is the
         jsr ai_get                   ;   one path that WAKES anything and its target
@@ -331,7 +334,7 @@ SG_TOP  equ 56                       ; ...and the target's own height, same deal
 ;   Called from sh_leaf in use_shut's place, so it costs sh_leaf nothing -- and
 ;   for the hitscan (sg_zon = 0) it IS use_shut, to the cycle.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_shut
         jsr use_shut
         bne ?out                     ; already shut: A = 1, there is nothing to add

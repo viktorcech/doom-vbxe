@@ -6,7 +6,7 @@
 ;   ai_wk = whether it is chasing already (then ai_look's ray only refreshes
 ;   the frame's ray on one is the difference between 1k cycles and 100k.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_cand
                                       ; 2026-09-22 idiom: ai_bank inlined (see ai_look)
         stz zp_ptr
@@ -34,7 +34,7 @@
 ;--------------------------------------------------------------
 ; ai_look -- A_Look for ONE SIGHT RAY a frame (the header above says why).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_look
         lda pl_dead                  ; a corpse is not worth looking for
         bne ?out
@@ -42,6 +42,21 @@
         lda THINGS_BASE              ; one full lap of the table. The counter
         sta ai_lc                    ;   lives in MEMORY: ai_sight and ai_start
                                      ;   clobber X and Y
+  .ifdef ANTONIA2
+        ; 2026-10-15 (6502-idioms: store only what is read): a thing that is
+        ; no monster (TH_KIND 0, most of them) keeps X and stores nothing --
+        ; ai_lk is written on the way into ai_cand (which reads ai_wk and the
+        ; kind itself through ai_t) and when the lap ends at ?skipx.
+?next   ldx ai_lk
+?nx     inx
+        cpx THINGS_BASE              ; the level's thing count -> wrap
+        bcc ?ok
+        ldx #0
+?ok     lda.l MAP_EXT_BANK*$10000+TH_KIND,x
+        beq ?skipx
+        stx ai_lk
+        stx ai_t
+  .else
 ?next   ldx ai_lk
         inx
         cpx THINGS_BASE              ; the level's thing count -> wrap
@@ -54,6 +69,7 @@
         sta ai_wk                    ;   it, and a thing that is no monster (TH_KIND
         lda.l MAP_EXT_BANK*$10000+TH_KIND,x  ;   0, most of them) skips without the
         beq ?skip                    ;   call and the zp_ptr page switches
+  .endif
         jsr ai_cand                  ; a monster that can chase, and alive?
         bcc ?skip
         lda ai_wk                    ; (a monster already chasing still gets a
@@ -84,6 +100,12 @@
 ?skip   dec ai_lc
         bne ?next
 ?out    rts
+  .ifdef ANTONIA2
+?skipx  dec ai_lc                    ; (the no-monster skip: X is still the thing)
+        bne ?nx
+        stx ai_lk                    ; the lap is over: where it stopped
+        rts
+  .endif
 .endp
         .endseg
 
@@ -92,7 +114,7 @@
 ;   state's own action, A_Chase, at once (P_SetMobjState runs it on entry).
 ;   TH_WROW = 0 after ai_start: it refused the thing (no RUN states).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_see
         jsr ai_start
         lda #>TH_WROW
@@ -234,14 +256,6 @@
         jsr sf_push
         bra ?lp
 ?out    rts
-.endp
-
-.proc sf_next                        ; A = the list's next byte
-        lda [zp_ptr]
-        inc zp_ptr
-        bne ?nc
-        inc zp_ptr+1
-?nc     rts
 .endp
 
 .proc sf_push                        ; A = a sector: soundtarget + reached, and queue it

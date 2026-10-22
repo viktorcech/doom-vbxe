@@ -9,6 +9,9 @@ BOOT_RUN equ $0700                   ; the ATR's boot loader (boot.asm): boot_in
 ; quit_boot -- the machine back in the OS's hands, the boot loader read again
 ;   and entered. EVERY sector its header counts: the engine's arrays lie over
 ;   what the boot left of the loader. Entered native, as the engine runs.
+;   Y = 0: DOOM was typed, the reboot; else EXIT (2026-10-20): the OS's cold
+;   start (COLDSV = InitColdStart, alt-src Kernel init.s: it wants the ROM in,
+;   emulation mode and the interrupts as the OS left them -- the state below).
 ;--------------------------------------------------------------
 .proc quit_boot
         sei
@@ -34,6 +37,9 @@ BOOT_RUN equ $0700                   ; the ATR's boot loader (boot.asm): boot_in
         lda #$40
         sta NMIEN                    ; the OS VBI and the IRQs: SIOV waits on
         cli                          ;   them
+        tya                          ; EXIT: the OS's cold start from here (65816-
+        bne ?cold                    ;   style: a parked temp in Y, no cell -- X is
+                                     ;   blitw_hard's; A dies in the lda below)
         lda #1
         sta ll_sec
         sta sg_cnt

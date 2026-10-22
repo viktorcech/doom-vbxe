@@ -39,7 +39,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ;   (ai_pdist just refreshed both, and ai_ad >= 60). Arms the ball + queues
 ;   sfx_firsht. Clobbers A/X/Y, m_a/m_b/m_prod, sp_ptr (render scratch).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ball_spawn
         lda bl_on
         bne ?out                     ; the slot is taken: the thrower just animates
@@ -242,49 +242,21 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ; mv_frameb -- the main loop's mv_frame call, retargeted here: movers first,
 ;   then the ball's tic. Zero growth in the $2000 segment.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_frameb
         jsr mv_frame
         jmp ball_frame               ; (its own block -- BALLF)
 .endp
         .endseg
 
-;--------------------------------------------------------------
-; spr_chaseb -- spr_add's chase hook, retargeted: the tracked chasers first,
-;   then the ball, projected from the leaf ball_frame located it in. Same
-;   contract as spr_chase: zp_nid = the subsector being collected.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc spr_chaseb
-        jsr spr_chase
-        lda bl_on
-        beq ?out
-        lda zp_nid
-        cmp bl_ss
-        bne ?out
-        lda zp_nid+1
-        and #$7F
-        cmp bl_ss+1
-        bne ?out
-        lda sp_n
-        cmp #VIS_MAX
-        bcs ?out
-        lda #TH_NOTHING              ; vs_th: not a thing (see the header note)
-        sta sp_i
-        lda #<bl_rec
-        sta sp_ptr
-        lda #>bl_rec
-        sta sp_ptr+1
-        jmp spr_proj
-?out    rts
-.endp
-        .endseg
+; (spr_chaseb -- the ball's chase hook -- is inline in spr_chased (puff.asm)
+;  since 2026-09-15; the dead copy went 2026-10-05.)
 
 ;--------------------------------------------------------------
 ; bl_boom -- P_ExplodeMissile's OTHER half, for a missile whose death chain
 ;   carries one. X = bl_a (ball_frame's ?burst already has it there).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_boom
         lda at_boom-ATM_LO,x
         beq ?no                      ; a fireball: the burst is cosmetic
@@ -314,14 +286,8 @@ blabs_resume = *
 ;   touches no ball state, and it is called four times from ?aim -- so it was
 ;   the cheapest thing in the block to move out.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc bl_abs
-        bpl ?pos
-        eor #$FF
-	inc
-?pos    rts
-.endp
-        .endseg
+; (bl_abs is inline at its four ?aim sites since 2026-09-22; the dead proc
+;  went 2026-10-05.)
     .if * > BLABS_END+1
         ert 'bl_abs outgrew BLABS_BASE..BLABS_END (memory_map.inc)'
     .endif
@@ -336,7 +302,7 @@ blsub_resume = *
 ;   it -- bl_ttl is decremented per SUB-STEP, so a rocket lives 2.5 s instead of
 ;   5 -- and at 700 u/s that is still 1750 units, wider than any DOOM 1 arena.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_subs
         ldx dt_vbl
         ldy bl_a
@@ -366,7 +332,7 @@ blsub_resume = *
 ;--------------------------------------------------------------
 blp_resume = *
         org BLPICK_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_pick
         ldx ai_k                     ; the SHOOTER's kind -> its attack action
         ldy mk_atk,x                 ;   -> where the .things header keeps that
@@ -396,7 +362,7 @@ attab_resume = *
 
 blr_resume = *
         org BLROLL_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_roll
         ldx ai_k
         lda mk_atk,x
@@ -424,7 +390,7 @@ blr_resume = *
 ;==============================================================
         org BALLF_BASE
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ball_frame
         lda current_level            ; new level: forget the ball, learn its
         cmp bl_lvl                   ;   BAL1 id, and park index 255 as "no
@@ -496,13 +462,13 @@ blr_resume = *
         adc bl_sze
         sta bl_z+1
         dec bl_ttl
-        beq ?gone 
+        beq ?gone
         ;bra ?gone                    ; flew its 5 s: vanish (DOOM balls only
 
 ?fly    rep #$20                     ; ---- 16-bit A: |x - px| < 22 and |y - py|
         .LONGA ON                    ;   < 22 (radius 6 + 16), each one subtract,
         sec                          ;   one negate in A and one compare -- the
-        lda bl_x                     ;   ?a16 + high-byte tests collapsed, as in
+        lda bl_x                     ;   high-byte tests collapsed, as in
         sbc zp_px                    ;   pj_frame (|d| >= 256 fails the compare
         bpl ?ax                      ;   here just as it failed the hi test)
         eor #$FFFF
@@ -588,7 +554,7 @@ blr_resume = *
         lda zp_nid
 	and #$7fff
         sta bl_ss
-	
+
 	pla
 	sta zp_py
 	pla
@@ -622,19 +588,8 @@ blr_resume = *
         sbc #8
         sta bl_rec+4
 	sep #$20
-	.LONGA OFF	
+	.LONGA OFF
         rts
-
-?a16    bpl ?ap                      ; m_a(16, A=hi) = |m_a|; Z flags hi = 0
-        eor #$FF
-        tay
-        sec
-        lda #0
-        sbc m_a
-        sta m_a
-        tya
-        adc #0
-?ap     rts
 .endp
         .endseg
 
@@ -647,7 +602,7 @@ blr_resume = *
 ;   missile stops in a solid thing, and a shootable one of another species than
 ;   the thrower takes bl_dmg from bl_own ("same species: explode, no damage").
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_thing
         lda #6                       ; info.c radius: the three fireballs 6,
         ldx bl_a                     ;   MT_ROCKET 11 (bl_a 6 = A_CyberAttack,
@@ -775,7 +730,7 @@ blr_resume = *
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 bl_own  dta 0                        ; the thrower (missile->target), a thing index
 bl_ok   dta 0                        ; ...and its kind (TH_KIND), for the species rule
         .endseg
@@ -786,19 +741,19 @@ bl_ok   dta 0                        ; ...and its kind (TH_KIND), for the specie
 ;--------------------------------------------------------------
 bw_resume = *
         org BLWALL_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_wall
         ldx #3                       ; bl_x/bl_y are four contiguous bytes and so
 ?cp     lda bl_x,x                   ;   are coll_cx/coll_cy: one loop at 10 B
         sta coll_cx,x                ;   instead of eight loads and eight stores
         dex                          ;   -- which is what makes this fit the hole
         bpl ?cp
-        pha                          ; (DRAC_PLAN 2b) cs_hmin is an operand byte
+        pha                          ; cs_hmin is an operand byte
         lda #0                       ;   inside coll_seg, which runs in bank $01:
         sta.l B1CODE_BASE+coll_seg.cs_hmin ; a long store (no long stz), A kept.
         pla                          ;   Not phk/plb: an NMI in that window ran
                                      ;   rom_nmi with DBR = $01
-        jsr coll_plr       
+        jsr coll_plr
         ldx #PLAYER_H                ; ...back before anything else can read it
         pha                          ; (long store again; A holds coll_plr's
         txa                          ;   answer for the lsr, so save it)

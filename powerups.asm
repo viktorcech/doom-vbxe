@@ -2,12 +2,11 @@
 ; powerups.asm -- p_inter.c's powers + the backpack: pickup ids, timers, effects.
 ;--------------------------------------------------------------
 pwm_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; pw_map -- P_GivePower(pw_allmap), in front of pw_give. Y = bonus id, and it
 ;   must come back untouched (snd_bonus reads it), so the test is a cpy.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_map
         cpy #BN_MAP
         bne ?go
@@ -20,7 +19,6 @@ pwm_resume = *
         ert *<>pw_give              ;   next byte of this segment -- fall through
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org pwm_resume
 
 pw_resume = *
@@ -32,7 +30,7 @@ pw_resume = *
 ;   taken; only P_GivePower(pw_allmap) can refuse in DOOM and the map does
 ;   nothing here, so everything is taken.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_give
         cpy #BN_INVIS
         beq ?invis
@@ -128,10 +126,9 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
     .if * > POWER_END+1
         ert 'pw_give outgrew POWER_BASE..POWER_END (memory_map.inc)'
     .endif
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
                                      ;   four ways (memory_map.inc POWER/PWMAX/
                                      ;   PWTIC/LFSG)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_max
         pha
         lda PW_FLAGS
@@ -152,9 +149,8 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   instead of fl_tic and this passes it on: the flash block has no room left
 ;   for another instruction, and both are the same 35 Hz clock anyway.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org PWTIC_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_tic
         jsr fl_ztic                  ; the berserk's red fade, then fl_tic --
                                      ;   the palette-flash counters (weapon.asm)
@@ -198,7 +194,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   does nothing at all about special 11 (E1M8's finale, class 4). Invulnerability
 ;   is P_DamageMobj's own test, above all of it. Preserves X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_shield
         lda PW_INVUL
         ora PW_INVUL+1
@@ -225,7 +221,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   P_Random spread = 255, and the pellet lands if |spread| * dist < 16 * 620).
 ;   they do in DOOM. Clobbers A/X and m_b (ai_fire fills m_b right after).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_spread
         jsr ?tri
         sta m_a
@@ -269,7 +265,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;       dx' = dx - t*dy        dy' = dy + t*dx        t = r * 2pi/4096 rad
 ;   hitscan half. Native only (ai_fire -> ball_spawn). Clobbers A/X/Y and
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bl_spread
         lda PW_INVIS
         ora PW_INVIS+1
@@ -333,7 +329,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   intermission; only G_PlayerReborn (load_things' boot path) takes them back.
 ;   The MESSAGE is dropped here too (G_DoLoadLevel: "player->message = NULL")
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_level
         ldx #6
 ?z      stz PW_INVIS-1,x
@@ -361,7 +357,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
         ert 'pw_tic..pw_level outgrew PWTIC_BASE..PWTIC_END (memory_map.inc)'
     .endif
         org LFSG_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc leaf_segs
 	rep #$20
 	.LONGA ON
@@ -403,7 +399,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   X (0 then 2) is the pass, and it rides the stack across smul_14, which
 ;   clobbers X and Y. Proved bit-identical over 624 (d, sin, cos, origin) cases
 ;   against the two-copy version: tools/tests/_verify_shdist.py.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sh_dist
                                       ; 2026-09-23: the passes are independent (each
         ldx #2                       ;   writes only zp_px,x): run 2 then 0 and end
@@ -443,7 +439,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ;   since the coltab run left bank $01. read_ext writes ll_dst back and
 ;   read_sectors advances ll_sec, so every pass but the first needs nothing
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sprcol_read
         ldx #SPRC_PASSES
 ?p      lda #128
@@ -469,8 +465,7 @@ kb_new   dta $FF                     ; a NEW press, waiting for cht_key
 ; scervenat"). st_stuff.c ST_doPaletteStuff opens with THREE terms, not two:
 ;==============================================================
 zerk_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 fl_zerk dta 0                        ; bzc: 12 at pickup, 0 = faded out
 fl_zt   dta 0                        ; tics left in the current bzc step
 
@@ -480,7 +475,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;   inline, which is why that block did not have to grow.
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc fl_zon
                                       ; 2026-09-21: tsb (A reloaded on the next line)
         lda #PWF_BERSERK
@@ -500,7 +495,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;   every level start (G_PlayerFinishLevel clears powers[]) and the red goes
 ;   with it.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc fl_ztic
         lda PW_FLAGS
         and #PWF_BERSERK
@@ -524,7 +519,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;   end on an `lda`, because the caller's next instruction is `beq ?bon` and a
 ;   cmp's Z would answer a different question.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc fl_cnt
         lda fl_dmg
         cmp fl_zerk
@@ -534,7 +529,6 @@ fl_zt   dta 0                        ; tics left in the current bzc step
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org zerk_resume
 
         org pw_resume
@@ -549,7 +543,7 @@ fl_zt   dta 0                        ; tics left in the current bzc step
 ;--------------------------------------------------------------
 vsl_resume = *
         org VISLIT_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pw_vislit
         lda PW_VISOR+1
         bne ?von                     ; more than 255 tics left: solid
@@ -571,7 +565,7 @@ vsl_resume = *
 ;   invulnerability sphere is the only way in -- but it IS one, and the face was
 ;   missing on every sphere until now. C=1 = handled, leave the face alone.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc hud_god
         lda PW_INVUL
         ora PW_INVUL+1
@@ -593,7 +587,7 @@ vsl_resume = *
 ;   face outranks the look-around animation, and hud_face_upd's own block had
 ;   not three bytes left for the test.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc hud_god_gate
         lda PW_INVUL                 ; hud_god's test INLINE (2026-09-15): a frame
         ora PW_INVUL+1               ;   without the sphere goes straight on to
@@ -628,7 +622,6 @@ vsl_resume = *
         org vsl_resume
 
 cht_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; cht_scan -- read_keys calls this instead of cht_key. kb_scan (in the VBI) has
@@ -636,7 +629,7 @@ cht_resume = *
 ;   and a second cheat becomes possible. Feeds the one byte to both matchers,
 ;   then consumes it.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cht_scan
         lda kb_new
         cmp #$FF
@@ -655,7 +648,7 @@ cht_resume = *
 ; cht_dqd -- IDDQD. A = a new key press. Same shape as cht_key, minus the
 ;   held-key test: kb_new IS the edge, so the doubled D matches.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cht_dqd
         ldx dqd_n
         cpx #DQD_LEN                 ; boot RAM must not index past the table
@@ -671,7 +664,7 @@ cht_resume = *
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 dqd_tab dta KEY_I, KEY_D, KEY_D, KEY_Q, KEY_D
 DQD_LEN equ * - dqd_tab
 dqd_n   dta 0
@@ -683,7 +676,7 @@ dqd_n   dta 0
 ;   this parks PW_INVUL at its maximum instead of counting down to it.
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc dqd_give
         lda #100
         sta PSTATE+PS_HEALTH
@@ -695,5 +688,4 @@ dqd_n   dta 0
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org cht_resume

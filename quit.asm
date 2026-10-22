@@ -12,6 +12,10 @@ quit_snd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
 ;   ENDOOM and its prompt (console.asm), the reboot. Does not return.
 ;--------------------------------------------------------------
 .proc quit_doom
+        jsr mus_stop_t               ; 2026-10-20: the song off FIRST -- it plays from
+                                     ;   the VBLANK and went on through ENDOOM and the
+                                     ;   prompt; and quit_wait's snd_stop must follow a
+                                     ;   mus_stop (music.asm mus_play)
         jsr quit_wait                ; the menu's select shot ends first
         lda RTCLOK3
         lsr
@@ -22,8 +26,9 @@ quit_snd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
         tax
         jsr snd_play_t
         jsr quit_wait                ; I_WaitVBL(105)
-        jsl B1CODE_BASE+con_end_w1   ; I_Quit: ENDOOM, then the prompt
-        jmp quit_boot
+        jsl B1CODE_BASE+con_end_w1   ; I_Quit: ENDOOM, then the prompt: A = what
+        tay                          ;   was typed, 0 DOOM / 4 EXIT (2026-10-20) --
+        jmp quit_boot                ;   parked in Y (65816-style), X is blitw_hard's
 .endp
 
 ;--------------------------------------------------------------

@@ -17,7 +17,7 @@ fin_resume = *
 ;   that is not an ExM8 behaves exactly as it always did.
 ;--------------------------------------------------------------
         org FINEXIT_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc fin_exit
         ldx EXIT_REQ
         dex                          ; X = mn_open's entry index (WI_E_INTER)
@@ -26,7 +26,7 @@ fin_resume = *
         beq ?wi                      ;   until exit_level runs
         lda #BANK_EN | FINOVL_BANK
         jsl mn_open_w0 ; ...which lands in fin_head below
-        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
+        rts
 ?wi     jmp wi_exit                  ; (same bank; the B1 segment moved it out
 .endp                                ;   of a branch's reach)
         .endseg
@@ -64,7 +64,7 @@ fin_resume = *
 ;   which is the whole of stage 1: pages 1-4 are never needed, because the
 ;   finale NEVER LOADS A LEVEL. wi.asm's stage 1 has to keep an across-the-load
 ;--------------------------------------------------------------
-FIN2_WIN        equ MEMW16+[[FIN2_BANK&3]<<12]     ; DRAC_PLAN 3b: 16 KB window: stage 2's chunk
+FIN2_WIN        equ MEMW16+[[FIN2_BANK&3]<<12]     ; 16 KB window: stage 2's chunk
 .proc fin_head
         lda #BANK_EN | FIN2_BANK
         sta VBXE_BANK_SEL
@@ -419,10 +419,14 @@ fin_loop jsr fin_tic
 ;--------------------------------------------------------------
 .proc fin_load
         stz VBXE_VCTL                ; black (fin_show's xdl_to_r turns it on)
-                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a): so is rom_in_t
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts: so is rom_in_t
         lda #$40
         sta NMIEN
         cli
+        lda #$FF                     ; 2026-10-06: the level's song ends here (the
+        sta mus_want                 ;   finale comes straight off the frame loop,
+        jsr mus_stop_t               ;   and its VBLANK player writes AUDF3/4, SIO's
+                                     ;   baud clock); none for mus_again to restart
         jsr snd_stop                 ; the DAC silent and Timer-1 disarmed
         stz SOUNDR_R                 ;   BEFORE SIO takes the chip, or the tone
                                      ;   it was mid-way through squeals for the
@@ -914,9 +918,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
 ; The per-episode tables. Three entries each, indexed by MAP_HFINEP-1.
 ;==============================================================
 ;   finaletext, as a MEMAC window address + the bank byte it is in
-                                      ; DRAC_PLAN 3b: 16 KB window
 fin_txlo  dta <[MEMW16+[[[FIN_BANK+[FIN_TEXT1>>12]]&3]<<12]+[FIN_TEXT1&$FFF]], <[MEMW16+[[[FIN_BANK+[FIN_TEXT2>>12]]&3]<<12]+[FIN_TEXT2&$FFF]], <[MEMW16+[[[FIN_BANK+[FIN_TEXT3>>12]]&3]<<12]+[FIN_TEXT3&$FFF]]
-                                      ; DRAC_PLAN 3b: 16 KB window
 fin_txhi  dta >[MEMW16+[[[FIN_BANK+[FIN_TEXT1>>12]]&3]<<12]+[FIN_TEXT1&$FFF]], >[MEMW16+[[[FIN_BANK+[FIN_TEXT2>>12]]&3]<<12]+[FIN_TEXT2&$FFF]], >[MEMW16+[[[FIN_BANK+[FIN_TEXT3>>12]]&3]<<12]+[FIN_TEXT3&$FFF]]
 fin_txbk  dta BANK_EN|[FIN_BANK+[FIN_TEXT1>>12]], BANK_EN|[FIN_BANK+[FIN_TEXT2>>12]], BANK_EN|[FIN_BANK+[FIN_TEXT3>>12]]
 ;   strlen(finaletext)*TEXTSPEED + TEXTWAIT + 1 -- F_Ticker's `>` made a `>=`

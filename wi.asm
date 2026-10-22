@@ -22,15 +22,14 @@ wi_resume = *
 ; wi_tick -- leveltime. update_pz's `jsr update_damage` points here instead, so
 ;--------------------------------------------------------------
         org WITICK_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc wi_tick
-        lda wi_time
-        clc
-        adc dt_vbl
-        sta wi_time
-        bcc ?nc
-        inc wi_time+1
-?nc
+        .segment B1
+.proc wi_tick                         ; wi_time counts whole SECONDS (u16: 18 h);
+        lda wi_vbl                   ;   u16 VBLANKs wrapped at 21:50 (drac030, E1M2)
+        clc                          ; the VBLANKs past the last second, 0..49,
+        adc dt_vbl                   ;   + this frame's 1..64 = 113 at most
+        cmp #50
+        bcs wi_tsec                  ; a second is up: out of line, ~1 frame in 10
+put     sta wi_vbl
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>wi_secr              ;   next byte of this segment -- fall through
 .endp
@@ -43,8 +42,10 @@ wi_resume = *
 ; wi_secr -- p_spec.c P_PlayerInSpecialSector's `case 9: SECRET SECTOR`, then
 ;--------------------------------------------------------------
         org WISECR_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wi_secr
+        lda pl_offs                  ; p_spec.c:1016: not standing ON this sector's
+        bne ?out                     ;   floor -> no special at all
         ldy #7
         lda (zp_ptr),y               ;   b4 SECRET (pack_map.py)
         bit #$10                     ; already clear (the usual case): nothing to
@@ -52,6 +53,18 @@ wi_resume = *
         and #$EF
         sta (zp_ptr),y
 ?out    jmp update_damage
+.endp
+
+; wi_tsec -- wi_tick's whole second(s), parked behind wi_secr's jmp. IN: C = 1
+;   (wi_tick's cmp); 113 at most in A, so the loop runs twice at most.
+.proc wi_tsec
+        sbc #50
+        inc wi_time
+        bne ?n
+        inc wi_time+1
+?n      cmp #50
+        bcs wi_tsec
+        bra wi_tick.put
 .endp
         .endseg
     .if * > WISECR_END+1
@@ -62,13 +75,13 @@ wi_resume = *
 ; wi_exit -- the frame loop's EXIT_REQ tail. main used to `jsr exit_level`
 ;--------------------------------------------------------------
         org WIEXIT_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wi_exit
         ldx EXIT_REQ
         dex
         lda #BANK_EN | WIOVL_BANK
         jsl mn_open_w0 ; ...which lands in wi_head below
-        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
+        rts
 .endp
         .endseg
     .if * > WIEXIT_END+1
@@ -79,10 +92,11 @@ wi_resume = *
 ; wi_newlvl -- G_DoLoadLevel's `leveltime = 0`, in front of load_things: both
 ;--------------------------------------------------------------
         org WINEW_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wi_newlvl
         stz wi_time
         stz wi_time+1
+        stz wi_vbl
         jmp load_things
 .endp
         .endseg
@@ -101,7 +115,6 @@ wi_resume = *
 ;--------------------------------------------------------------
 .proc wi_head
         ldy #0
-                                      ; DRAC_PLAN 3b: 16 KB window
 WIOVL_WIN       equ MEMW16+[[WIOVL_BANK&3]<<12]
 WI2_WIN         equ MEMW16+[[WI2_BANK&3]<<12]    ; stage 2's chunk in the window
     .if [>WI2_WIN] + WI2_PAGES > 255
@@ -120,9 +133,8 @@ WI2_WIN         equ MEMW16+[[WI2_BANK&3]<<12]    ; stage 2's chunk in the window
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
         cpx #WI_E_MELT
-        bne ?inter
-        jmp wi_melt2
-?inter  jsr wi_pre
+        jeq wi_melt2
+        jsr wi_pre
         lda #BANK_EN | WI2_BANK
         sta VBXE_BANK_SEL
                                       ; 2026-09-23: pages in any order (no overlap):
@@ -207,8 +219,8 @@ wi_next     dta 0
 ?v      lda RTCLOK3
 ?w      cmp RTCLOK3
         beq ?w
-        jsr mus_play_t ; ONE frame of the song per VBLANK, not
-                                     ;   per DOOM tic: the stream is authored ...
+                                     ; (2026-10-06: the song's frame per VBLANK is
+                                     ;   rom_nmi's now, not this tick's)
         lda wi_tacc
         clc
         adc #WI_TICQ8
@@ -351,38 +363,26 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
 ; wi_stats -- everything G_DoCompleted puts in wminfo, derived rather than
 ;--------------------------------------------------------------
 .proc wi_stats
-        stz wi_kills
-        stz wi_items
-        stz wi_maxkills              ;   throw the tally away
-        stz wi_maxitems
+        rep #$20                     ; ---- 16-bit: throw the tally away (kills +
+        .LONGA ON                    ;   items, maxkills + maxitems: the secret
+        stz wi_kills                 ;   pair wi_pre counted stays) and point
+        stz wi_maxkills              ;   sp_ptr at the first record
         lda th_things
         sta sp_ptr
-        lda th_things+1
-        sta sp_ptr+1
-        lda #MAP_EXT_BANK
-        sta zp_ptr+2
-        ldx #0
-?lp     cpx THINGS_BASE              ; the packed thing count
-        bcs ?time
-        stx wi_i
-        txy
-        lda #<TH_KIND
-        sta zp_ptr
-        lda #>TH_KIND
-        sta zp_ptr+1
-        lda [zp_ptr],y
+        .LONGA OFF
+        sep #$20
+        ldx #0                       ; X = the thing for the whole pass: wi_bonus
+?lp     cpx THINGS_BASE              ;   and thing_alive_bit keep it
+        bcs ?time                    ; (the packed thing count)
+        lda.l EXT_BASE+TH_KIND,x
         beq ?item
         tay
         lda mk_ckill,y
         beq ?next
         inc wi_maxkills
-        ldy wi_i
-        lda #>TH_STATE
-        sta zp_ptr+1
-        lda [zp_ptr],y
+        lda.l EXT_BASE+TH_STATE,x
         bne ?gotkill
-                                      ; 2026-09-22 idiom: X IS wi_i (stx wi_i at ?lp;
-        jsr thing_alive_bit_t          ;   en_kill just cleared the ALIVE bit
+        jsr thing_alive_bit_t        ; en_kill just cleared the ALIVE bit
         bne ?next
 ?gotkill inc wi_kills
         bra ?next
@@ -396,8 +396,7 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
         lda bn_citem,y
         beq ?next
         inc wi_maxitems
-        ldx wi_i
-        jsr thing_alive_bit_t          ; taken = spr_take cleared its bit
+        jsr thing_alive_bit_t        ; taken = spr_take cleared its bit
         bne ?next
         inc wi_items
 ?next   clc                          ; the record is 8 B, like en_kfill's
@@ -406,20 +405,13 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
         sta sp_ptr
         bcc ?nc
         inc sp_ptr+1
-?nc     ldx wi_i
-        inx
+?nc     inx
         bne ?lp
-?time   lda wi_time
-        sta wi_m
-        lda wi_time+1
-        sta wi_m+1
-        lda #50
-        jsr wi_div16_t                 ; wi_m /= 50
-        lda wi_m
-        sta wi_secs
-        lda wi_m+1
-        sta wi_secs+1
-        ldx current_level            ; pars[1][map] (g_game.c:981)
+    .if wi_items <> wi_kills+1 || wi_maxitems <> wi_maxkills+1
+        ert 'wi_stats clears kills/items and maxkills/maxitems as words'
+    .endif
+?time   ldx current_level            ; pars[1][map] (g_game.c:981); stime is
+                                     ;   wi_time, already in seconds
         lda wi_par,x
         sta wi_parsec
         stz wi_parsec+1
@@ -450,26 +442,26 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
 ; THE TALLY -- wi_stuff.c's sp_state machine (WI_updateStats, :1330).
 ;==============================================================
 .proc wi_initstats
-        lda #1
-        sta wi_sp
-        stz wi_accelst
-        stz wi_bcnt
-        stz wi_state
-        stz wi_tacc
-        stz wi_tvis
-        stz wi_ctime                 ;   and cnt_par start at -1, and
-        stz wi_ctime+1               ;   WI_drawTime returns on t < 0)
+        rep #$20                     ; ---- 16-bit: the variables sit in pairs
+        .LONGA ON
+        lda #$0001
+        sta wi_sp                    ; sp_state = 1, wi_state = 0
+        lda #WI_TICRATE<<8
+        sta wi_accelst               ; acceleratestage = 0, cnt_pause = TICRATE
+        stz wi_bcnt                  ; bcnt, and the 50 -> 35 Hz accumulator
+        stz wi_ctime                 ; cnt_time = cnt_par = 0
         stz wi_cpar
-        stz wi_cpar+1
-        ldx #2
-        lda #$FF
-?z      sta wi_cnt,x
-        dex
-        bpl ?z
-        lda #WI_TICRATE              ; cnt_pause = TICRATE
-        sta wi_pause
+        lda #$FFFF
+        sta wi_cnt                   ; cnt_kills/items/secret = -1: three bytes,
+        sta wi_cnt+1                 ;   two overlapping words
+        .LONGA OFF
+        sep #$20
+        stz wi_tvis
         rts
 .endp
+    .if wi_state <> wi_sp+1 || wi_pause <> wi_accelst+1 || wi_tacc <> wi_bcnt+1
+        ert 'wi_initstats stores these pairs as words'
+    .endif
 
 ;--------------------------------------------------------------
 ; wi_accel -- WI_checkForAccelerate (:1470). One key, edge triggered: DOOM
@@ -511,11 +503,10 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
         cmp #5
         beq ?done
         cmp #4
-        beq ?tp
+        jeq wi_timepar
         tax                          ; states 2/4/6 -> rows 0/1/2
         dex
         bra wi_ratio
-?tp     jmp wi_timepar
 ?pause  dec wi_pause
         bne ?out
         inc wi_sp
@@ -579,9 +570,9 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
         .LONGA ON
         lda wi_ctime
         adc #3
-        cmp wi_secs
+        cmp wi_time
         bcc ?t16
-        lda wi_secs
+        lda wi_time
 ?t16    sta wi_ctime
         clc                          ; cnt_par += 3, clamped at partime
         lda wi_cpar
@@ -596,7 +587,7 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
 ?pl16   lda wi_parsec                ; par has landed -- and time too?
         sta wi_cpar
         lda wi_ctime
-        cmp wi_secs
+        cmp wi_time
         sep #$20
         .LONGA OFF
         bne ?draw
@@ -620,7 +611,7 @@ mt_img    dta 0, 0, MT_BK, a([-MT_W]&$FFFF), 1                ; S
                                       ; 2026-09-22 idiom: two word copies in a row -> one
         rep #$20                     ;   16-bit window (wi.asm runs in-game, native --
         .LONGA ON                    ;   its other windows prove it)
-        lda wi_secs
+        lda wi_time
         sta wi_ctime
         lda wi_parsec
         sta wi_cpar
@@ -716,18 +707,15 @@ wi_put  = wi_putx.?put
 ; wi_labels -- the five static rows of WI_drawStats. Drawn once: the per-tic
 ;--------------------------------------------------------------
 .proc wi_labels
-        stz wi_row
-?l      ldx wi_row
-        lda wi_rowy,x
-        sta wi_arg
+        ldx #2                       ; bottom-up: three rows apart, order-free
+?l      phx
+        ldy wi_rowy,x
         lda wi_lblix,x
         ldx #WI_STATSX
-        ldy wi_arg
         jsr wi_putx
-        inc wi_row
-        lda wi_row
-        cmp #3
-        bne ?l
+        plx
+        dex
+        bpl ?l
         lda #WI_I_TIME
         ldx #WI_TIMEX
         ldy #WI_TIMEY
@@ -742,12 +730,12 @@ wi_put  = wi_putx.?put
 ; wi_redraw -- the animated half: three percentages and two times, each erased
 ;--------------------------------------------------------------
 .proc wi_redraw
-        stz wi_row
+        lda #2                       ; the rows bottom-up: three boxes that never
+        sta wi_row                   ;   overlap, so the order draws nothing else
 ?l      ldx wi_row
-        lda wi_rowy,x
-        sta wi_py
+        ldy wi_rowy,x
+        sty wi_py
         ldx #WI_PCTXH-WI_FLDW        ; (erase boxes are in 160 units)
-        ldy wi_py
         jsr wi_erase
         ldx wi_row
         lda wi_cnt,x
@@ -758,15 +746,11 @@ wi_put  = wi_putx.?put
         stx wi_px+1
         ldy wi_py
         jsr wi_pct
-?nx     inc wi_row
-        lda wi_row
-        cmp #3
-        bne ?l
-        lda #WI_TFLDW
-        sta wi_ew                    ;   -- nothing between the two erases
-        lda #WI_FLDH                 ;   touches wi_ew or wi_eh
-        sta wi_eh
-        ldx #WI_TIMEVXH-WI_TFLDW
+?nx     dec wi_row
+        bpl ?l
+        lda #WI_TFLDW-1              ; the time boxes are wider; mn_bh is still
+        sta mn_bw                    ;   wi_erase's WI_FLDH-1 (mn_sbox and sr_put
+        ldx #WI_TIMEVXH-WI_TFLDW     ;   only read the box bytes)
         ldy #WI_TIMEY
         jsr wi_erase.wi_erasew
         ldx #WI_PARVXH-WI_TFLDW
@@ -774,47 +758,55 @@ wi_put  = wi_putx.?put
         jsr wi_erase.wi_erasew
         lda wi_tvis
         beq ?out
-        lda wi_ctime
-        sta wi_cur
-        lda wi_ctime+1
-        sta wi_cur+1
-        ldx #WI_TIMEVX               ; (< 256)
-        stx wi_px
+        lda #WI_TIMEVX               ; (< 256)
+        sta wi_px
         stz wi_px+1
+        ldx #0                       ; cnt_time
         ldy #WI_TIMEY
         jsr wi_dotime
-        lda wi_cpar
-        sta wi_cur
-        lda wi_cpar+1
-        sta wi_cur+1
-        ldx #<WI_PARVX               ; x = 304: a word
-        stx wi_px
-        ldx #>WI_PARVX
-        stx wi_px+1
+        lda #<WI_PARVX               ; x = 304: a word
+        sta wi_px
+        lda #>WI_PARVX
+        sta wi_px+1
+        ldx #2                       ; cnt_par (wi_ctime+2)
         ldy #WI_TIMEY
-        jsr wi_dotime
+        jmp wi_dotime
 ?out    rts
 .endp
+    .if wi_cpar <> wi_ctime+2
+        ert 'wi_dotime reads wi_ctime,x: cnt_par must follow cnt_time'
+    .endif
 
 ;--------------------------------------------------------------
 ; wi_erase -- X = column, Y = row: put WI_FLDW x WI_FLDH bytes of the
 ;--------------------------------------------------------------
 .proc wi_erase
-        lda #WI_FLDW
-        sta wi_ew
-        lda #WI_FLDH
-        sta wi_eh
-wi_erasew
-        stx mn_bx                    ; 2026-09-24: the box, in 160 units, back out
+        lda #WI_FLDW-1
+        sta mn_bw
+        lda #WI_FLDH-1
+        sta mn_bh
+wi_erasew                            ; (mn_bw/mn_bh = width-1/height-1 set by the
+        stx mn_bx                    ;   caller) the box, in 160 units, back out
         sty mn_by                    ;   of the pristine map (WI_SRBG, mn_sbk) at
-        ldx wi_ew                    ;   320 -- menu.asm mn_sbox, the title's own
-        dex                          ;   restore
-        stx mn_bw
-        ldx wi_eh
-        dex
-        stx mn_bh
+                                     ;   320 -- menu.asm mn_sbox, the title's own
+                                     ;   restore
         jsr blitter_wait_t           ; mn_sbox writes the BCB before ITS wait
         jmp mn_sbox_t
+.endp
+
+;--------------------------------------------------------------
+; wi_pct -- WI_drawPercent: the '%' AT x, then the digits leftwards from it.
+;--------------------------------------------------------------
+.proc wi_pct                         ; A = the value, wi_px = the '%''s x, Y = row
+        sty wi_py
+        pha                          ; the value, parked across the '%'
+        lda #WI_I_PCNT
+        jsr wi_put
+        ldx #$FF                     ; as many digits as it has
+        stx wi_dig
+        pla
+        ldy wi_py                    ; (wi_num stores it back again)
+        ert *<>wi_num               ; falls through
 .endp
 
 ;--------------------------------------------------------------
@@ -822,11 +814,9 @@ wi_erasew
 ;--------------------------------------------------------------
 .proc wi_num                         ; A = n, wi_px = its right edge, Y = row
         sty wi_py
-        sta wi_n
-        lda wi_dig
-        bpl ?have
+        ldx wi_dig                   ; $FF = count them (A keeps n throughout)
+        bpl ?loop
         ldx #1
-        lda wi_n
         cmp #10
         bcc ?got
         inx
@@ -834,17 +824,14 @@ wi_erasew
         bcc ?got                     ;   whole answer.
         inx
 ?got    stx wi_dig
-?have   lda wi_n
-?loop   ldx #0                       ; digit = n mod 10, X = n / 10
-?d      cmp #10
-        bcc ?done                    ; (not taken: C=1, the sbc needs no sec)
+?loop   ldx #$FF                     ; X = n / 10, A = n mod 10 - 10
+        sec
+?d      inx
         sbc #10
-        inx
-        bra ?d
-                                      ; 2026-09-23: the digit stays in A -- C = 0 from
-?done   stx wi_n                     ;   the taken bcc ?done, so the lump add needs no
-        adc #WI_I_NUM0               ;   clc; parked on the stack while x steps left
-        pha
+        bcs ?d
+        stx wi_n
+        adc #10+WI_I_NUM0            ; C = 0 from the bcs: the digit's lump (the
+        pha                          ;   sum < 256), parked while x steps left
         rep #$20                     ; x -= WINUM0's width: a word (x reaches 304)
         .LONGA ON
         lda wi_px
@@ -856,59 +843,33 @@ wi_erasew
         pla
         ldy wi_py
         jsr wi_put
-        dec wi_dig
-        beq ?out
         lda wi_n
-        bra ?loop
-?out    rts
+        dec wi_dig
+        bne ?loop
+        rts
 .endp
 
 ;--------------------------------------------------------------
-; wi_pct -- WI_drawPercent: the '%' AT x, then the digits leftwards from it.
+; wi_dotime -- WI_drawTime(x, y, cnt): two digits, a colon, and the next
 ;--------------------------------------------------------------
-.proc wi_pct                         ; A = the value, wi_px = the '%''s x, Y = row
-        sta wi_n2
-        sty wi_py
-        lda #WI_I_PCNT
-        jsr wi_put
-        lda #$FF
-        sta wi_dig
-        lda wi_n2
-        ldy wi_py
-        bra wi_num
-.endp
-
-;--------------------------------------------------------------
-; wi_dotime -- WI_drawTime(x, y, wi_cur): two digits, a colon, and the next
-;--------------------------------------------------------------
-.proc wi_dotime                      ; wi_px = the right edge, Y = the row
-        sty wi_py
-        lda wi_cur+1                 ; > 3599 s? (61*59, wi_stuff.c:388)
-        cmp #>3600
-        bcc ?ok
-        bne ?sucks
-        lda wi_cur
-        cmp #<3600
-        bcc ?ok
-?sucks  lda #WI_I_SUCKS
-        ldy wi_py
-        jmp wi_put
-?ok     lda wi_cur                   ; minutes = t/60, seconds = t mod 60
+.proc wi_dotime                      ; X = 0 cnt_time / 2 cnt_par, wi_px = the
+        sty wi_py                    ;   right edge, Y = the row
+        rep #$20                     ; ---- 16-bit: wi_m = t, and t > 3599 s?
+        .LONGA ON                    ;   (61*59, wi_stuff.c:388)
+        lda wi_ctime,x
         sta wi_m
-        lda wi_cur+1
-        sta wi_m+1
-        lda #60
-        jsr wi_div16_t                 ; wi_m = minutes
-        lda wi_m
-                                      ; 2026-09-22 (65816-style): the minutes ride the
-        pha                          ;   stack across the seconds' print
-        jsr wi_mul60
-                                      ; 2026-09-23: the seconds straight from A
-        lda #2
-        sta wi_dig
-        sec
-        lda wi_cur
-        sbc wi_m
+        cmp #3600
+        .LONGA OFF
+        sep #$20
+        bcc ?ok
+        lda #WI_I_SUCKS              ; 2026-10-06 (6502-idioms: no reload): Y is still
+        jmp wi_put                   ;   the row -- the entry's sty, nothing since
+?ok     lda #60
+        jsr wi_div16_t               ; wi_m = minutes, A = t mod 60 = seconds
+        ldx wi_m                     ; the minutes ride the stack across the
+        phx                          ;   seconds' print
+        ldy #2
+        sty wi_dig
         ldy wi_py
         jsr wi_num
         rep #$20                     ; ...then the colon left of them (a word)
@@ -932,37 +893,15 @@ wi_erasew
 ?out    rts
 .endp
 
-;--------------------------------------------------------------
-; wi_mul60 -- A -> wi_m = A*60 (= 32 + 16 + 8 + 4), for the seconds remainder.
-;--------------------------------------------------------------
-.proc wi_mul60
-        rep #$20                     ; ---- 16-bit A: *60 = *64 - *4, in A
-        .LONGA ON
-        and #$FF
-        asl @
-        asl @                        ; *4
-        sta wi_t3
-        asl @
-        asl @
-        asl @
-        asl @                        ; *64
-        sec
-        sbc wi_t3                    ; *60
-        sta wi_m
-        sep #$20
-        .LONGA OFF
-        rts
-.endp
-
 ;==============================================================
 ; THE ANIMATED BACKGROUND -- epsd0animinfo (wi_stuff.c:222). Episode 1 is
 ;==============================================================
 .proc wi_anim
         lda wi_bcnt
         cmp wi_anext
-        bcc ?out
-        clc
-        adc #WI_ANIMPER
+        bcs ?go                      ; most tics: not yet
+        rts
+?go     adc #WI_ANIMPER-1            ; C = 1 from the bcs
         sta wi_anext
         inc wi_af
         lda wi_af
@@ -989,9 +928,9 @@ wi_erasew
         lda wi_ai
         cmp #WI_ANIMS
         bne ?l
-        bra wi_over                  ; the anims just stamped their rectangles
-?out    rts                          ;   OVER the once-drawn layer -- re-assert
-.endp                                ;   all of it, not only the title
+                                     ; the anims just stamped their rectangles
+        ert *<>wi_over              ;   OVER the once-drawn layer -- re-assert
+.endp                                ;   all of it, not only the title: falls through
 
 ;--------------------------------------------------------------
 ; wi_over -- everything that lives ABOVE the animations, repainted after every
@@ -1096,29 +1035,27 @@ wi_erasew
         ldx current_level            ; wbs->last is the map WITHIN the episode,
         lda wi_ebase,x               ;   not the disk index: E2M1 used to splat
         sta wi_ai                    ;   levels 0..9, i.e. the whole of episode
-        sec                          ;   1's map. wi_ebase is that episode's M1
-        lda current_level            ;   (tools/pack_wi.py), so the subtract is
+        txa                          ;   1's map. wi_ebase is that episode's M1
+        sec                          ;   (tools/pack_wi.py), so the subtract is
         sbc wi_ai                    ;   wbs->last and wi_ai is where its nodes
-        cmp #8                       ;   start.
+        cmp #8                       ;   start. (X = current_level)
         bne ?have                    ; last == 8 is the SECRET level, and DOOM
         ldx wi_next                  ;   shows next-1 instead (wi_stuff.c:790)
+        txa
         sec
-        lda wi_next
         sbc wi_ebase,x
         dec @
-?have   clc
-        adc wi_ai                    ; ...so stop at ebase + last, INCLUSIVE
-        sta wi_arg+1                 ;   (wi_stuff.c:793 is i <= last)
-                                      ; 2026-09-23: Y straight from the table
+?have   sec                          ; ebase + last + 1: the stop, EXCLUSIVE
+        adc wi_ai                    ;   (wi_stuff.c:793 is i <= last)
+        sta wi_arg
 ?sp     ldx wi_ai
         jsr wi_nodepx                ; wi_px = the node's x, Y = its y
         lda #WI_I_SPLAT
         jsr wi_put
         inc wi_ai
         lda wi_ai
-        cmp wi_arg+1
-        beq ?sp
-        bcc ?sp
+        cmp wi_arg
+        bne ?sp
         rts
 .endp
 
@@ -1163,10 +1100,10 @@ wi_erasew
         tay                          ; (sta keeps the cmp's flags: tay sets them
         bne wi_yahput                ;  from A; Y is dead on both paths)
         ldx wi_next                  ; OFF: erase its box back to the map
-        lda #WI_YAHW
-        sta wi_ew
-        lda #WI_YAHH
-        sta wi_eh
+        lda #WI_YAHW-1
+        sta mn_bw
+        lda #WI_YAHH-1
+        sta mn_bh
         lda wi_nodey,x
         sec
         sbc #WI_YAHDY
@@ -1183,12 +1120,13 @@ wi_erasew
 .proc wi_slambg
         lda wi_tmode                 ; ShowNextLoc's: the map back from the
         beq ?fresh                   ;   pristine copy, whole screen (the stats'
-        stz mn_bx                    ;   slam finds it fresh from wi_bgfetch --
-        stz mn_by                    ;   and there is no pristine copy yet)
-        lda #SCREEN_WIDTH-1
-        sta mn_bw
-        lda #SCREEN_HEIGHT-1
-        sta mn_bh
+        rep #$20                     ;   slam finds it fresh from wi_bgfetch --
+        .LONGA ON                    ;   and there is no pristine copy yet)
+        stz mn_bx                    ; x, y = 0
+        lda #[[SCREEN_HEIGHT-1]<<8]|[SCREEN_WIDTH-1]
+        sta mn_bw                    ; w-1, h-1 (mn_bx..mn_bh are four bytes)
+        .LONGA OFF
+        sep #$20
         jsr blitter_wait_t           ; mn_sbox writes the BCB before ITS wait
         jsr mn_sbox_t
 ?fresh  lda #BLT_BSTENCIL
@@ -1197,6 +1135,9 @@ wi_erasew
         stz wi_anext                 ;   all ten over the fresh background
         jmp wi_anim
 .endp
+    .if mn_by <> mn_bx+1 || mn_bw <> mn_bx+2 || mn_bh <> mn_bx+3
+        ert 'wi_slambg stores mn_bx..mn_bh as two words'
+    .endif
 
 ;--------------------------------------------------------------
 ; wi_bgfetch -- A = the bank to fill (WI_SRVRAM's or WI_SRBG's): WI_loadData's
@@ -1247,9 +1188,7 @@ wi_cnt      dta 0,0,0                ; cnt_kills / cnt_items / cnt_secret
 wi_ctime    dta 0,0                  ; cnt_time, seconds
 wi_cpar     dta 0,0                  ; cnt_par
 wi_tvis     dta 0
-wi_secs     dta 0,0                  ; plrs[me].stime / TICRATE
 wi_parsec   dta 0,0                  ; wbs->partime / TICRATE
-wi_mins     dta 0
 wi_sp       dta 0                    ; sp_state
 wi_state    dta 0
 wi_accelst  dta 0                    ; acceleratestage
@@ -1263,22 +1202,14 @@ wi_anext    dta 0                    ; ...and the bcnt it next changes on
 wi_ai       dta 0
 wi_row      dta 0
 wi_tmode    dta 0
-wi_ew       dta 0                    ; wi_erase box width
-wi_eh       dta 0                    ; ...and height
-wi_i        dta 0
-wi_ix       dta 0
 wi_n        dta 0
-wi_n2       dta 0
 wi_dig      dta 0
 wi_px       = sr_x                   ; the column, a WORD (menu.asm sr_put's)
 wi_py       dta 0
-wi_arg      dta 0,0
+wi_arg      dta 0                    ; wi_splats' stop
 wi_m        dta 0,0
-wi_cur      dta 0,0
 wi_t        dta 0
-wi_t2       dta 0,0
 wi_t3       dta 0,0
-wi_d        dta 0
 
     .if * > WI2_END+1
         ert 'wi.asm STAGE 2 outgrew the map slot (WI2_RUN..WI2_END)'
@@ -1387,8 +1318,7 @@ wi_kitfetch_w1 jsr wi_kitfetch       ; wi_main's (stage 2, bank 0)
     .endif
         .endseg
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 4b: bank $01
+        .segment B1
 .proc wi_pctof
         lda wi_max,x
         beq ?none
@@ -1404,16 +1334,14 @@ wi_kitfetch_w1 jsr wi_kitfetch       ; wi_main's (stage 2, bank 0)
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 4b: bank $01
+        .segment B1
 .proc wi_div16
                                       ; 2026-09-23: in 16-bit A. The divisor is a WORD on
         rep #$20                     ;   the stack (1,s), the remainder (< 2*255) in A,
         .LONGA ON                    ;   and the quotient bit rides in on C: rol, no inc
-        and #$00FF                   ;   (C = 0 first, so the 17th rol drops a 0). Callers
-        pha                          ;   read wi_m only; X = 0 on exit as before
+        and #$00FF                   ;   (C = 0 first, so the 17th rol drops a 0).
+        pha                          ;   OUT: wi_m = quotient, A = remainder, X = 0
         lda #0
         ldx #16
         clc
@@ -1425,10 +1353,10 @@ wi_kitfetch_w1 jsr wi_kitfetch       ; wi_main's (stage 2, bank 0)
 ?s      dex
         bne ?l
         rol wi_m                     ; the last quotient bit
-        pla
+        ply                          ; the divisor word off the stack in two 8-bit
+        ply                          ;   pulls, so A keeps the remainder (Y dies)
         sep #$20
         .LONGA OFF
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)

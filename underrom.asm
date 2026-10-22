@@ -25,7 +25,10 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
                                      ;   Altirra latches at frame start; this is
         jsr kb_scan                  ; the cheat matcher's press edge, at 50 Hz
 ?done                                ;   correct on both. $00 = nothing pending.
-        pla
+        lda mus_on                   ; 2026-10-06: an armed song gets its frame HERE,
+        beq ?quiet                   ;   once a VBLANK whatever the frame rate
+        jsl B1CODE_BASE+mus_nmi      ;   (music.asm: keeps X/Y, no zero page)
+?quiet  pla
         rti
 .endp
 
@@ -54,7 +57,6 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
         lda #>snd_irq
         sta $FFFF
         sta $FFEF
-                                      ; DRAC_PLAN 4a (drac.txt: all code -> bank $01):
         stz POKMSK_R                 ;   the ROM STAYS OUT from here on, so every
         stz IRQEN_R                  ;   interrupt is ours -- no OS keyboard/BREAK
                                      ;   IRQ (snd_irq acks foreign ones with
@@ -69,7 +71,7 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
 .endp
 
 ;--------------------------------------------------------------
-; siov_r -- DRAC_PLAN 4a: SIOV from the ROM-out, native world. rom_in no longer
+; siov_r -- SIOV from the ROM-out, native world. rom_in no longer
 ;   banks the ROM in; this is the one place it comes in, for exactly one SIOV
 ;   call: emulation mode (PBR is 0 -- this is bank-0 code, so the interrupts
 ;   SIOV waits on come back to it), OS VBI + IRQs on as SIOV expects, then ROM
@@ -122,10 +124,9 @@ NMIRES  equ $D40F                    ; write: reset the NMI status latch
 ; exactly as it did; the stack keeps its $01xx page (nothing in the engine
 ; reloads S -- there is no txs/tsx outside boot).
 rb_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc rom_out
-                                      ; DRAC_PLAN 4a: native since urom_init and the
+                                      ; native since urom_init and the
         lda PORTB                    ;   ROM already out -- kept as the idempotent
         and #$FE                     ;   bank-out the callers expect
         sta PORTB
@@ -133,14 +134,13 @@ rb_resume = *
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc rom_in
-                                      ; DRAC_PLAN 4a: the ROM stays out -- the only
+                                      ; the ROM stays out -- the only
         rts                          ;   ROM routine the loaders need is SIOV, and
                                      ;   siov_r banks it in around that one call
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org rb_resume
 
 ;==============================================================

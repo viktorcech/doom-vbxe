@@ -8,7 +8,7 @@
 ; en_dropmark -- Y = the thing that just died, en_kind = its kind. Flags the
 ;   corpse as carrying a dropped item, for spr_pickup to hand over.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_dropmark
         lda en_kind
         cmp #MK_POSS                 ; zombieman -> MT_CLIP
@@ -40,7 +40,7 @@
 ;   at the body's place. BEFORE the body: equal scales, the first sorts in
 ;   front. Keeps sp_ptr and sp_i.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_ditem
         lda sp_n
         cmp #VIS_MAX-3               ; the body's slot stays its own
@@ -91,7 +91,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;   column of the view, i.e. the shot can reach it.
 ;--------------------------------------------------------------
                                      ;   split four ways (memory_map.inc)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_seen
         ldy #>CLIP_BASE
         sty zp_tmp+1
@@ -162,7 +162,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;   i.e. as cold as everything else in here.
 ;   Range 72..88. Clobbers A/X and en_t.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_aimcol
         lda RANDOM                   ; POKEY's LFSR, this port's P_Random
         sta en_t
@@ -200,7 +200,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;   MF_DROPPED (bn_drop) halves the amount, which is p_inter.c's
 ;   P_GiveAmmo(am_clip, 0) = clipammo[]/2: an enemy's clip is 5, not 10.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc give_bonus
         lda BN_AMT,y
         ldx bn_drop
@@ -257,7 +257,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;        the same refusal P_TouchSpecialThing makes. Y is preserved: snd_bonus
 ;        picks the pickup SFX from the bonus id after give_bonus returns.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wp_give
         lda PSTATE+PS_WEAPONS        ; DID THIS PICKUP ADD ANYTHING? the set with
         ora BN_AMT,y                 ;   this weapon in it, EORed with the set
@@ -309,7 +309,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;   sp_i = its index, sp_pick = which flag bit matched. Lives here because
 ;   adding the second path pushed spr_pickup past its block.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_take
         lda sp_pick
         and #F_DROP
@@ -343,7 +343,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;   sp_ptr = its record, sp_i = its index. The BODY is not removed -- only the
 ;   drop bit is cleared, so you cannot farm the same zombieman twice.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_drop
         ldy sp_i
         lda #<TH_KIND
@@ -378,7 +378,7 @@ dr_rec  dta a(0), a(0), a(0), 0, 0   ; the item's pseudo thing record: x, y, z,
 ;   applied (5 = the +1 armour bonus, 6 = green, 7 = blue) -> pl_armt.
 ;--------------------------------------------------------------
 plarm_resume = *
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_armset
         tya
         sec

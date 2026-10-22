@@ -8,7 +8,7 @@
 ;--------------------------------------------------------------
 us_resume = *
         org USESIDE_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc use_side
         rep #$20                     ; ---- 16-bit A: four word subtractions
         .LONGA ON                    ;   (X/Y are byte offsets into USE_PT)
@@ -31,7 +31,8 @@ usd_w16                              ; (2026-09-23: 16-bit callers enter here)
         sbc USE_PT,x
         sta cx_d
                                       ; 2026-09-22: into cross_pos past its rep -- the
-        jmp cross_pos.cp_w16         ;   sep here and that rep were an empty pair
+        jmp cross_pos.cp_sign        ;   sep here and that rep were an empty pair;
+                                      ;   2026-10-05: the sign shortcut (only A is read)
         .LONGA OFF
 .endp
         .endseg
@@ -46,7 +47,7 @@ usd_w16                              ; (2026-09-23: 16-bit callers enter here)
 ;   this seg. Both segments straddle each other's line -- the textbook 4-sign test,
 ;   which needs no intersection point (so no divide).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc use_seg_hit
         stz USE_K                    ; (8-bit, before the window: use_side's first K)
         rep #$20                     ; ---- 16-bit A: v1 -> USE_PT_P, v2 -> USE_PT_Q,
@@ -106,7 +107,7 @@ usd_w16                              ; (2026-09-23: 16-bit callers enter here)
 ;   p_maputl.c P_LineOpening: opentop = min(fceil, bceil),
 ;   openbottom = max(ffloor, bfloor), shut when opentop <= openbottom.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc use_shut
         ldy #SEG_FRONT               ; front sector -> coll_ax = floor, coll_ay = ceil
         lda [zp_sptr],y
@@ -150,8 +151,7 @@ usd_w16                              ; (2026-09-23: 16-bit callers enter here)
 
 ;--------------------------------------------------------------
 usop_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc us_open
         rep #$21                     ; ---- 16-bit A (idempotent: use_shut arrives
         .LONGA ON                    ;   in it). Three signed "<=" compares, each
@@ -183,5 +183,4 @@ usop_resume = *
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org usop_resume

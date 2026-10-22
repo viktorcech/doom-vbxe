@@ -27,7 +27,7 @@
         org $80
 zp_col      .ds 1                    ; current test column (ZERO PAGE: midtex patches `stx zp_col` = $86 dp)
                                       ; 2026-09-22 zero page = the register file
-pc_w        .ds 1                    ;   (tools/tests/drac_zpplan.py, bench accesses):
+pc_w        .ds 1
 zp_tmp      .ds 2
 zp_ptr      .ds 3                    ; general pointer; +2 = bank byte, valid only
                                      ;   for the [zp_ptr],y readers (coll_vptr,
@@ -39,13 +39,13 @@ sp_tab      .ds 2                    ; sprites.asm: -> sprite table entry
 sp_clip     .ds 2                    ; sprites.asm: -> clip snapshot (walks the pool)
 zp_mvsec    .ds 2                    ; movers.asm: sector being moved
 mv_ss       .ds 2                    ; movers.asm: BSP descent scratch                    ; movers.asm: sector being moved (lives across frames)
-                                      ; 2026-09-22 zero-page swap (drac_zpplan): the
-pc_x        .ds 1  ; zp swap 2026-09-23 (drac_zpplan)
+                                      ; 2026-09-22 zero-page swap: the
+pc_x        .ds 1
 zp_cm       .ds 3                    ; -> the sector's COLORMAP row in Rapidus
                                      ;   SRAM (lights.asm; +2 = bank byte, low
                                      ;   byte and bank set once by lt_init, the
                                      ;   HIGH byte IS the light row).
-                                      ; 2026-09-22 zero-page swaps (drac_zpplan): the
+                                      ; 2026-09-22 zero-page swaps: the
 rs_tpr      .ds 2                    ;   painter's per-column words and bytes in; the
 tw_wt       .ds 2                    ;   player's move deltas (not touched while the
 rs_vsh      .ds 1                    ;   frame renders) and two once-a-column flags out
@@ -57,10 +57,8 @@ zp_py       .ds 2
 zp_ang      .ds 1                    ; BAM angle
                                       ; 2026-09-22 zero-page swap (6502-idioms): the floor
 rs_yfacc    .ds 4                    ;   track accumulator in (3,467 accesses a frame, the
-                                      ; 2026-09-22 zero-page swap (drac_zpplan)
 rs_pegrow   .ds 2
 loc_floor   .ds 2                    ; locate_floor result: sector floor at a point
-                                      ; 2026-09-22 zero-page swap (drac_zpplan)
 rs_nt16     .ds 2
 
 ; --- per-seg working set ---
@@ -68,7 +66,7 @@ zp_rx       .ds 2                    ; vertex - player (signed 16)
 zp_ry       .ds 2
 zp_X        .ds 2                    ; view-space (signed 16)
 zp_Z        .ds 2
-rs_t1       .ds 4  ; zp group swap 2026-09-23 (drac_zpplan)
+rs_t1       .ds 4
                                       ; 2026-09-22 zero-page swap (6502-idioms): the ceiling
 rs_ycacc    .ds 4                    ;   track accumulator in (3,102 accesses a frame);
 zp_xa       .ds 1                    ; left/right screen column
@@ -78,8 +76,8 @@ zp_sptr     .ds 3                    ; -> current seg record (SEG bank; +2 = ban
 zp_vptr     .ds 3                    ; -> current vertex (EXT bank; +2 = bank)
                                       ; 2026-09-22 (6502-idioms "zero page is the register
 rs_spa      .ds 2                    ;   file"): draw_clip/draw_span/paint_col's span rows
-rs_ybcacc   .ds 4  ; zp group swap 2026-09-23 (drac_zpplan)
-rs_t2       .ds 4  ; zp group swap 2026-09-23 (drac_zpplan)
+rs_ybcacc   .ds 4
+rs_t2       .ds 4
                                       ; 2026-09-22: span end row in, zp_segcnt (35 x 3
 rs_spb      .ds 2                    ;   accesses a frame) out to its D0 slot
 
@@ -93,7 +91,7 @@ zp_nodeptr  .ds 3                    ; -> current node record (EXT bank; +2 = ba
                                       ; 2026-09-22: draw_clip's raw span rows in (written
 rs_ra       .ds 2                    ;   16-bit 2-3x a column, read 6x a draw_clip call);
 rs_rb       .ds 2                    ;   zp_near/zp_far (render_node, ~100 a frame) out
-                                      ; 2026-09-22 zero-page swap (drac_zpplan): recip's
+                                      ; 2026-09-22 zero-page swap: recip's
 rc_e        .ds 1                    ;   exponent (814 a frame) in, bsp_sp (145) out
 cx_a        .ds 2                    ; cross_pos inputs: sign(a*b - c*d)
 cx_b        .ds 2
@@ -105,15 +103,15 @@ cx_p1       .ds 4                    ; saved first product (collision.asm aliase
 ; --- math scratch (math.asm) ---
 m_a         .ds 2
 m_b         .ds 2
-                                      ; 2026-09-22 zero-page swap (drac_zpplan): the
-rs_rptf     .ds 1                    ;   rows-per-texel cell (one 32-bit cell: rptf,
+                                      ; 2026-09-22 zero-page swap: the
+rs_rptf     .ds 1                    ;   rows-per-texture pixel cell (one 32-bit cell: rptf,
 rs_rpt      .ds 3                    ;   rpt lo, rpt hi, pad) in, m_ma out to D0
 m_prod      .ds 4
-rs_nb16       .ds 2  ; zp swap 2026-09-23 (drac_zpplan)
+rs_nb16       .ds 2
 m_sign      .ds 1
 m_den       .ds 2
 m_quot      .ds 2
-rs_texmask       .ds 2  ; zp swap 2026-09-23 (drac_zpplan)
+rs_texmask       .ds 2
 m_xs        .ds 2                    ; screenx_signed result (unclamped signed col)
 qs_p        .ds 2                    ; quarter-square 8x8 output (tips #2). FIRST
                                      ;   of the tail on purpose: 177 accesses,
@@ -126,10 +124,13 @@ qs_p        .ds 2                    ; quarter-square 8x8 output (tips #2). FIRS
 ;     used to be here, is touched 177 times -- 40 of them inside umul16, which
 ;     sits under every multiply the renderer does.
 rc_m        .ds 2                    ; recip_norm working mantissa (16-bit)
-                                      ; 2026-09-22 zero-page swap (drac_zpplan)
 bsp_sp      .ds 1                    ; iterative-walk stack ptr (byte index into bsp_stack, step 2)
 sin_sgn     .ds 1                    ; frac-table: sign of frame sin (fmul_sin)
 cos_sgn     .ds 1                    ; frac-table: sign of frame cos (fmul_cos)
+    .ifdef ANTONIA2
+fm_k2s      .ds 2                    ; 2|sin|, 2|cos| of the frame: FMUL's card
+fm_k2c      .ds 2                    ;   factors (math.asm, 2026-10-15)
+    .endif
 ; 2026-08-06: these three came DOWN from the head of the block to pay for
 ; zp_cm (lights.asm needs a 3-byte direct-page pointer for [zp_cm],y and there
 ; was no spare zero page). All three are touched once or twice a FRAME and only
@@ -154,17 +155,20 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
 
 ;==============================================================
 ; EARLY INIT: the XEX's first INIT, before any store into a bank past 0.
-;   ANTONIA II: CONF1 ($FF:F001, Antonia2 1.4pl.pdf s.3) VBENA = 1, VBADR = 0.
+;   ANTONIA II: CONF1 ($FF:F001, Antonia2 1.4pl.pdf s.3) VBENA = 1; VBADR as the
+;   BIOS set it (the VBXE's D6/D7 page select, atari.area "Antonia 2" p.9).
 ;   With VBENA 0 VBXE decodes 16 bits and takes every $xx:D6xx for a register.
+;   TURBO (b7) = 1 as well (2026-10-15): with it 0 the CPU runs at 1.79 MHz,
+;   whatever the BIOS setup left there.
 ;==============================================================
         org $0600
 .proc early_init
     .ifdef ANTONIA2
-        lda.l ANT_CONF1
-        and #%11111100
-        ora #%00000001
-        sta.l ANT_CONF1
-    .endif
+        lda.l ANT_CONF1              ; 2026-10-20: VBADR (bit 1) is the D6/D7 page
+        ora #%10000001               ;   select ANTONIA 2 drives into the VBXE, set
+        sta.l ANT_CONF1              ;   in its BIOS -- KEEP it. The old `and
+    .endif                           ;   #%11111100` moved the VBXE to $D6 after the
+                                     ;   boot had found (and relocated to) $D7.
         rts
 .endp
         ini early_init
@@ -177,7 +181,7 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
 ;   segment ends flush and this block still had the bytes (boot/infra hole).
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc snd_vgo
         lda snd_side                 ; snd_setpan armed it; a trigger that did
         sta sv_side,x                ;   not = the centre, which is also what a
@@ -187,19 +191,8 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-;--------------------------------------------------------------
-; snd_init2 -- the second (STEREO) POKEY out of init, from main at boot. On
-;   mono both writes mirror onto POKEY1 with the values it holds anyway.
-;--------------------------------------------------------------
-.proc snd_init2
-        lda #3
-        sta $D21F                    ; SKCTL2: out of the init state
-        stz $D218                    ; AUDCTL2: 64 kHz base, like AUDCTL
-        rts
-.endp
-        .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+; (snd_init2 -- the second POKEY out of init -- is inline in main since
+;  2026-09-22; the dead proc went 2026-10-05.)
 
 ;==============================================================
 ; MAIN
@@ -222,7 +215,7 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
         jsr setup_memac
         jsr setup_xdl
         jsr setup_bcbs
-        jsr urom_init                ; DRAC_PLAN 4a: our vectors, ROM out and native
+        jsr urom_init                ; our vectors, ROM out and native
                                      ;   BEFORE any load -- the loaders run like the
                                      ;   frame loop now (SIOV via siov_r)
         jsr recip_to_ext             ; the reciprocal tables -> Rapidus bank $01,
@@ -239,10 +232,12 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
         lda #0
         sta current_level            ; E1M1 -- the operand above is what
                                      ;   tools/wad/test-levels.py patches
-        jsr load_hud_t ; MOVED UP FROM BELOW (2026-08-13): the
-                                     ;   save/load picker draws its slot numbers ...
+        nop                          ; (load_hud: menu_boot's, under the R_Init
+        nop                          ;   dots with every other boot read. Three
+        nop                          ;   bytes kept: nothing behind them moves)
         jsr menu_boot                ; title + main menu FIRST, then load_level_c.
-        jsr load_textures_t ; stream this level's .tex into VBXE VRAM (SIO, IRQs on)
+        jsr load_textures_t ; nothing left: menu_boot's load_level_c depacked
+                                     ;   the picked level's pool groups first
         jsr load_sprites_t ; ... then the billboard pixels (.spr)
         jsr wi_newlvl_t              ; ... then the things + sprite table + PLAYPAL
                                      ;     (wi_newlvl zeroes the level clock and ...
@@ -252,7 +247,7 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
         sei                          ; back to our world (IRQ masked)
                                      ; (snd_init ran before menu_boot too, and ...
         jsr snd_pokey_t ; AUDCTL 0, every voice idle, Timer-1 rate
-                                      ; DRAC_PLAN 4a: urom_init ran before the loads
+                                      ; urom_init ran before the loads
                                      ;   sound IRQ taken while the OS ROM is banked
                                      ;   out lands in our handlers (underrom.asm)
 
@@ -308,13 +303,15 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
         ; The map's SECTORS/SSECTORS/NODES live at $D800, i.e. under the ROM, so the
         ; renderer has to see RAM there.
         jsr rom_out_t
-        jml B1CODE_BASE+game_loop    ; DRAC_PLAN 2b (2026-09-13): the frame loop
+        jml B1CODE_BASE+game_loop    ; the frame loop
                                      ;   is bank-$01 code; main's prelude above
                                      ;   runs with the ROM in and stays in bank 0
 .endp
-        .segment B1                  ; DRAC_PLAN 2b: bank $01
+        .segment B1
 .proc game_loop
         jsr init_level               ; spawn point, doors, per-level state
+        jsr mus_level                ; ... and the level's song, if the setting is
+                                     ;   music and it has one (2026-10-06)
         stz key_prev
         stz tex_flat                 ; boot with textures ON ('T' flips it;
                                      ;   the byte is random RAM otherwise)
@@ -377,7 +374,7 @@ ai_t        .ds 1                    ; the thing being worked on (enemy_ai.asm)
         .endseg
 
 ;--------------------------------------------------------------
-; BANK-0 WRAPPERS for bank-$01 callers (DRAC_PLAN 2b, 2026-09-13).
+; BANK-0 WRAPPERS for bank-$01 callers.
 ;   `jsl X_w0` from bank $01 is `jsr X` here and back with rtl. These procs
 ;   stay in bank 0: what the ROM-in paths and the overlays share (the blitter
 ;   wait, clear_screen, snd_play, spr_fget, the BCB chain launcher), the
@@ -428,7 +425,7 @@ init_level_t    jsl B1CODE_BASE+init_level_w1
 init_level_w1   jsr init_level
                 rtl
         .endseg
-; DRAC_PLAN 4b (xbank_fix.py): bank-0 callers of code that moved to bank $01
+; bank-0 callers of code that moved to bank $01
 blitter_wait_t  jsl B1CODE_BASE+blitter_wait_w1
                 rts
 clear_both_t    jsl B1CODE_BASE+clear_both_w1
@@ -457,8 +454,8 @@ mn_sdraw_t      jsl B1CODE_BASE+mn_sdraw_w1
                 rts
 mn_togame_t     jsl B1CODE_BASE+mn_togame_w1
                 rts
-mus_play_t      jsl B1CODE_BASE+mus_play_w1
-                rts
+mus_level_t     jsl B1CODE_BASE+mus_level_w1   ; (2026-10-06: the OPTIONS row's;
+                rts                            ;   mus_play_t went -- rom_nmi plays)
 mus_reset_t     jsl B1CODE_BASE+mus_reset_w1
                 rts
 mus_stop_t      jsl B1CODE_BASE+mus_stop_w1
@@ -526,7 +523,7 @@ mn_sdraw_w1     jsr mn_sdraw
                 rtl
 mn_togame_w1    jsr mn_togame
                 rtl
-mus_play_w1     jsr mus_play
+mus_level_w1    jsr mus_level
                 rtl
 mus_reset_w1    jsr mus_reset
                 rtl
@@ -542,12 +539,13 @@ sg_fresh_w1     jsr sg_fresh
                 rtl
 snd_init_w1     jsr snd_init
                 rtl
-snd_play_w1     jsr snd_play
-                rtl
+snd_play_w1     jsr snd_play         ; (2026-10-06: the level's mute holds for the
+                rtl                  ;   panel over it too -- its song has all eight
+                                     ;   voices; title, stats and finale sound)
 snd_pokey_w1    jsr snd_pokey
                 rtl
         .endseg
-; DRAC_PLAN 4b (xbank_fix.py): bank-$01 callers of code that stays in bank 0
+; bank-$01 callers of code that stays in bank 0
 siov_r_w0       jsr siov_r
                 rtl
 snd_fetch_w0    jsr snd_fetch
@@ -569,7 +567,7 @@ lvl_resume = *
 ; spawn_player -- player start from the loaded map's header. These were
 ;   level they have to come from the level that is actually in RAM.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spawn_player
         ldx #3                       ; start_x, start_y: 4 B, header order == zp order
 ?l      lda MAP_HSX,x
@@ -590,7 +588,7 @@ lvl_resume = *
 ; init_level -- everything that has to be reset for the map now in RAM. Called
 ;   once at boot and again after every exit switch.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc init_level
         lda #$FF                     ; vertex cache: force the stamp clear on the
         sta vc_frame                 ;   first frame (SDRAM is random at boot)
@@ -651,9 +649,9 @@ tst_cheat dta 0
 ; exit_level -- the EXIT switch was used: load the level the header points at.
 ;   Mirrors the boot load order (SIO wants the OS interrupt chain + IRQs on).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc exit_level
-                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a)
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts
         lda MAP_HNEXT                ; read BEFORE load_level overwrites the header
         cmp #NUM_LEVELS              ; past the last level on this ATR -> wrap to
         bcc ?lok                     ;   level 0. An out-of-range index streamed
@@ -665,7 +663,9 @@ pl_reload                            ; pl_restart re-enters HERE: same level, an
         cli
         jsr snd_sio                  ; snd_stop + SOUNDR off, then load_level_c:
                                      ;   map LOW to $4000, HIGH under the ROM -- ...
-        jsr load_textures            ; this level's walls -> VBXE
+        jsr load_textures            ; nothing left to depack: load_level_c did
+                                     ;   it before load_level (kept: the code
+                                     ;   behind it keeps its place)
                                       ; 2026-09-22 (drac030 inline): load_sprites is only an rts
         jsr wi_newlvl                ; ... things + sprite table (+ THING_ALIVE reset)
                                      ;     and the level clock back to zero
@@ -861,7 +861,9 @@ b1copy_resume = *
         ; 2026-08-31: table-driven -- FOUR blocks ride up now: both code
         ; stages (B1CODE, B1CODE2) and the two SQ2 masters, whose staged
         ; win2 pages die right here.
-        jsr rom_out_t ; $C000 is RAM only with the ROM out
+        lda PORTB                    ; $C000 is RAM only with the ROM out:
+        and #$FE                     ;   rom_out inline -- this runs before
+        sta PORTB                    ;   the late bank-$01 code is in (b1_late)
         ldx #0
 ?next   lda ?tab+0,x
         sta sp_ptr
@@ -898,7 +900,7 @@ b1copy_resume = *
         tax
         cpx #12
         bcc ?next
-        jmp rom_in_t ; ...and back to emulation mode with it
+        rts                          ; (rom_in is only an rts)
 ?tab    dta <AMOVL_STAGE, >AMOVL_STAGE, <AMOVL_EXT, >AMOVL_EXT, 5, MAP_EXT_BANK
         dta <B1CODE_STAGE, >B1CODE_STAGE, <HUDTAB_OFF, >HUDTAB_OFF, 1, MAP_EXT_BANK
                                      ; HUD_TAB's page (HU_TAB went 2026-09-24)
@@ -914,8 +916,7 @@ b1copy_resume = *
 ;   B1STAGE = dst(16), len(16), payload -> copy the payload to $01:dst.
 ;--------------------------------------------------------------
 stcopy_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 .proc b1_stage_copy
         lda B1STAGE                  ; dst offset in bank $01
         sta zp_ptr
@@ -947,7 +948,6 @@ stcopy_resume = *
 ?done   rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org stcopy_resume
 
         icl 'savegame.asm'           ; SAVE/LOAD -- the menu's second overlay.
@@ -1028,7 +1028,7 @@ tw_seg_end = *                       ; watched by the .if below
         icl 'f_finale.asm'           ; the end-of-episode FINALE (f_finale.c):
                                      ; the fifth and sixth MENU_RUN overlays.
         icl 'pl_kick.asm'            ; P_DamageMobj's KICK for the PLAYER. LAST:
-                                     ; forward-references oct_of, thr_comp, the
+                                     ; forward-references thr_comp, the
                                      ; thr_sx/thr_sy tables, skipx_ref and
                                      ; move_player's mp_slide/mp_nomove.
 
@@ -1049,24 +1049,15 @@ tw_seg_end = *                       ; watched by the .if below
 
         org MVGUARD_BASE
 ;--------------------------------------------------------------
-; mvg_arm / mv_guard -- a bound on mv_sector's BSP descent (memory_map.inc).
+; mv_guard -- a bound on mv_sector's BSP descent (memory_map.inc). Its arming
+;   (mv_dep = 40) is inline in mv_sector since 2026-09-22; the mvg_arm proc
+;   that stood here went 2026-10-05.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mvg_arm
-        lda #40                      ; deeper than any tree these maps build
-        sta mv_dep
-        lda MAP_HROOT                ; ...and hand back what the lda took
-        rts
-.endp
-        .endseg
 ; (mv_dep moved to memory_map.inc, 2026-09-26: here it sat at $6B5D, in the
 ;  $4000-$7FFF write-through window -- mv_guard's dec wrote the chip bus per node)
-    .if * > MVGUARD_END+1
-        ert 'mvg_arm outgrew MVGUARD_BASE..END (memory_map.inc)'
-    .endif
 
         org MVGUARD2_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_guard
         dec mv_dep
         beq ?bail                    ; 40 nodes deep and still no leaf: the tree
@@ -1083,7 +1074,7 @@ tw_seg_end = *                       ; watched by the .if below
 ; sg_fresh -- see SGFRESH_BASE in memory_map.inc. Tail-jumps into pl_reload, so
 ;   sg_go2's call site is the three bytes it always was.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_fresh
         ldx current_level
         ;lda #0

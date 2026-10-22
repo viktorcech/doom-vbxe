@@ -8,7 +8,7 @@
 ; ai_reset -- from init_level: nothing chases in a fresh level. Clearing
 ;   TH_WROW is what actually stops it -- everything else keys on that page.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_reset
         lda #$FF
         sta sl_th                    ; no corpse is sliding on a fresh level --
@@ -50,7 +50,7 @@
 ; ai_wake -- A_Look, once per FRAME over the vissprites the BSP walk collected.
 ;   Runs in the game loop, not the render path, so clobbering zp_ptr is safe.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_wake
         ldx sp_n
         beq ?out
@@ -103,7 +103,7 @@
 ;   X = the vissprite, ai_t = its thing: wake it only if the sprite's MIDDLE
 ;   column survived the nearer geometry.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_wseen
         lda #0
         ldy vs_x1h,x                 ; x1 < 0 -> the sprite starts off the left
@@ -137,7 +137,7 @@
 ;   -- and P_UseSpecialLine lets a monster work special 1 (a plain DR door)
 ;   Clobbers A/X/Y, m_a, m_prod. Called only on a blocked step.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_door
         lda #>TH_FLY                 ; a lost soul's flight is P_TryMove alone:
         jsr ai_get                   ;   no P_Move, so no P_UseSpecialLine
@@ -164,12 +164,12 @@
         cmp #3                       ;   closing: send it back up; already
         bne ?out                     ;   opening or open: LEAVE IT, or a
 ?go     txa                          ;   monster stood in the doorway would
-        jmp snd_door_toggle          ;   toggle it shut every single tic
+        jmp door_use                 ;   toggle it shut every single tic
 ?out    rts
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_front                       ; (A_Look's soundtarget half is ai_heard)
         jsr aif_oct                  ; swr_vx/vy = monster -> its target, which
         lda #>TH_DIR                 ;   for an IDLE one is the player (TH_TARG
@@ -216,7 +216,7 @@ aiwake_resume = *
         icl 'enemy_ai_blk.asm'
         icl 'enemy_ai_look.asm'
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 sg_dx   dta a(0)                     ; the sample step, monster -> player
 sg_dy   dta a(0)                     ;   (sg_dy MUST follow sg_dx: both loops
                                      ;    walk the four bytes as one)
@@ -243,21 +243,15 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ;   aligned, so switching between them is one store to zp_ptr+1; this sets the
 ;   common case and the callers step the high byte from there.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc ai_bank
-        stz zp_ptr
-        lda #>TH_WROW
-        sta zp_ptr+1
-        rts
-.endp
-        .endseg
+; (ai_bank is inline at every caller since 2026-09-22; the dead proc went
+;  2026-10-05.)
 
 ;--------------------------------------------------------------
 ; ai_ismon -- ai_t = thing index. Z=0 if it is a monster, alive, and not already
 ;   dying: TH_HP nonzero (pack_things only gives health to MF_SHOOTABLE) and
 ;   TH_STATE zero (enemy.asm's death chain owns anything else).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_ismon
         ldy ai_t
         stz zp_ptr
@@ -286,7 +280,7 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ;   enters RUN state 0 with that kind's tics, and leaves movecount 0 / DI_NODIR
 ;   so the first A_Chase picks a direction with no turnaround to avoid.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_start
         stz zp_ptr                   ; (2026-09-22: ai_bank inlined, see ai_look)
         ldy ai_t                     ;   every thing at level init, so the wake
@@ -346,7 +340,7 @@ ai_wk   dta 0                        ; ...and whether the thing it is looking at
 ;--------------------------------------------------------------
 ; ai_setrow -- ai_t = thing: TH_WROW = the walk row its current RUN state draws.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_setrow
         stz zp_ptr                   ; (2026-09-22: ai_bank inlined, see ai_look)
         ldy ai_t
@@ -415,7 +409,7 @@ ai_resume = *                        ; BEFORE the org, never after: `org label`
 ; en_bdist -- p_map.c PIT_RadiusAttack's FIRST test, which this port did not
 ;   have, in front of the one it did:
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_bdist                       ; en_bi = the candidate. C=0 = no damage.
         ldy en_bi                    ; zp_ptr's low byte is 0 already: every
         lda #>TH_RAD                 ;   per-thing page is 256 B aligned and
@@ -456,14 +450,8 @@ NOISE_FR equ 30                      ; ~1 s: long enough for ai_look's
 ;--------------------------------------------------------------
 ; ai_noisealert -- A = the weapon's SFX id.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc ai_noisealert
-        sta snd_pending
-        lda #NOISE_FR
-        sta ai_noise
-        rts
-.endp
-        .endseg
+; (ai_noisealert is inline at its three weapon.asm sites since 2026-09-22; the
+;  dead proc went 2026-10-05.)
 ai_sx   dta 0,0                      ; the step, sign-extended to 16 bits
 ai_sdir dta 0                        ; ai_newdir: the 8-direction sweep cursor
 ai_sy   dta 0,0
@@ -488,7 +476,7 @@ ai_dcnt :256 dta 0                   ; entries per subsector LOW BYTE: spr_chase
 ;        Z=0 -> C is ai_isvis' answer. `lda` does not touch the carry, which is
 ;               what lets one register bring back both halves.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_pchk
         lda pl_dead
         bne ?dead

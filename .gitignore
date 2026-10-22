@@ -1,5 +1,5 @@
 # original game data (copyright -- supply your own)
-tools/DOOM.WAD
+build/py/DOOM.WAD
 *.WAD
 *.wad
 /wads/
@@ -11,14 +11,15 @@ tools/DOOM.WAD
 # build tool (download MADS separately)
 mads.exe
 
-# build outputs
-/build/
+# build outputs (build/py holds the packers and stays tracked)
+/build/*
+!/build/py/
 *.xex
 *.atr
 *.lst
 *.lab
 
-# generated at every build by the packers in tools/
+# generated at every build by the packers in build/py/
 /at_tables.inc
 /atr_layout.inc
 /atr_levels.inc
@@ -36,7 +37,7 @@ mads.exe
 /wi_tables.inc
 
 # wadconv's remembered paths (IWAD / PWAD / emulator -- local to each machine)
-tools/wad/wadconv.json
+build/py/wad/wadconv.json
 
 # python
 __pycache__/
@@ -55,7 +56,8 @@ __pycache__/
 .claude/
 
 # pipeline caches / outputs
-/tools/cache/
-/tools/out/
-/tools/wad/test*.py
-/tools/wad/test/
+/build/py/cache/
+/build/py/wad/test*.py
+/build/py/wad/test/
+/build/py/wad/custom/
+/music/

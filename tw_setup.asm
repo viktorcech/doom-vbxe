@@ -2,7 +2,7 @@
 ; byte-identical). Everything the textured wall blit needs BEFORE the blit, and
 ; all of it relocated out of the cramped $A800 segment:
 ;   TWCLIP_BASE  seg_len, tw_texmask, wall_src, low_src, draw_twall_clip
-;   TWSETUP_BASE tw_setup (per-column texel rate: tpr, oversampling S, SRC_STEPY,
+;   TWSETUP_BASE tw_setup (per-column texture pixel rate: tpr, oversampling S, SRC_STEPY,
 ;                ZOOMY), plus the long commentary on why the rate ladder exists.
 twclip_resume = *
         ; PINNED FAST (2026-08-11): the hottest former win2 block (~21% of the
@@ -14,28 +14,9 @@ twclip_resume = *
 ;   now, exact and cheaper -- MAP_SEGLEN (pack_map.py _seglen), read where
 ;   process_seg marks the line for the automap.
 
-;--------------------------------------------------------------
-; tw_texmask -- from rs_texh_cur derive rs_texmask = texH*256-1 and rs_texpow2 =
-;   texH AND (texH-1). When that flag is 0 the texture height is a power of two
-;--------------------------------------------------------------
-twmask_resume = *
-        org TWMASK_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc tw_texmask
-        lda #$FF
-        sta rs_texmask
-        lda rs_texh_cur
-	dec
-        sta rs_texmask+1
-        and rs_texh_cur
-        sta rs_texpow2
-        rts
-.endp
-        .endseg
-    .if * > TWMASK_END+1
-        ert 'tw_texmask outgrew TWMASK_BASE..TWMASK_END (memory_map.inc)'
-    .endif
-        org twmask_resume
+; (tw_texmask -- rs_texmask = texH-1, rs_texpow2 = texH AND (texH-1) -- is
+;  inline per SEG in process_seg since 2026-09-29 (?wtex/?lgo, by tile slot);
+;  the dead proc went 2026-10-05.)
 
 ;--------------------------------------------------------------
 ; wall_src / low_src -- compute the current column's texture source addr into
@@ -51,8 +32,9 @@ twmask_resume = *
 ;--------------------------------------------------------------
 ; wall_src / low_src (2026-09-29) -- clip rs_ra/rs_rb to [rs_top, rs_bot] ->
 ;   rs_spa/rs_spb, then the column's run address to paint_col.pc_in: A = its
-;   low word, Y = its bank. tx_slot picks the tile (0 wall, 1 lower step).
-;   IN: 8-bit M, X = the column. OUT: 8-bit M, X kept.
+;   low word, Y = its bank. tx_slot picks the tile (0 wall, 1 lower step;
+;   FX127: 2, the lower step's WORD offset into rs_vshw / rs_tprk).
+;   IN: 8-bit M, X = the column. OUT: 16-bit M (2026-10-16), X kept.
 ;--------------------------------------------------------------
 tx_slot = rs_vsh
         .segment B1
@@ -66,7 +48,8 @@ tx_slot = rs_vsh
         cmp rs_bot
         bcc ?aset                    ; (cmp keeps A = rs_ra)
         beq ?aset
-?out    rts
+?out    rep #$20                     ; OUT 16-bit A, as paint_col/pt_span
+        rts                          ;   (2026-10-16, drac030: few rep/sep pairs)
 ?atop   lda rs_top
 ?aset   sta rs_spa
         lda rs_rb+1                  ; b = min(rs_rb, bot); < top -> nothing
@@ -81,7 +64,7 @@ tx_slot = rs_vsh
         cmp rs_spa                   ; draw only if spb >= spa
         bcc ?out
         stz tx_slot                  ; the WALL's tile
-        lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texels)
+        lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texture pixels)
         and rs_wtexwm
         txy                          ; the column waits in Y: long is X-indexed only
         tax
@@ -117,7 +100,8 @@ wix     lda.l $000000,x              ; which STORED column that is (pack_texture
         cmp rs_bot
         bcc ?aset
         beq ?aset
-?out    rts
+?out    rep #$20                     ; (OUT 16-bit A, as wall_src)
+        rts
 ?atop   lda rs_top
 ?aset   sta rs_spa
         lda rs_rb+1
@@ -131,7 +115,11 @@ wix     lda.l $000000,x              ; which STORED column that is (pack_texture
 ?bset   sta rs_spb
         cmp rs_spa
         bcc ?out
+    .ifdef FX127
+        lda #2                       ; the LOWER step's tile (its word's offset:
+    .else                            ;   rs_vshl, rs_tprk+2)
         lda #1                       ; the LOWER step's tile
+    .endif
         sta tx_slot
         lda rs_uacc+1                ; world u, same track as wall_src
         and rs_ltexwm
@@ -158,9 +146,9 @@ lix     lda.l $000000,x              ; the LOWER step's own index array, in SDRA
 .endp
         .endseg
     .else                            ; !TEX_RUNS: the blitted walls, as they were
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wall_src
-        lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texels)
+        lda rs_uacc+1                ; tex_x = world u along the seg (Q8 -> texture pixels)
         and rs_wtexwm
     .if TEX_RUNS
                                       ; 2026-09-23: the column index waits in Y, not on
@@ -220,7 +208,7 @@ wix     lda $FFFF,y                  ;   pack_textures.dedup_columns keeps one c
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc low_src
         lda rs_uacc+1                ; world u, same track as wall_src
         and rs_ltexwm
@@ -284,7 +272,7 @@ lix     lda $FFFF,y                  ; the LOWER step's own column index array
 ;   rs_ra/rs_rb to [rs_top,rs_bot] -> rs_spa/rs_spb, then draw the textured
 ;   column (rs_tsrc/rs_texh_cur must already be set for this column). Preserves X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc draw_twall_clip
         lda rs_ra+1                  ; a = max(rs_ra, top); >bot -> nothing
         bmi ?atop

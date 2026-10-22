@@ -42,16 +42,20 @@ CF_MHZ  equ $0A                      ; the CPU's speed, measured: "19.5 MHz"
 CF_VBX  equ $0B                      ; the FX core: "1.26"
 CF_VBA  equ $0C                      ; VBXE's registers: "D640"
 CF_POK  equ $0D                      ; "stereo" / "mono"
-CON_NDOTS equ [[POOL_PAK_SECT+7]/8]/32   ; R_Init's dots: one per 32 KB of
-                                         ;   the pool stream (con_tick)
-        .segment D0                  ; DRAC_PLAN 3a: bank-0 data
-con_stab dta a(con_s0), a(con_s1), a(con_s2), a(con_s3)
-        dta a(con_s4), a(con_s5), a(con_s6), a(con_s7)
+; R_Init's dots (r_data.c R_InitTextures): CON_NDOTS = ceil(sprites/64) +
+;   ceil(textures/64) of the WAD, in a room 9 wider that DOS's R_Init steps
+;   fill; the whole room paced at one per CON_DOTSEC sectors of the boot's
+;   reads (atr_layout.inc), so it is full when the last sector is in
+CON_ROOM equ CON_NDOTS+9
+        .segment D0
+con_stab dta a(con_s0), a(con_s1), a(con_s2), a(con_s4)
+        dta a(con_s5), a(con_s6), a(con_s7)
+        dta a(con_s3)                ; (unused: con_end jumps to 8)
         dta a(con_s8)                ; ENDOOM, on QUIT DOOM (con_end)
         dta a(con_s9)                ; ... and its prompt's DIR
 con_next dta 0
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 con_s0                               ; the BAR: the port's name, version, author
         icl 'console_ver.inc'        ;   and build stamp, 80 columns, from
         dta 0                        ;   pack_menu.py (the credits' own text)
@@ -66,7 +70,7 @@ con_s1  dta c'        adding doom.wad', $9B
 con_s2  dta c'M_Init: Init miscellaneous info.', $9B, 0
 con_s3  dta 0                        ; (a call site with nothing to say)
 con_s4  dta c'R_Init: Init DOOM refresh daemon - ['
-        :CON_NDOTS dta c' '          ; the dots' room, filled by con_tick
+        :CON_ROOM dta c' '           ; the dots' room, filled by con_tick
         dta c']', 0
 con_s5  dta $9B, c'P_Init: Init Playloop state.', $9B
         dta c'I_Init: Setting up machine state.', $9B
@@ -84,66 +88,13 @@ con_s6  dta c'I_StartupSound: ', CF_POK, c' POKEY', $9B
 con_s7  dta c'HU_Init: Setting up heads up display.', $9B
         dta c'ST_Init: Init status bar.', $9B
         dta c'_', 0                  ; DOS's cursor, where the prompt would be
-; ENDOOM (DOOM.WAD's own lump, 1:1): what DOS DOOM's I_Quit leaves on the
-;   screen. $01-$05 = the ink/paper pair (con_epal), $06 = the box's left
-;   edge (column 7); the black margins and rows 23-24 are the cleared map.
-;   The two CP437 glyphs it uses come out of the ROM font as ATASCII
-;   graphics, $C0+code (con_putc keeps $60+ as internal codes).
-con_s8
-        dta $06, $05                 ; row 0: $DF (upper half block) =
-        :66 dta $D5                  ;   ATASCII $15 (lower half), red on black
-        dta $9B
-        dta $06, $02, c'             DOOM', $01, c', a hellish 3-D game by ', $03, c'id', $01, c' Software.             ', $9B
-        dta $06, $02, c' ', $01    ; $C4 (thin line) = ATASCII $12
-        :64 dta $D2
-        dta c' ', $9B
-        dta $06, $02, c'          ', $01, c'YOU ARE PLAYING THE REGISTERED VERSION OF ', $02, c'DOOM', $01, c'.         ', $9B
-        dta $06, $02, c'  ', $01, c'If you haven''t paid for ', $02, c'DOOM', $01, c', you are playing illegally. That   ', $9B
-        dta $06, $02, c' ', $01, c'means you owe us money. Of course, a guy like you probably owes  ', $9B
-        dta $06, $02, c'  ', $01, c'a lot of people money--your friends, maybe even your parents.   ', $9B
-        dta $06, $02, c'   ', $01, c'Stop being a freeloader and register ', $02, c'DOOM', $01, c'. Call us now at      ', $9B
-        dta $06, $02, c'                   1-800-IDGAMES', $01, c'. We can help!                    ', $9B
-        dta $06, $02, c'                                                                  ', $9B
-        dta $06, $01, c' If you have registered ', $02, c'DOOM', $01, c', feel confident that you have done   ', $9B
-        dta $06, $02, c'    ', $01, c'the right thing--not only for yourself, but for the World.    ', $9B
-        dta $06, $02, c'   ', $01, c'We hope you enjoy playing ', $02, c'DOOM', $01, c'. We enjoyed making it for you.  ', $9B
-        dta $06, $02, c'                                                                  ', $9B
-        dta $06, $01, c'      If you have any problems playing ', $02, c'DOOM', $01, c', please call our      ', $9B
-        dta $06, $02, c'             ', $01, c'technical support line at (214) 613-0132.            ', $9B
-        dta $06, $02, c'                                                                  ', $9B
-        dta $06, $02, c'                 DOOM ', $01, c'WAS CREATED BY ', $03, c'id', $01, c' SOFTWARE:                 ', $9B
-        dta $06, $02, c'       ', $04, c'Programming', $01, c': John Carmack, John Romero, Dave Taylor        ', $9B
-        dta $06, $02, c'                  ', $04, c'Art', $01, c': Adrian Carmack, Kevin Cloud                ', $9B
-        dta $06, $02, c'      ', $04, c'  Design', $01, c': Sandy Petersen    ', $04, c'Tech Support', $01, c': Shawn Green       ', $9B
-        dta $06, $02, c'                        ', $04, c'BIZ', $01, c': Jay Wilbur                    ', $04, c'       ', $9B
-        dta $06, $02, c'                                                                  ', $9B
-        dta 0
-; DIR at ENDOOM's prompt: a made-up C:\DOOM, in MS-DOS 6.22's own layout
-;   (a blank line first, as DIR prints one; con_msg scrolls through con_nl)
-con_s9
-        dta $9B
-        dta c' Volume in drive C is MS-DOS_6', $9B
-        dta c' Volume Serial Number is 1F2E-3D4C', $9B
-        dta c' Directory of C:', $5C, c'DOOM', $9B
-        dta $9B
-        dta c'.            <DIR>         02-01-95   1:09a', $9B
-        dta c'..           <DIR>         02-01-95   1:09a', $9B
-        dta c'DOOM     EXE       709,905 02-01-95   1:09a', $9B
-        dta c'DOOM     WAD    11,159,840 02-01-95   1:09a', $9B
-        dta c'SETUP    EXE        79,248 02-01-95   1:09a', $9B
-        dta c'IPXSETUP EXE        48,946 02-01-95   1:09a', $9B
-        dta c'SERSETUP EXE        39,982 02-01-95   1:09a', $9B
-        dta c'DEFAULT  CFG         1,046 02-01-95   1:09a', $9B
-        dta c'README   TXT        18,741 02-01-95   1:09a', $9B
-        dta c'        9 file(s)     12,057,708 bytes', $9B
-        dta c'                      31,457,280 bytes free', 0
-    .if 36+CON_NDOTS+1 > CON_W-1
+    .if 36+CON_ROOM+1 > CON_W-1
         ert 'the R_Init dots do not fit the 80-column line'
     .endif
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: bank-0 data
+        .segment D0
 con_on   dta 0                       ; the console owns the display
-con_dots dta 0                       ; ?ifill ticks: a dot per 32 of them,
+con_dots dta a(0)                    ; sectors to the next R_Init dot, counted
                                      ;   only while bit 7 of con_on is set
 con_cx   dta 0                       ; cursor column (0-79)
 con_cy   dta 0                       ; cursor row (0-24)
@@ -161,7 +112,7 @@ con_lb   :CON_LNMAX dta 0            ;   cursor's cell) ... and its chars
 ;   urom_init), the map cleared, the XDL built, palette 1's grey seeded,
 ;   display on. All through the MEMAC window like every other VRAM writer.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc con_init
         ldx #CON_PALN-4              ; the DOS text colours
         jsr con_pal
@@ -328,18 +279,27 @@ CON_XDLN equ * - con_xdlt
 ;--------------------------------------------------------------
 ; con_msg -- print the NEXT script string at the cursor. $9B = new line,
 ;   ASCII -> internal codes the ANTIC way ($20-$5F drop $20, $60+ stay).
-;   Entry 0 is the inverted bar; entry 4 (R_Init) leaves the cursor inside
-;   its [ ] and arms the depacker's dot ticker; entry 5 disarms it.
+;   Entry 0 is the inverted bar; entry 3 (R_Init) leaves the cursor inside
+;   its [ ] and arms the depacker's dot ticker; entry 4 fills and disarms it.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc con_msg
         ldx con_next
         inc con_next
         phx                          ; the id, for the fixups after the print
-        cpx #5                       ; entry 5 (P_Init): the dots are done
-        bne ?n5
-        lda #$80
+        cpx #4                       ; entry 4 (P_Init): the boot's reads are
+        bne ?n5                      ;   done -- the room's last dots, gate down
+        ldy con_nd                   ; the dots still to come, counted in Y
+        beq ?fd
+?fil    lda #'.'
+        jsr con_putc                 ; (keeps Y; clobbers X: the id is stacked)
+        dey
+        bne ?fil
+        stz con_nd
+?fd     lda #$80
         trb con_on
+        plx
+        phx
 ?n5     txa
         bne ?n0                      ; entry 0: the bar, red on grey
         lda #CON_BAR
@@ -387,17 +347,64 @@ CON_XDLN equ * - con_xdlt
         stz con_cx
         inc con_cy
         rts
-?d0     cmp #4
+?d0     cmp #3
         bne ?d4
         lda con_cx                   ; R_Init: the cursor back inside [ ], the
-        sbc #CON_NDOTS+1             ;   dots' room, and the ticker armed. C = 1:
+        sbc #CON_ROOM+1              ;   dots' room, and the ticker armed. C = 1:
         sta con_cx                   ;   the cmp was equal
-        lda #CON_NDOTS
-        sta con_nd
-        stz con_dots
+        lda #CON_ROOM                ; the whole room: DOS fills it, the 9 past
+        sta con_nd                   ;   R_InitTextures' are R_Init's own steps
+        ; 2026-10-15 -- ONE POKEY OR TWO? -> mus_mono, BEFORE the first dot: a mono
+        ; machine reads the mono songs (load_music), fewer sectors, so its dots
+        ; step faster. Moved here from load_music, inline: this is its one caller
+        ; (.claude/skills/6502-idioms/SKILL.md, "Code size is RAM"). Seban's test
+        ; (mads-src/examples/stereo_detect.asm): timer 1 started through the
+        ; SECOND chip's registers, its IRQ on. One chip mirrors $D21x onto $D20x
+        ; (alt-src ATAudio pokey.cpp: no slave, reg & $0F), so POKEY1's IRQST
+        ; shows it; with a twin it never does and VCOUNT's line 256 ends the wait.
+        php
+        sei
+        lda #3
+        sta MUS_SKCTL+$10            ; SKCTL2: out of init
+        sta AUDF1_R+$10              ; a short timer 1 ...
+        stz AUDC1_R+$10              ; ... and a silent one
+        lda #1
+        sta IRQEN_R+$10              ; its IRQ on
+?pt     ldx MUS_VCOUNT
+        bne ?pt                      ; from the frame's top
+        stx MUS_STIMER+$10           ; go
+?pl     ldx MUS_VCOUNT
+        bmi ?p2                      ; no IRQ on POKEY1 for 256 lines: a twin has it
+        bit IRQEN_R                  ; (read: IRQST) bit 0 = 0 while timer 1 is pending
+        bne ?pl                      ;   (A is still the 1 stored above)
+?p2     stz IRQEN_R+$10              ; the timer's IRQ off again -- on a mono machine
+        lda POKMSK_R                 ;   that was the only chip's mask: the OS's
+        sta IRQEN_R                  ;   shadow goes back
+        plp
+        txa                          ; VCOUNT as the wait ended: bit 7 = two POKEYs
+        eor #$80
+        and #$80                     ; Z = 1: two POKEYs (the sta and rep keep it --
+        sta mus_mono                 ;   6502-idioms, flags are values you track)
+        rep #$20                     ; ---- 16-bit: the dots' pace (65816-windows)
+        .LONGA ON
+        beq ?dsec
+        lda #CON_DOTSEC_M            ; mono: into con_tick's reload operand (6502-
+        sta.l B1CODE_BASE+con_tick.dotsec+1  ; loops-tables-smc: a variable as it)
+?dsec   lda.l B1CODE_BASE+con_tick.dotsec+1  ; the first count = the reload
+        sta con_dots
+        .LONGA OFF
+        sep #$20
         lda #$80
         tsb con_on
-?d4     rts
+        jmp b1_late                  ; the engine's code first, under the dots
+?d4     cmp #6                       ; the last entry (HU_Init/ST_Init): the
+        bne ?d6                      ;   finished screen stays a second, as a
+        lda RTCLOK3                  ;   PC's boot text does -- BEFORE the
+        clc                          ;   palettes land (load_palette paints
+        adc #50                      ;   the paper $80 PLAYPAL's tan)
+?wt     cmp RTCLOK3
+        bne ?wt
+?d6     rts
 .endp
 
 ;--------------------------------------------------------------
@@ -535,35 +542,15 @@ CON_MHZN equ 76                      ; 16,688 us
         jmp con_putc
 .endp
 
-; con_fpok -- one POKEY or two (Seban's test): timer 1 of the chip at $D21x is
-;   started and allowed to interrupt. On a mono machine that IS the chip at
-;   $D20x, whose IRQST shows it at once; a second POKEY's never gets there.
-;   No interrupt is taken (sei), and IRQEN goes back to the engine's 0.
+; con_fpok -- "stereo" / "mono": what con_msg's test found before the dots
+;   (2026-10-15: the boot's ONE test, .claude/skills/6502-idioms/SKILL.md "use
+;   what a routine already produced" -- this proc ran a second one of its own).
 .proc con_fpok
-        php
-        sei
-        lda #3
-        sta $D21F                    ; SKCTL: out of the init state
-        sta $D210                    ; AUDF1: a short period
-        stz $D211
-        lda #1
-        sta $D21E                    ; IRQEN: timer 1
-        sta $D219                    ; STIMER
-        ldx #0
-        ldy #16                      ; (A = 1: IRQST's bit, all through the loop)
-?l      bit $D20E                    ; IRQST bit 0 = 0: the ONE POKEY's timer
-        beq ?one
-        inx
-        bne ?l
-        dey
-        bne ?l
-        ldx #CON_T_ST                ; nothing in 4,096 reads: there are two
-        bra ?say
-?one    ldx #CON_T_MO
-?say    stz $D21E
-        stz $D20E
-        plp
-        jmp con_str
+        ldx #CON_T_ST
+        lda mus_mono
+        beq ?say
+        ldx #CON_T_MO
+?say    jmp con_str
 .endp
 
 ;--------------------------------------------------------------
@@ -609,24 +596,32 @@ CON_MHZN equ 76                      ; 16,688 us
     .endif
 
 ;--------------------------------------------------------------
-; con_tick -- inflate's ?rdsec calls this once per KB of packed stream.
-;   While the R_Init gate is up, every 32nd KB prints one dot into the
-;   [ ] room -- CON_NDOTS of them over the pool, and never past the ].
+; con_tick -- inflate's ?rdsec calls this once per sector read. While the
+;   R_Init gate is up, every CON_DOTSEC-th prints one dot into the [ ] room
+;   -- CON_NDOTS of them over the boot's reads, never past the room.
 ;--------------------------------------------------------------
 .proc con_tick
-        lda con_on
+        bit con_on
         bpl ?ret                     ; dots not armed (or console gone)
         lda con_nd
         beq ?ret                     ; the room is full
-        lda con_dots
-        inc @
+        rep #$20                     ; ---- 16-bit (bank $01: native): the
+        .LONGA ON                    ;   sectors to the next dot
+        dec con_dots
+        beq ?dot                     ; the rare case out of line
+        .LONGA OFF
+        sep #$20
+?ret    rts
+        .LONGA ON
+?dot
+dotsec  lda #CON_DOTSEC              ; (16-bit here, from the beq; CON_DOTSEC_M on
+                                     ;   a mono machine -- con_msg patches it)
         sta con_dots
-        and #31
-        bne ?ret
+        .LONGA OFF
+        sep #$20
         dec con_nd
         lda #'.'
         jmp con_putc
-?ret    rts
 .endp
 
 ;--------------------------------------------------------------
@@ -638,6 +633,165 @@ CON_MHZN equ 76                      ; 16,688 us
         rts
 .endp
 
+
+
+;--------------------------------------------------------------
+; con_str -- X = offset into con_txt: print up to its 0.
+;--------------------------------------------------------------
+.proc con_str
+?lp     lda.l B1CODE_BASE+con_txt,x
+        beq ?r
+        phx                          ; con_putc clobbers X
+        jsr con_putc
+        plx
+        inx
+        bra ?lp
+?r      rts
+.endp
+
+;--------------------------------------------------------------
+; con_nl -- CR LF: column 0 of the next row, and on the last row the whole
+;   map scrolls up one instead (the DOS screen's own scroll).
+;--------------------------------------------------------------
+.proc con_nl
+        stz con_cx
+        lda con_cy
+        cmp #CON_H-1
+        bcs ?sc
+        inc con_cy
+        rts
+?sc     lda #BANK_EN|[CON_MAP>>12]
+        sta VBXE_BANK_SEL
+        phy
+        lda zp_ptr+2                 ; con_msg walks its string with zp_ptr
+        pha
+        pei (zp_ptr)
+        stz zp_ptr+2                 ; [zp_ptr],y in bank 0: a (dp),y store
+        ldx #CON_H-1                 ;   reads the window first (2026-09-28)
+        rep #$20                     ; the whole scroll in words: zp_ptr = the
+        .LONGA ON                    ;   row, zp_tmp = the one below
+        sec
+        lda #MEMW16+[CON_MAP&$3FFF]
+?row    sta zp_ptr
+        adc #CON_W*2-1               ; C = 1 here: the sec, then every cpy exit
+        sta zp_tmp
+        ldy #0
+?cp     lda (zp_tmp),y
+        sta [zp_ptr],y
+        iny
+        iny
+        cpy #CON_W*2
+        bne ?cp                      ; (leaves C = 1 for the adc above)
+        lda zp_tmp
+        dex
+        bne ?row
+        sta zp_ptr                   ; the new last row: blank, char 0 on attr 0
+        lda #0                       ;   (Y = CON_W*2 from the copy, counted down)
+?cl     dey
+        dey
+        sta [zp_ptr],y
+        bne ?cl                      ; (Z from the dey: sta leaves it)
+        pla
+        sta zp_ptr
+        .LONGA OFF
+        sep #$20
+        pla
+        sta zp_ptr+2
+        ply
+        lda #BANK_EN|BANK_OVERHEAD
+        sta VBXE_BANK_SEL
+        rts
+.endp
+
+
+; COMMAND.COM's words ($5C = the backslash), and its commands (con_find)
+con_txt
+CON_T_PR  equ *-con_txt
+        dta c'C:', $5C, c'DOOM>', 0
+CON_T_BAD equ *-con_txt
+        dta c'Bad command or file name', 0
+CON_T_VER equ *-con_txt
+        dta c'MS-DOS Version 6.22', 0
+CON_T_MHZ equ *-con_txt
+        dta c' MHz', 0
+CON_T_ST  equ *-con_txt
+        dta c'stereo', 0
+CON_T_MO  equ *-con_txt
+        dta c'mono', 0
+
+con_init_w1 jsr con_init             ; the bank-0 boot code jsl's these
+        rtl
+con_msg_w1 jsr con_msg
+        rtl
+con_off_w1 jsr con_off
+        rtl
+b1e_end                              ; the EARLY bank-$01 run ends here
+        .endseg
+
+    .if CON_XDL+[CON_H+1]*8+4 > CON_FONT
+        ert 'the console XDL runs into its font'
+    .endif
+
+;==============================================================
+; THE LATE CONSOLE (2026-10-01): ENDOOM and COMMAND.COM. Only QUIT DOOM
+;   uses them, so this block sits right behind b1e_end -- the first of the
+;   late bank-$01 code inflate816.asm b1_late depacks under the R_Init dots
+;   -- and the boot XEX does not carry it.
+;==============================================================
+        .segment B1
+; ENDOOM (DOOM.WAD's own lump, 1:1): what DOS DOOM's I_Quit leaves on the
+;   screen. $01-$05 = the ink/paper pair (con_epal), $06 = the box's left
+;   edge (column 7); the black margins and rows 23-24 are the cleared map.
+;   The two CP437 glyphs it uses come out of the ROM font as ATASCII
+;   graphics, $C0+code (con_putc keeps $60+ as internal codes).
+con_s8
+        dta $06, $05                 ; row 0: $DF (upper half block) =
+        :66 dta $D5                  ;   ATASCII $15 (lower half), red on black
+        dta $9B
+        dta $06, $02, c'             DOOM', $01, c', a hellish 3-D game by ', $03, c'id', $01, c' Software.             ', $9B
+        dta $06, $02, c' ', $01    ; $C4 (thin line) = ATASCII $12
+        :64 dta $D2
+        dta c' ', $9B
+        dta $06, $02, c'          ', $01, c'YOU ARE PLAYING THE REGISTERED VERSION OF ', $02, c'DOOM', $01, c'.         ', $9B
+        dta $06, $02, c'  ', $01, c'If you haven''t paid for ', $02, c'DOOM', $01, c', you are playing illegally. That   ', $9B
+        dta $06, $02, c' ', $01, c'means you owe us money. Of course, a guy like you probably owes  ', $9B
+        dta $06, $02, c'  ', $01, c'a lot of people money--your friends, maybe even your parents.   ', $9B
+        dta $06, $02, c'   ', $01, c'Stop being a freeloader and register ', $02, c'DOOM', $01, c'. Call us now at      ', $9B
+        dta $06, $02, c'                   1-800-IDGAMES', $01, c'. We can help!                    ', $9B
+        dta $06, $02, c'                                                                  ', $9B
+        dta $06, $01, c' If you have registered ', $02, c'DOOM', $01, c', feel confident that you have done   ', $9B
+        dta $06, $02, c'    ', $01, c'the right thing--not only for yourself, but for the World.    ', $9B
+        dta $06, $02, c'   ', $01, c'We hope you enjoy playing ', $02, c'DOOM', $01, c'. We enjoyed making it for you.  ', $9B
+        dta $06, $02, c'                                                                  ', $9B
+        dta $06, $01, c'      If you have any problems playing ', $02, c'DOOM', $01, c', please call our      ', $9B
+        dta $06, $02, c'             ', $01, c'technical support line at (214) 613-0132.            ', $9B
+        dta $06, $02, c'                                                                  ', $9B
+        dta $06, $02, c'                 DOOM ', $01, c'WAS CREATED BY ', $03, c'id', $01, c' SOFTWARE:                 ', $9B
+        dta $06, $02, c'       ', $04, c'Programming', $01, c': John Carmack, John Romero, Dave Taylor        ', $9B
+        dta $06, $02, c'                  ', $04, c'Art', $01, c': Adrian Carmack, Kevin Cloud                ', $9B
+        dta $06, $02, c'      ', $04, c'  Design', $01, c': Sandy Petersen    ', $04, c'Tech Support', $01, c': Shawn Green       ', $9B
+        dta $06, $02, c'                        ', $04, c'BIZ', $01, c': Jay Wilbur                    ', $04, c'       ', $9B
+        dta $06, $02, c'                                                                  ', $9B
+        dta 0
+; DIR at ENDOOM's prompt: a made-up C:\DOOM, in MS-DOS 6.22's own layout
+;   (a blank line first, as DIR prints one; con_msg scrolls through con_nl)
+con_s9
+        dta $9B
+        dta c' Volume in drive C is MS-DOS_6', $9B
+        dta c' Volume Serial Number is 1F2E-3D4C', $9B
+        dta c' Directory of C:', $5C, c'DOOM', $9B
+        dta $9B
+        dta c'.            <DIR>         02-01-95   1:09a', $9B
+        dta c'..           <DIR>         02-01-95   1:09a', $9B
+        dta c'DOOM     EXE       709,905 02-01-95   1:09a', $9B
+        dta c'DOOM     WAD    11,159,840 02-01-95   1:09a', $9B
+        dta c'SETUP    EXE        79,248 02-01-95   1:09a', $9B
+        dta c'IPXSETUP EXE        48,946 02-01-95   1:09a', $9B
+        dta c'SERSETUP EXE        39,982 02-01-95   1:09a', $9B
+        dta c'DEFAULT  CFG         1,046 02-01-95   1:09a', $9B
+        dta c'README   TXT        18,741 02-01-95   1:09a', $9B
+        dta c'        9 file(s)     12,057,708 bytes', $9B
+        dta c'                      31,457,280 bytes free', 0
 ;--------------------------------------------------------------
 ; con_end -- I_Quit's ENDOOM (DOS DOOM): the console back up (con_init: the
 ;   ROM font, the map, the XDL), ENDOOM's inks on top, the screen printed,
@@ -658,7 +812,8 @@ CON_MHZN equ 76                      ; 16,688 us
         lda #1                       ; a key still held from the menu is not
         sta con_kd                   ;   typing
 ; --- COMMAND.COM (MS-DOS 6.22, PROMPT $P$G), just enough of it. Returns only
-;   when DOOM is typed: quit_boot's reboot is DOOM.EXE starting over.
+;   when DOOM or EXIT is typed, A = the command: 0 DOOM (quit_boot's reboot is
+;   DOOM.EXE starting over), 4 EXIT (the OS's cold start, 2026-10-20).
 ?pr     ldx #CON_T_PR                ; the prompt
         jsr con_str
         stz con_ln
@@ -730,13 +885,15 @@ CON_MHZN equ 76                      ; 16,688 us
         jmp ?pr                      ; an empty line: just the prompt
 ?cmd    jsr con_find
         tax
-        beq ?doom                    ; 0 = DOOM
+        beq ?doom                    ; 0 = DOOM (A = 0 out)
         dex
         beq ?cls                     ; 1 = CLS
         dex
         beq ?ver                     ; 2 = VER
         dex
         beq ?dir                     ; 3 = DIR
+        dex
+        beq ?doom                    ; 4 = EXIT: the same return, A = 4
         ldx #CON_T_BAD
         jsr con_str
 ?done   jsr con_nl                   ; the command's line done, and the
@@ -754,10 +911,9 @@ CON_MHZN equ 76                      ; 16,688 us
         bra ?done
 ?doom   rts
 .endp
-
 ;--------------------------------------------------------------
 ; con_find -- the typed line's first word -> A = its con_cmds number
-;   (0 DOOM, 1 CLS, 2 VER, 3 DIR) or $FF. DOS takes anything after a space as the
+;   (0 DOOM, 1 CLS, 2 VER, 3 DIR, 4 EXIT) or $FF. DOS takes anything after a space as the
 ;   arguments, so "DOOM -WARP 1 1" is still DOOM.
 ;--------------------------------------------------------------
 .proc con_find
@@ -792,75 +948,6 @@ CON_MHZN equ 76                      ; 16,688 us
 ?none   lda #$FF
         rts
 .endp
-
-;--------------------------------------------------------------
-; con_str -- X = offset into con_txt: print up to its 0.
-;--------------------------------------------------------------
-.proc con_str
-?lp     lda.l B1CODE_BASE+con_txt,x
-        beq ?r
-        phx                          ; con_putc clobbers X
-        jsr con_putc
-        plx
-        inx
-        bra ?lp
-?r      rts
-.endp
-
-;--------------------------------------------------------------
-; con_nl -- CR LF: column 0 of the next row, and on the last row the whole
-;   map scrolls up one instead (the DOS screen's own scroll).
-;--------------------------------------------------------------
-.proc con_nl
-        stz con_cx
-        lda con_cy
-        cmp #CON_H-1
-        bcs ?sc
-        inc con_cy
-        rts
-?sc     lda #BANK_EN|[CON_MAP>>12]
-        sta VBXE_BANK_SEL
-        phy
-        lda zp_ptr+2                 ; con_msg walks its string with zp_ptr
-        pha
-        pei (zp_ptr)
-        stz zp_ptr+2                 ; [zp_ptr],y in bank 0: a (dp),y store
-        ldx #CON_H-1                 ;   reads the window first (2026-09-28)
-        rep #$20                     ; the whole scroll in words: zp_ptr = the
-        .LONGA ON                    ;   row, zp_tmp = the one below
-        sec
-        lda #MEMW16+[CON_MAP&$3FFF]
-?row    sta zp_ptr
-        adc #CON_W*2-1               ; C = 1 here: the sec, then every cpy exit
-        sta zp_tmp
-        ldy #0
-?cp     lda (zp_tmp),y
-        sta [zp_ptr],y
-        iny
-        iny
-        cpy #CON_W*2
-        bne ?cp                      ; (leaves C = 1 for the adc above)
-        lda zp_tmp
-        dex
-        bne ?row
-        sta zp_ptr                   ; the new last row: blank, char 0 on attr 0
-        lda #0                       ;   (Y = CON_W*2 from the copy, counted down)
-?cl     dey
-        dey
-        sta [zp_ptr],y
-        bne ?cl                      ; (Z from the dey: sta leaves it)
-        pla
-        sta zp_ptr
-        .LONGA OFF
-        sep #$20
-        pla
-        sta zp_ptr+2
-        ply
-        lda #BANK_EN|BANK_OVERHEAD
-        sta VBXE_BANK_SEL
-        rts
-.endp
-
 ;--------------------------------------------------------------
 ; con_cls -- CLS: the map blank, the cursor home.
 ;--------------------------------------------------------------
@@ -873,22 +960,7 @@ CON_MHZN equ 76                      ; 16,688 us
         sta VBXE_BANK_SEL
         rts
 .endp
-
-; COMMAND.COM's words ($5C = the backslash), and its commands (con_find)
-con_txt
-CON_T_PR  equ *-con_txt
-        dta c'C:', $5C, c'DOOM>', 0
-CON_T_BAD equ *-con_txt
-        dta c'Bad command or file name', 0
-CON_T_VER equ *-con_txt
-        dta c'MS-DOS Version 6.22', 0
-CON_T_MHZ equ *-con_txt
-        dta c' MHz', 0
-CON_T_ST  equ *-con_txt
-        dta c'stereo', 0
-CON_T_MO  equ *-con_txt
-        dta c'mono', 0
-con_cmds dta c'DOOM', 0, c'CLS', 0, c'VER', 0, c'DIR', 0, $FF
+con_cmds dta c'DOOM', 0, c'CLS', 0, c'VER', 0, c'DIR', 0, c'EXIT', 0, $FF
 ; hardware key code (bits 0-5) -> ASCII, CAPS on as the Atari boots; 0 = not
 ;   a key DOS prints
 con_kmap dta c'LJ;', 0, 0, c'K+*O', 0, c'PU', 0, c'I-='
@@ -898,17 +970,6 @@ con_kmap dta c'LJ;', 0, 0, c'K+*O', 0, c'PU', 0, c'I-='
     .if * - con_kmap <> 64
         ert 'con_kmap must cover all 64 key codes'
     .endif
-
 con_end_w1 jsr con_end               ; quit.asm quit_doom jsl's it
         rtl
-con_init_w1 jsr con_init             ; the bank-0 boot code jsl's these
-        rtl
-con_msg_w1 jsr con_msg
-        rtl
-con_off_w1 jsr con_off
-        rtl
         .endseg
-
-    .if CON_XDL+[CON_H+1]*8+4 > CON_FONT
-        ert 'the console XDL runs into its font'
-    .endif

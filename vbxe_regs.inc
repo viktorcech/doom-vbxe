@@ -179,7 +179,14 @@ BLT_OR          equ $03
 BLT_AND         equ $04
 BLT_XOR         equ $05
 BLT_NSTENCIL    equ $06        ; nibble stencil (HR)
+BLT_TABLE       equ $07        ; FX 1.27: dst = vram[AUX:cmask:src''] (MODE 7)
 BLT_NEXT        equ $08        ; chain to next BCB
+BLT_EXT         equ $80        ; FX 1.27: containers follow the BCB (bit 7)
+BLT_AUX         equ $10        ; FX 1.27: AUX_CONTROL bit 4 (3 bits, 4-6)
+BLW_READS       equ 4          ; the idle test (blitw_hard, ptc_fire): BUSY must
+                               ;   read 0 this many times in a row. The 1.27
+                               ;   manual (p.53) says one would do; a real core
+                               ;   did drop BUSY between BCBs (BLITW_BASE)
 
 ;--------------------------------------------------------------
 ; BCB byte 18 (ZOOM): zx = bits 0-2, zy = bits 4-6, each "repeat count - 1".

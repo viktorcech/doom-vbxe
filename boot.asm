@@ -39,12 +39,20 @@ NMIRES      = $D40F
 B_INK       equ $0A             ; the screen: this luminance ...
 B_PAPER     equ $30             ;   ... of this hue, on its darkest
 B_MARKW     equ 8               ; a mark's width
-; The 128-byte sector buffer sits behind the loader, its END on a page
-; (get_byte). No XEX segment loads below $0E88, so the loader and its buffer
-; own $0700 up to there (the ert at the end of the file; tools/ram_map.py
-; reserves it).
-SECBUF      = [[$0700+BOOT_SECTORS*128+128+255] & $FF00] - 128
+; No XEX segment loads below $0E88: the loader owns $0700 up to there (the
+; ert at the end of the file; tools/ram_map.py reserves it). The XEX ships
+; ZX02-packed (2026-10-01, make_atr_doom.py): zx_dec unpacks ALL of it off
+; the drive into the linear RAM at ZX_BUF before parse_seg writes a byte of
+; it, so the sector buffer may sit in RAM the XEX loads over later -- its END
+; on a page (get_sio reads SECBUF-128,y).
+SECBUF      equ $0F80
 BOOT_TOP    equ $0E88
+ZX_BUF      equ $200000             ; the unpacked XEX (verified RAM, idle at boot)
+zx_off      = $E7                   ; zx_dec: the last offset (2)
+zx_dst      = $E9                   ;   the output cursor (3) -- then parse_seg's
+                                    ;   read cursor (get_byte)
+zx_ptr      = $EC                   ;   a match's source (3)
+zx_bit      = $EF                   ;   the bit buffer
 
 ; === Boot entry point ===
 ; CRITICAL: this label MUST sit at BLDADR+6 ($0706). The Atari OS boot path
@@ -137,9 +145,19 @@ boot_init
         bne ?vnext
         iny
         lda (zp_dest),y         ; MINOR_REVISION
+    .ifdef FX127
+        and #$7F                ; the FX127 build drives the 1.27 raycaster:
+        cmp #$20                ;   core 1.27 or newer (2026-10-19; the same 6
+        bcs ?vfound             ;   bytes as the 1.2x test -- the sectors are full)
+                                ; 2026-10-21: the 1.27 check SUSPENDED: any 1.2x
+                                ;   passes, so a 1.26 boots too. TO RESTORE IT:
+                                ;   cmp #$20 above back to cmp #$27, then
+                                ;   .\build_atr.ps1 -Fx127
+    .else
         and #$70
         cmp #$20                ; 1.2x
         beq ?vfound
+    .endif
 ?vnext  inx
         cpx #$D8
         bne ?vbxe
@@ -151,6 +169,40 @@ boot_init
         sta (zp_dest),y         ;   screen is ANTIC's; and "found"
 ?vmark  ldx #2
         jsr b_mark
+
+        ; 4. one POKEY or two (2026-10-06; Seban's test, mads-src/examples/
+        ;    stereo_detect.asm): timer 1 is started through the SECOND chip's
+        ;    registers, its IRQ on. A lone POKEY mirrors them, and ITS IRQST
+        ;    shows the timer; with two it never does and VCOUNT's line 256 ends
+        ;    the wait. IRQs held; plain 6502 code.
+        ;    2026-10-06 ("ak je MONO, v hlavnej hre hudba hrat nebude"): the row
+        ;    only SAYS which -- b_first is not touched, a mono machine loads on
+        ;    and its levels have no song (music.asm mus_level). Skills:
+        ;    6502-nmos-atari (plain 6502), 6502-idioms (cpx's C; no cell).
+        sei
+        lda #3
+        sta $D21F               ; SKCTL2: out of init
+        sta $D210               ; AUDF1': a short timer
+        lda #1
+        sta $D21E               ; IRQEN2: its IRQ on
+?s1     ldx $D40B               ; VCOUNT: from the frame's top
+        bne ?s1
+        stx $D219               ; STIMER2: go
+?s2     ldx $D40B
+        bmi ?s3                 ; no IRQ on the first chip: there is a second
+        bit $D20E               ; IRQST (A = 1): bit 0 = 0 once timer 1 is pending
+        bne ?s2
+?s3     lda #0
+        sta $D21E               ; the timer's IRQ off again -- on a lone chip that
+        lda $10                 ;   was its only mask: the OS's shadow goes back
+        sta $D20E
+        cli
+        cpx #$80                ; VCOUNT as the wait ended: C = 1 -- two POKEYs
+        ldx #0                  ; "OK"
+        bcs ?pk
+        ldx #2*B_MARKW          ; "MONO"
+?pk     ldy #120+B_MCOL         ; the fourth row's mark
+        jsr b_put
 
     .ifdef ANTONIA2
         ; 4. ANTONIA II (drac030 2026-09-30): the card's divider (+0..3), then its
@@ -230,8 +282,13 @@ boot_init
         lda #>vec_rti
         sta $FFFB
         sta $FFFF
-        lda #$01
-        tsb PORTB               ; ROM back in
+        lda #$03                ; ROM back in -- AND BASIC OUT (bit 1), for good:
+        tsb PORTB               ;   an XL booted without OPTION has BASIC at
+                                ;   $A000-$BFFF, and the FX 1.27 core gives the ROM
+                                ;   priority over the MEMAC window there (manual
+                                ;   ch. 6, CASINH): every VRAM access at MEMW was
+                                ;   the BASIC ROM -- the menu overlay, the BCBs.
+                                ;   (2026-10-20: title -> E1M1 by itself, ESC froze)
         lda #$40
         sta NMIEN
         cli
@@ -242,6 +299,11 @@ boot_init
         dex
         bpl ?dcb
 
+        jsr zx_dec              ; the packed XEX off the drive, unpacked
+        stz zx_dst              ; parse it from the start of the buffer
+        stz zx_dst+1
+        lda #ZX_BUF>>16         ; (the XEX is < 64 KB: still this bank, but
+        sta zx_dst+2            ;   the store keeps that from being a rule)
         jsr get_byte            ; skip $FF $FF XEX header
         jsr get_byte
 
@@ -342,17 +404,105 @@ jmp_tgt jmp $0000               ; patched with the RUN address
 
 jsr_tgt jmp $0000               ; patched, called via JSR (INIT handlers)
 
-; get_byte -- the XEX's next byte. buf_pos runs 128..255 and wraps to 0 when
-;   the sector is spent (SECBUF ends on a page: no read crosses one).
+; get_byte -- the unpacked XEX's next byte, [zx_dst] on. Keeps X and Y.
 get_byte
-        ldx buf_pos
+        lda [zx_dst]
+        inc zx_dst
+        bne ?gb
+        inc zx_dst+1
+        bne ?gb
+        inc zx_dst+2
+?gb     rts
+
+; get_sio -- the packed stream's next byte off the drive. buf_pos runs
+;   128..255 and wraps to 0 when the sector is spent. Keeps X and C: zx_dec
+;   carries both across it, and SIOV keeps neither (the rare path pays).
+get_sio
+        ldy buf_pos
         bne ?ok
+        php
+        phx
         jsr read_sec
-        ldx #128
-?ok     lda SECBUF-128,x
-        inx
-        stx buf_pos
+        plx
+        plp
+        ldy #128
+?ok     lda SECBUF-128,y
+        iny
+        sty buf_pos
         rts
+
+; zx_dec -- the ZX02 stream (zx02-optim.asm, DMSC, MIT; 6502 format) off
+;   get_sio into ZX_BUF on, its cursor 24-bit. A 0 offset code ends it.
+zx_dec  lda #$80
+        sta zx_bit
+        stz zx_off              ; (the first match always sets its offset)
+        stz zx_off+1
+        stz zx_dst
+        stz zx_dst+1
+        lda #ZX_BUF>>16
+        sta zx_dst+2
+?lit    ldx #1                  ; literals: Elias(n), then n bytes
+        jsr ?eli
+?cp0    jsr get_sio
+        jsr ?put
+        dex
+        bne ?cp0
+        asl zx_bit
+        bcs ?new
+        inx                     ; a match at the last offset: Elias(n)
+        jsr ?eli
+?cpy    lda zx_dst              ; source = cursor - offset - 1 (C = 0: ?eli
+        sbc zx_off              ;   and ?sk1 return on it)
+        sta zx_ptr
+        lda zx_dst+1
+        sbc zx_off+1
+        sta zx_ptr+1
+        lda zx_dst+2
+        sbc #0
+        sta zx_ptr+2
+?cp1    lda [zx_ptr]
+        inc zx_ptr
+        bne ?p1
+        inc zx_ptr+1
+        bne ?p1
+        inc zx_ptr+2
+?p1     jsr ?put
+        dex
+        bne ?cp1
+        asl zx_bit
+        bcc ?lit
+?new    inx                     ; a match at a new offset: Elias(MSB + 1),
+        jsr ?eli                ;   LSB, Elias(n - 1); MSB code 0 = the end
+        beq ?end
+        dex
+        txa
+        lsr @
+        sta zx_off+1
+        jsr get_sio             ; (keeps the lsr's C for the ror)
+        ror @
+        sta zx_off
+        ldx #1
+        jsr ?sk1
+        inx
+        bra ?cpy                ; C = 0: ?sk1 returns on it
+?elg    asl zx_bit              ; an interlaced Elias-gamma code into X
+        rol @
+        tax
+?eli    asl zx_bit
+        bne ?sk1
+        jsr get_sio             ; C = 1 kept: the old byte's stop bit
+        rol @
+        sta zx_bit
+?sk1    txa
+        bcs ?elg
+?end    rts
+?put    sta [zx_dst]            ; one byte out, the cursor on
+        inc zx_dst
+        bne ?pt
+        inc zx_dst+1
+        bne ?pt
+        inc zx_dst+2
+?pt     rts
 
 ; read_sec -- the DCB's sector into SECBUF, and the DCB on to the next one.
 ;   Any error: again -- a bad sector would be a corrupt XEX.
@@ -434,6 +584,8 @@ br_done rts
 ;--------------------------------------------------------------
 ; b_mark -- X = the check (0-2), A = 0 found / else missing: the mark on the
 ;   check's row, and the FIRST check that missed into b_first.
+; b_put -- X = a mark's offset in b_tok, Y = its cell in b_chk: the mark alone
+;   (2026-10-06, the POKEY row; 6502-idioms: the loop's head is the entry).
 b_mark  ldy b_rowo,x
         cmp #1                  ; C = 1: missing
         bcc ?fnd
@@ -443,13 +595,13 @@ b_mark  ldy b_rowo,x
 ?nf     ldx #B_MARKW
         dta $2C                 ; (bit abs: over the ldx)
 ?fnd    ldx #0
-?w      lda b_tok,x
+b_put   lda b_tok,x
         sta b_chk,y
         iny
         inx
         txa
         and #B_MARKW-1          ; a mark ends on a multiple of its width
-        bne ?w
+        bne b_put
         rts
 
 ; b_say -- A/Y = an 80-cell text: into the two rows under the list.
@@ -494,7 +646,7 @@ b_vhi       dta 0               ; the VBXE's page: $D6 or $D7
 ; the DCB: disk 1, read a sector into SECBUF, 15 s, 128 B -- the XEX's first
 b_dcb   dta $31, 1, $52, $40, a(SECBUF), $0F, 0, a(128), a(BOOT_SECTORS+1)
 B_DCBN  equ * - b_dcb
-b_rowo  dta B_MCOL, 40+B_MCOL, 80+B_MCOL    ; a check's mark in b_chk
+b_rowo  dta B_MCOL, 40+B_MCOL, 80+B_MCOL    ; a check's mark in b_chk (b_mark's three)
     .ifdef ANTONIA2
 B_ANTREG    equ $FFF008         ; +0 divider (w: dividend, divisor  r: quotient,
                                 ;   remainder), +4 multiplier (w: two factors
@@ -508,7 +660,8 @@ b_errl  dta <b_e0, <b_e1, <b_e2
 b_errh  dta >b_e0, >b_e1, >b_e2
 b_tok   dta d'OK      '
         dta d'MISSING!'
-    .if * - b_tok <> 2*B_MARKW
+        dta d'MONO    '         ; the POKEY row's, when there is one chip (check 4)
+    .if * - b_tok <> 3*B_MARKW
         ert 'a mark is B_MARKW cells'
     .endif
 ; the screen: 24 blank lines, DOOM, the title, the checks, the two status rows
@@ -518,24 +671,29 @@ b_dl    dta $70,$70,$70
         dta $70
         dta $02
         dta $70
-        dta $02,$02,$02
+        dta $02,$02,$02,$02
         dta $70
         dta $02,$02
         dta $41,a(b_dl)
         icl 'boot_rows.inc'     ; the rows and the texts (tools/boot_cfg.py)
 boot_end
-BOOT_SECTORS equ [boot_end-$0700+127]/128
+BOOT_SECTORS equ [BOOT_TOP-$0700]/128   ; ALL the room below BOOT_TOP: the stock
+                                        ;   and ANTONIA II loaders differ in size
+                                        ;   and one disk layout serves both
 
-; HARD limits: the loader and its sector buffer stay in the RAM no XEX segment
-; loads into, and the buffer ends on a page (get_byte).
-    .if SECBUF+128 > BOOT_TOP
-        ert 'the boot loader and its sector buffer run past BOOT_TOP'
+; HARD limits: the loader stays in the RAM no XEX segment loads into, and
+; the sector buffer ends on a page (get_sio); ZX_BUF starts a bank.
+    .if boot_end > $0700+BOOT_SECTORS*128
+        ert 'the boot loader outgrew its sectors below BOOT_TOP'
+    .endif
+    .if ZX_BUF & $FFFF
+        ert 'ZX_BUF starts a bank: zx_dec and the parse reset only its bank byte'
     .endif
     .if BOOT_SECTORS > 255
         ert 'the boot header counts the sectors in a byte'
     .endif
     .if [SECBUF+128] & $FF
-        ert 'get_byte reads SECBUF-128,x: the buffer must END on a page'
+        ert 'get_sio reads SECBUF-128,y: the buffer must END on a page'
     .endif
     .if B_DCBN <> 12
         ert 'b_dcb is the DCB, $0300-$030B'

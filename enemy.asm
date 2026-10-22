@@ -10,7 +10,7 @@
 ;   zp_ptr+2 already holds MAP_EXT_BANK -- init_level sets it and nothing else
 ;   writes it (collision.asm's note), so the long stores below need no setup.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_init
         ; sp_tab / sp_ptr borrowed as the two (zp),y readers -- they are sprites.asm
         ; per-frame scratch and init_level runs long before the first frame.
@@ -111,7 +111,7 @@
 ; en_row -- en_k2+1 (a TH_STATE value, row+1) -> zp_ptr = &DTAB_ROWS[row].
 ;   zp_ptr+2 is already MAP_EXT_BANK (init_level sets it once). Clobbers A.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_row
         lda en_k2+1
 	dec
@@ -134,7 +134,7 @@
 ; en_kill -- Y = thing index, en_kind set. Start the death chain; if this kind
 ;   has none, fall back to the old behaviour (the thing just stops being drawn).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_kill
         sty en_k2
         jsr en_dropmark              ; P_KillMobj's "Drop stuff": the zombieman's
@@ -200,7 +200,7 @@
 ;--------------------------------------------------------------
 ; en_bossdie -- p_enemy.c A_BossDeath, all three episodes.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_bossdie
         lda en_kind                  ; en_kill leaves it set; en_row and the
         cmp THINGS_BASE+34           ;   TH_STATE/TH_TICS stores above do not
@@ -234,7 +234,7 @@
 ;--------------------------------------------------------------
 ; en_adv -- en_k2 = thing, en_k2+1 = the state whose tics just ran out.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_adv
         jsr en_row
                                     ; 2026-09-22 (65816-windows): en_row returns 16-bit
@@ -282,7 +282,7 @@
         jmp thing_kill               ;   ...and gone from the world
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; bd_at -- en_adv's tail: A = the tics byte it just stored, Y = en_k2 (the
@@ -291,7 +291,7 @@
 ;   all three are the `-1 tics` corpse row at the end of the chain, which is
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bd_at
         cmp #$FF                     ; DT_FREEZE: the corpse row, i.e. the last
         beq ?boss                    ;   death frame -- every other row just ran
@@ -303,14 +303,14 @@
         jmp en_bossdie               ; ...which answers "not the boss" for all
 .endp                                ;   but three things in the whole game
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; en_tick -- one DOOM tic of every dying thing. Called from the game loop.
 ;   Parked at ENTICK_BASE: the trimmed idle path grew it out of ENANIM2.
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_tick
         ; 2026-09-09 (drac030 style): TH_STATE read as WORDS, two things per
         ; [zp_ptr],y -- see ai_tick (enemy_ai.asm) for the shape and the

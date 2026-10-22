@@ -6,7 +6,7 @@
 ;   raketu alebo plazmu na enemies, ktory je vyssie, naboj leti tam.. ale u nas
 ;   to tak nie je").
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_zaim
         stz pj_zf
         stz pj_dz                    ; a WALL shot keeps DOOM's slope 0: dz 0
@@ -40,7 +40,7 @@
         .endseg
 
         org PJZ2_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_zaim2                       ; dz (shrunk) -> the per-sub-step z leg
         ldx #0                       ; the sign FIRST: pj_leg tail-jumps into
         lda pj_dz+1                  ;   umul16, whose qsmul eats X and Y
@@ -82,7 +82,7 @@
         jmp pj_leaf
 .endp
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_zstep                       ; ONE sub-step of the z leg (pj_frame)
         clc
         lda pj_zf
@@ -110,7 +110,7 @@ pj_dz   dta a(0)                     ; SHARED, not per-bolt: it is only alive
 ;   IN: A = damage, pj_hold set, the aim cell on the crosshair (en_gunshot /
 ;--------------------------------------------------------------
 PJ_AIMOFF equ 8                      ; full size; 6 at the *3/4 sizes
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_aim3
         jsr en_shoot                 ; the facing angle
         ldx en_best
@@ -154,7 +154,7 @@ PJ_AIMOFF equ 8                      ; full size; 6 at the *3/4 sizes
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_aim
         inc pj_hold
         jsr pj_aim3                  ; en_shoot + DOOM's two 5.625 deg retries
@@ -182,6 +182,6 @@ PJ_AIMOFF equ 8                      ; full size; 6 at the *3/4 sizes
         jmp sh_trace                 ;   stopped
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a
+        .segment D0
 pj_aoff dta 0                        ; pj_aim3's column offset for this shot
         .endseg

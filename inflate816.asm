@@ -95,7 +95,6 @@ INF_RUN  equ INF_X+$0200             ; 2 x 16 words: ... while they are placed
 INF_HL   equ INF_X+$0240             ; HLIT
 INF_HD   equ INF_X+$0241             ; HDIST
 INF_LAST equ INF_X+$0242             ; the last code length
-INF_TK   equ INF_X+$0243             ; sectors towards con_tick's KB
 INF_SRT  equ INF_X+$0280             ; 288 + 32 words: the symbols ?walk reads
 INF_SRTD equ INF_SRT+2*288
 ; ... and the 9/10-bit codes at INF_T2: 4 pages of inf_sd index - 2k, one
@@ -117,6 +116,9 @@ INF_TEOB  equ 128                    ; end of block
 INF_TLNG2 equ 160                    ; a code past 10 bits
 
         .segment B1
+b1e_start                            ; the EARLY bank-$01 run starts here: this
+                                     ;   file + console.asm (b1e_end), all the
+                                     ;   XEX carries (tools/split_b1.py)
 .proc inflate
         lda #INF_X>>16
         sta inf_p+2
@@ -128,8 +130,6 @@ INF_TLNG2 equ 160                    ; a code past 10 bits
         stz inf_bg
         lda inf_out+2
         sta inf_src+2
-        lda #0
-        sta.l INF_TK
         stz inf_k2
         ldx #0                       ; the constants into bank 0
 ?kst    lda.l B1CODE_BASE+inf_kst,x
@@ -1146,13 +1146,7 @@ dlg:1   ldx #:2
         inc ll_sec
         bne ?rs0
         inc ll_sec+1
-?rs0    lda.l INF_TK                 ; con_tick counts KBs
-        inc @
-        sta.l INF_TK
-        and #7
-        beq ?rs1
-        rts
-?rs1    jmp con_tick
+?rs0    jmp con_tick                 ; a sector in: the R_Init dots' clock
 
 ;==============================================================
 ; THE TABLES OF A CODE
@@ -1715,4 +1709,62 @@ inf_rev .rept 256, #
 .endp
 inflate_w1 jsr inflate               ; bank-0 callers (menu_boot's map-slot
         rtl                          ;   half) jsl B1CODE_BASE+inflate_w1
+
+;--------------------------------------------------------------
+; b1_late -- the rest of the bank-$01 code, under the R_Init dots (con_msg
+;   arms them, then comes here): the XEX carries only b1e_start..b1e_end, the
+;   runs below and above it are two DEFLATE streams (make_atr_doom.py B1L_SEC,
+;   the lower one in a B1L_SLOT-sector slot). Then a VBXE at $D7xx steps
+;   their register operands (b1l_vtab, tools/vbxe_reloc.py) as b_reloc did
+;   the early run's -- b1l_vbase is one of those.
+;--------------------------------------------------------------
+.proc b1_late
+        ldx #2                       ; the upper run, then the lower
+?run    rep #$20                     ; ---- 16-bit (bank $01: native): the
+        .LONGA ON                    ;   stream's sector and its home
+        lda.l B1CODE_BASE+b1l_stab,x
+        sta ll_sec
+        lda.l B1CODE_BASE+b1l_dtab,x
+        sta inf_out
+        .LONGA OFF
+        sep #$20
+        lda #B1CODE_BANK
+        sta inf_out+2
+        phx                          ; inflate clobbers X
+        jsr inflate
+        plx
+        dex
+        dex
+        bpl ?run
+        lda.l B1CODE_BASE+b1l_vbase+1
+        cmp #$D7
+        beq ?rel                     ; the rare machine, out of line
+        rts
+?rel    lda #B1CODE_BANK
+        sta zp_ptr+2
+        ldx #0                       ; (the bpl left X = $FE)
+?e      rep #$20
+        .LONGA ON
+        lda.l B1CODE_BASE+b1l_vtab,x
+        beq ?z                       ; 0 ends the list (no operand below $1000)
+        sta zp_ptr
+        .LONGA OFF
+        sep #$20
+        lda [zp_ptr]
+        inc @
+        sta [zp_ptr]
+        inx
+        inx
+        bra ?e
+?z      sep #$20                     ; (16-bit here, from the beq)
+        rts
+.endp
+b1l_stab dta a(B1L_SEC), a(B1L_SEC+B1L_SLOT)
+b1l_dtab dta a(B1SEG_BASE), a(b1e_end)
+b1l_vbase dta a(VBXE_BASE)           ; b_reloc steps it with the early operands
+B1L_VMAX equ 127                     ; the late runs' operands b1l_vtab holds
+b1l_vtab :B1L_VMAX+1 dta a(0)        ; tools/vbxe_reloc.py fills it, 0 ends it
+    .if b1e_start <= B1SEG_BASE
+        ert 'b1_late depacks a lower run: b1e_start must not open the segment'
+    .endif
         .endseg

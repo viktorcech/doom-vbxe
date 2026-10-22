@@ -13,11 +13,11 @@
 #       pack_map      18.5 s     mads (engine)      1.4 s
 #       pack_textures  3.5 s     everything else    1.7 s
 #       check_boot     3.1 s
-# (pack_textures rides tools/cache/texruns.*.cache since 2026-09-21: ~3.5 s
+# (pack_textures rides build/py/cache/texruns.*.cache since 2026-09-21: ~3.5 s
 #  warm; a texruns.py or palette edit re-pays ~40 s cold, once.)
 # Editing an .asm file cannot change one byte of what those three emit, so the
 # default build reuses build/assets and rebuilds the ATR in ~3 s. They still run
-# whenever anything they READ moved -- any tools\*.py, the WAD, a missing output
+# whenever anything they READ moved -- any build\py\*.py, the WAD, a missing output
 # or a different level set (map_syms.inc/mk_tables.inc carry capacities sized
 # over the BUILT set, so a subset build has to re-emit them). -Full forces them.
 # check_boot.py is a measurement, not a build step: it simulates the whole boot
@@ -30,16 +30,29 @@ param(
   [switch]$Full,          # re-pack every asset even if it is up to date
   [switch]$Check,         # run the slow verification gates
   [switch]$Time,          # print seconds per step
-  [switch]$Antonia2       # accepted and ignored: the ANTONIA II image is
+  [switch]$Quick,         # accepted and IGNORED since 2026-10-20 ("natrvalo 2
+                          #   buildy"): it used to skip the ANTONIA II image, and
+                          #   that image then went stale for a whole day of fixes.
+                          #   Every run writes BOTH images.
+  [switch]$Antonia2,      # accepted and ignored: the ANTONIA II image is
                           #   built on every run (step 3-ant)
+  [switch]$Fx127          # VBXE FX core 1.27 build (2026-10-19): textures as
+                          #   128-row pixel tiles the raycasting blitter draws
+                          #   and shades (pack_textures.FX127, -d:FX127=1). The
+                          #   level assets are repacked when the switch flips.
 )
 $ErrorActionPreference = 'Stop'
 Set-Location $PSScriptRoot
+$env:DOOM_FX127 = if ($Fx127) { '1' } else { '0' }
+$fxa = @(if ($Fx127) { '-d:FX127=1' })   # splatted (@fxa): an ARRAY, empty when off
+                                          #   (an `if` result assigned bare unrolls)
+$fxd = if ($Fx127) { '-d:FX127=1' } else { '' }
 # WHICH INTERPRETER RUNS THE PACKERS. 'python' normally -- a developer checkout
-# has one. The packaged wadconv.exe (tools/make_exe.py) has no Python on the
-# user's machine at all, so it sets DOOM_PY to ITSELF and every packer below is
-# re-run through the EXE, which carries the interpreter, numpy and PIL with it.
-# Unset = exactly what this script always did.
+# has one; DOOM_PY names another interpreter (the project uses it to pin the
+# Thonny Python). Unset = exactly what this script always did.
+# THE SCRIPTS LIVE IN build\py (2026-10-20, the tools/ clean-up): the packers,
+# their libraries, DOOM.WAD and the texruns/paks caches. tools\tests keeps the
+# simulator gates only.
 $py = if ($env:DOOM_PY) { $env:DOOM_PY } else { 'python' }
 $env:PYTHONDONTWRITEBYTECODE = '1'   # no __pycache__ folders next to the tools
 $mads = Join-Path (Split-Path $PSScriptRoot -Parent) 'mads.exe'
@@ -66,7 +79,7 @@ function Lap([string]$what) {                    # -Time: one line per step
 
 # 1b. digitized SFX blob + sound_tables.inc (both are inputs to the layout below:
 #     SND_CHUNKS sizes the ATR slot, the tables are icl'd by sound.asm)
-& $py tools\wadsound.py
+& $py build\py\wadsound.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'sound extract failed'; exit 1 }
 
 # 1c. weapon psprites + weap_tables.inc (same deal: WEAP_CHUNKS sizes the slot,
@@ -79,13 +92,13 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'sound extract failed'; exit 1 }
 $weapOut = 'build\assets\weap\weap.bin', 'build\assets\weap\weap.tab'
 $weapDo = $Full.IsPresent -or @($weapOut | Where-Object { -not (Test-Path $_) }).Count
 if (-not $weapDo) {
-  $inN = (Get-ChildItem 'tools\pack_weap.py', 'tools\DOOM.WAD' -ErrorAction SilentlyContinue |
+  $inN = (Get-ChildItem 'build\py\pack_weap.py', 'build\py\DOOM.WAD' -ErrorAction SilentlyContinue |
           Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)
   $outO = (Get-ChildItem $weapOut | Sort-Object LastWriteTimeUtc | Select-Object -First 1)
   if ($inN -and $outO.LastWriteTimeUtc -lt $inN.LastWriteTimeUtc) { $weapDo = $true }
 }
 if ($weapDo) {
-  & $py tools\pack_weap.py
+  & $py build\py\pack_weap.py
   if ($LASTEXITCODE -ne 0) { Write-Error 'weapon extract failed'; exit 1 }
 } else {
   Write-Host 'weapon psprites up to date -- pack_weap skipped. Force with -Full' -ForegroundColor DarkGray
@@ -95,21 +108,21 @@ if ($weapDo) {
 #       flat surface with. Map-independent and chunk-sized, so it rides into
 #       Rapidus SRAM behind the weapon master (make_atr_doom.py CMAP_EXT) --
 #       it sizes that slot, so it has to exist before the layout is emitted.
-& $py tools\pack_cmap.py
+& $py build\py\pack_cmap.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'colormap extract failed'; exit 1 }
 
 # 1c-2b. DOOM's sky (SKY1-3) -> sky.bin, the columns seg_draw.asm sky_clip
 #        paints an F_SKY1 ceiling with. Rides behind the COLORMAP
 #        (make_atr_doom.py SKY_EXT), so it too must exist before the layout.
 #        pack_sky skips itself when sky.bin is newer than its inputs.
-& $py tools\pack_sky.py
+& $py build\py\pack_sky.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'sky extract failed'; exit 1 }
 
 # 1c-3. status bar + every widget glyph -> hud.bin/hud.tab. Ran by hand until
 #       2026-08-07 and it bit exactly the way pack_things once did: adding the
 #       OUCH faces moved the table, the engine indexed face 26 and the ATR still
 #       carried the 26-lump blob that has no face 26 in it.
-& $py tools\pack_hud.py
+& $py build\py\pack_hud.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'hud pack failed'; exit 1 }
 Lap 'wad assets (sound/weap/cmap/hud)'
 
@@ -132,7 +145,7 @@ Write-Host ("build version {0}.{1:d2}" -f [math]::Floor($v / 100), ($v % 100))
 #            set (WILV name lumps, wi_lvx, wi_par, lnodes -- all per level).
 #            Must run BEFORE pack_menu (menu.bin swallows wi.bin) and before
 #            mads (wi.asm ins-es wi.tab + icl's wi_syms.inc).
-& $py tools\pack_wi.py --levels ($lvls -join ',')
+& $py build\py\pack_wi.py --levels ($lvls -join ',')
 if ($LASTEXITCODE -ne 0) { Write-Error 'wi pack failed'; exit 1 }
 # 1c-bis-fin. the END-OF-EPISODE finale (f_finale.c): fin.bin, the small
 #             resident half (hu_font + the three flats + the three story
@@ -142,9 +155,9 @@ if ($LASTEXITCODE -ne 0) { Write-Error 'wi pack failed'; exit 1 }
 #             finpic.bin is NOT swallowed -- 38 chunks would walk the boot
 #             stream through FRAME_C -- it is its own ATR region (FIN_SEC1)
 #             that the finale pulls into the sprite arena on demand.
-& $py tools\pack_fin.py
+& $py build\py\pack_fin.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'finale pack failed'; exit 1 }
-& $py tools\pack_menu.py --levels ($lvls -join ',')
+& $py build\py\pack_menu.py --levels ($lvls -join ',')
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu pack failed'; exit 1 }
 Lap 'menu + version'
 
@@ -158,8 +171,8 @@ Lap 'menu + version'
 #
 #     The skip below answers the same "stale bytes" worry the hard way, from
 #     mtimes: EVERY output of all three must exist and be newer than EVERY
-#     tools\*.py and the WAD. Touch any packer (or any library one of them
-#     imports -- they all live in tools\) and the whole set re-packs. The level
+#     packer in build\py and the WAD. Touch any packer (or any library one of
+#     them imports -- they all live in build\py) and the whole set re-packs. The level
 #     list is stamped as well, because map_syms.inc's shared capacities and
 #     mk_tables.inc are sized over the levels actually built, not per level.
 $stamp = 'build\.packed.stamp'
@@ -180,7 +193,7 @@ if (-not $repack) {
   if ($missing.Count) { $repack = $true; $why = "$($missing[0]) is missing" }
 }
 if (-not $repack) {
-  # The WAD is tools\DOOM.WAD (wadlib.DEFAULT_WAD), NOT DOOM1.WAD in the root --
+  # The WAD is build\py\DOOM.WAD (wadlib.DEFAULT_WAD), NOT DOOM1.WAD in the root --
   # that path has never existed, and with $ErrorActionPreference = 'Stop' this
   # line KILLED the build outright. It only ever ran when every output was
   # already present (the $missing branch above short-circuits it), which is why
@@ -188,11 +201,10 @@ if (-not $repack) {
   # -ErrorAction SilentlyContinue so a moved/renamed WAD degrades to "the .py
   # files decide", instead of stopping the build again.
   # The stamp watches the PACKERS and their libraries, not every .py in
-  # tools\ (2026-08-27) -- see this script's header.
-  $newestIn = (Get-ChildItem 'tools\pack_*.py', 'tools\wad*.py',
-                             'tools\doom*.py', 'tools\texruns.py',
-                             'tools\pool_plan.py', 'tools\palette32.py',
-                             'tools\DOOM.WAD' -ErrorAction SilentlyContinue |
+  # build\py (2026-08-27) -- see this script's header.
+  $newestIn = (Get-ChildItem 'build\py\pack_*.py', 'build\py\wad*.py',
+                             'build\py\doom*.py', 'build\py\texruns.py',
+                             'build\py\DOOM.WAD' -ErrorAction SilentlyContinue |
                Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1)
   $oldestOut = (Get-ChildItem $outs | Sort-Object LastWriteTimeUtc | Select-Object -First 1)
   if ($oldestOut.LastWriteTimeUtc -lt $newestIn.LastWriteTimeUtc) {
@@ -200,53 +212,53 @@ if (-not $repack) {
   }
 }
 # ...and the WAD PAIR is part of that stamp, not just the level list
-# (2026-08-16). The mtime test above only watches tools\*.py and tools\DOOM.WAD,
+# (2026-08-16). The mtime test above only watches the packers and DOOM.WAD,
 # so a wadconv.py conversion run right after a normal build found every output
 # present and newer, skipped all three packers, and shipped THE PROJECT'S
 # colormap and menu had just been rebuilt from heretic.wad. It looked like a
 # palette bug and it was a staleness bug. DOOMWAD/DOOMPWAD are what wadconv
 # sets, so putting them in the stamp makes any change of WAD a repack.
 if (-not $repack) {
-  $want = "$($env:DOOMWAD)|$($env:DOOMPWAD)|$($lvls -join ' ')"
+  $want = "$($env:DOOMWAD)|$($env:DOOMPWAD)|$($lvls -join ' ')|fx127=$($env:DOOM_FX127)"
   $have = if (Test-Path $stamp) { (Get-Content $stamp -TotalCount 1) } else { '' }
-  if ($have -ne $want) { $repack = $true; $why = 'the WAD pair or level set changed' }
+  if ($have -ne $want) { $repack = $true; $why = 'the WAD pair, level set or texture format changed' }
 }
 if ($repack) {
   Write-Host "packing levels: $why"
-  & $py tools\pack_map.py $lvls
+  & $py build\py\pack_map.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'map pack failed'; exit 1 }
-  & $py tools\pack_textures.py $lvls
+  & $py build\py\pack_textures.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'texture pack failed'; exit 1 }
-  & $py tools\pack_things.py $lvls
+  & $py build\py\pack_things.py $lvls
   if ($LASTEXITCODE -ne 0) { Write-Error 'things pack failed'; exit 1 }
   # ...and the guard over what they packed: every face of every door answers
   # the spacebar the way DOOM does (~1 s, only when the levels were re-packed).
-  & $py tools\tests\_verify_useside.py $lvls | Select-Object -First 8
+  & $py build\py\_verify_useside.py $lvls | Select-Object -First 8
   if ($LASTEXITCODE -ne 0) { Write-Error 'a door opens from a face DOOM refuses'; exit 1 }
-  Set-Content $stamp "$($env:DOOMWAD)|$($env:DOOMPWAD)|$($lvls -join ' ')" -Encoding ascii
+  Set-Content $stamp "$($env:DOOMWAD)|$($env:DOOMPWAD)|$($lvls -join ' ')|fx127=$($env:DOOM_FX127)" -Encoding ascii
 } else {
   Write-Host 'level assets up to date -- pack_map/pack_textures/pack_things skipped (~35 s). Force with -Full' -ForegroundColor DarkGray
 }
 Lap 'level assets'
 
 # 2. level layout (atr_layout.inc) BEFORE building the XEX (load_level needs it)
-& $py tools\make_atr_doom.py --dir $lvls
+& $py build\py\make_atr_doom.py --dir $lvls
 if ($LASTEXITCODE -ne 0) { Write-Error 'layout emit failed'; exit 1 }
 
 # 2b. the boot loader -> raw boot.bin (strip the 6-byte XEX header), with the
 #     build's other BIN files in build/assets/code. AFTER the
 #     layout: its machine check probes the linear RAM up to the top bank THIS
 #     build uses, and its screen carries the build's version (boot_cfg.py).
-& $py tools\boot_cfg.py
+& $py build\py\boot_cfg.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'boot config failed'; exit 1 }
-& $mads -i:. boot.asm -o:build/boot.xex
+& $mads -i:. @fxa boot.asm -o:build/boot.xex
 if ($LASTEXITCODE -ne 0) { Write-Error 'boot assemble failed'; exit 1 }
 if (-not (Test-Path build\assets\code)) { New-Item -ItemType Directory build\assets\code | Out-Null }
 & $py -c "open('build/assets/code/boot.bin','wb').write(open('build/boot.xex','rb').read()[6:])"
 #     ... and the ANTONIA II image's: the same loader, its CPU check also probes
 #     the card's multiplier/divider (boot.asm, drac030 2026-09-30). The SAME
 #     sector count, or the layout above would not fit it (make_atr_doom checks).
-& $mads -i:. -d:ANTONIA2=1 boot.asm -o:build/boot_ant2.xex
+& $mads -i:. @fxa -d:ANTONIA2=1 boot.asm -o:build/boot_ant2.xex
 if ($LASTEXITCODE -ne 0) { Write-Error 'boot assemble (ANTONIA II) failed'; exit 1 }
 & $py -c "open('build/assets/code/boot_ant2.bin','wb').write(open('build/boot_ant2.xex','rb').read()[6:])"
 Lap 'boot loader'
@@ -262,7 +274,7 @@ Lap 'boot loader'
 function MadsStart([string]$opts) {
   $psi = New-Object Diagnostics.ProcessStartInfo
   $psi.FileName = $mads
-  $psi.Arguments = "-i:. bsp_main.asm $opts"
+  $psi.Arguments = "-i:. $fxd bsp_main.asm $opts"
   $psi.WorkingDirectory = $PSScriptRoot
   $psi.UseShellExecute = $false
   $psi.RedirectStandardOutput = $true
@@ -285,58 +297,60 @@ MadsEnd $asm 'assemble' -Show
 #         into the tables the boot loader and menu_boot step (boot.asm
 #         b_reloc, menu.asm mn_vrel). BEFORE the splits below.
 MadsEnd $asmD7 'assemble (VBXE_D7)'
-& $py tools\vbxe_reloc.py
+& $py build\py\vbxe_reloc.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'VBXE relocation failed'; exit 1 }
+Remove-Item build/doom_bsp_d7.xex -ErrorAction SilentlyContinue   # read; done
 Lap 'mads'
 
 # 3a. the menu CODE overlay out of the XEX and into menu.bin's reserved chunk.
 #     It is assembled for $1000 and parked at $C000, so it must be gone before
 #     check_xex.py looks (and before the boot loader ever writes it to RAM).
-& $py tools\split_menu_ovl.py
+& $py build\py\split_menu_ovl.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'menu overlay split failed'; exit 1 }
 
 # 3a'. the bank-$01 code segment (drac.txt: code to $010000-$01FFFF) out of
 #      the XEX and back in as INIT chunks staged at B1STAGE ($9000). AFTER the
 #      overlay split: FINOVL/EPIOVL park at $9000/$9100 in the raw XEX and are
 #      lifted out by the step above, which is what frees the stage.
-& $py tools\split_b1.py
+& $py build\py\split_b1.py
 if ($LASTEXITCODE -ne 0) { Write-Error 'bank $01 split failed'; exit 1 }
 # ...and the guard that replaces ert for that code: no jsr/jmp/branch into the
 # other bank, no jsl to non-code, no 16-bit operand naming a bank-$01 label.
-& $py tools\b1_check.py | Select-Object -First 6
-if ($LASTEXITCODE -ne 0) { Write-Error 'b1_check: cross-bank reference (tools/tests/out/b1_check.txt)'; exit 1 }
+$o = & $py build\py\b1_check.py         # whole output first: a pipe that
+$rc = $LASTEXITCODE                     #   stops early kills the process
+$o | Select-Object -First 6
+if ($rc -ne 0) { Write-Error 'b1_check: cross-bank reference (tools/tests/out/b1_check.txt)'; exit 1 }
 # 3a''. no two XEX blocks may load over each other (2026-09-14: setup_chains
-#       grew into the block at $4B9E and nothing noticed -- check_xex is off
-#       while ram_map.py is missing). B1STAGE chunks are the only allowed case.
-& $py tools\tests\check_overlap.py
-if ($LASTEXITCODE -ne 0) { Write-Error 'XEX blocks overlap (tools/tests/check_overlap.py)'; exit 1 }
+#       grew into the block at $4B9E and nothing noticed). B1STAGE chunks are
+#       the only allowed case.
+& $py build\py\check_overlap.py
+if ($LASTEXITCODE -ne 0) { Write-Error 'XEX blocks overlap (build/py/check_overlap.py)'; exit 1 }
 
 # 3b. no segment may land in RAM that is overwritten at runtime (TEX_STAGE!)
 #     Both are cheap (~0.1 s) and they fail the build on a real defect, so they
 #     stay in the default path -- they are guards, not measurements.
-#     Both need tools/ram_map.py -- check_xex.py imports RESERVED/STAGED from it.
-#     It was deleted on 2026-08-14, so both are skipped until it is back. The .asm
-#     `ert` guards still catch every parked block that outgrows its hole.
-if (Test-Path tools/ram_map.py) {
-    # (the RAM budget COMMENT is gone -- check_xex.py still imports RESERVED)
-    & $py tools/bank_map.py --check
+#     Both need build/py/ram_map.py (check_xex.py imports RESERVED/STAGED from
+#     it); without the file they are skipped and the .asm `ert` guards alone
+#     catch a parked block that outgrows its hole.
+if (Test-Path build/py/ram_map.py) {
+    & $py build/py/bank_map.py --check
 if ($LASTEXITCODE -ne 0) { Write-Error 'two Rapidus bank $01 regions overlap'; exit 1 }
-& $py tools/check_xex.py build/doom_bsp.xex
+& $py build/py/check_xex.py build/doom_bsp.xex
     if ($LASTEXITCODE -ne 0) { Write-Error 'segment lands in reserved RAM'; exit 1 }
 } else {
-    Write-Host 'SKIP RAM guards (tools/ram_map.py is missing)'
+    Write-Host 'SKIP RAM guards (build/py/ram_map.py is missing)'
 }
 Lap 'overlay split + RAM guards'
 
 # 4. assemble the bootable ATR (boot.bin + doom_bsp.xex + maps)
-& $py tools\make_atr_doom.py $lvls
+& $py build\py\make_atr_doom.py $lvls
 if ($LASTEXITCODE -ne 0) { Write-Error 'atr build failed'; exit 1 }
 Lap 'ATR image'
 
 # 4-ant. THE ANTONIA II IMAGE, on every run, AFTER the stock one: the same
 #        engine with umul16/udiv24 on the card's hardware ($FFF00C/$FFF008)
 #        -> build/doom_bsp_ant2.atr, which does NOT run on a Rapidus. DOOM_IMG
-#        gives every file of this pass its own name (tools/code_map.py img),
+#        gives every file of this pass its own name (build/py/code_map.py img),
 #        so the stock build's files stay as step 4 left them. Quiet unless it
 #        fails. Its two assemblies have been running since step 3.
 function AntStep([string]$what, [scriptblock]$cmd) {
@@ -350,103 +364,27 @@ function AntStep([string]$what, [scriptblock]$cmd) {
 MadsEnd $ant 'ANTONIA II image: assemble'
 MadsEnd $antD7 'ANTONIA II image: assemble (VBXE_D7)'
 $env:DOOM_IMG = '_ant2'
-AntStep 'VBXE relocation' { & $py tools\vbxe_reloc.py }
-AntStep 'menu overlay split' { & $py tools\split_menu_ovl.py }
-AntStep 'bank $01 split' { & $py tools\split_b1.py }
-AntStep 'b1_check' { & $py tools\b1_check.py }
-AntStep 'check_overlap' { & $py tools\tests\check_overlap.py build/doom_bsp_ant2.xex }
-AntStep 'atr build' { & $py tools\make_atr_doom.py $lvls }
+AntStep 'VBXE relocation' { & $py build\py\vbxe_reloc.py }
+Remove-Item build/doom_bsp_d7_ant2.xex -ErrorAction SilentlyContinue   # read; done
+AntStep 'menu overlay split' { & $py build\py\split_menu_ovl.py }
+AntStep 'bank $01 split' { & $py build\py\split_b1.py }
+AntStep 'b1_check' { & $py build\py\b1_check.py }
+AntStep 'check_overlap' { & $py build\py\check_overlap.py build/doom_bsp_ant2.xex }
+AntStep 'atr build' { & $py build\py\make_atr_doom.py $lvls }
 $env:DOOM_IMG = ''
 Lap 'ANTONIA II image'
 
 # 5. THE MEASUREMENTS, -Check only. Everything below runs the real code on
 #    sim6502 instead of just assembling it, which is why it is off by default.
-#      * _verify_xdl / _verify_menu: the display list still covers 240 lines, a
-#        menu patch still lands on the right row (~2 s).
 #      * check_boot.py: the "will it even boot" gate (2026-08-10, the Rapidus
 #        black-screen day) -- ATR boot sectors, the $0700 loader, every XEX
 #        segment, VBI NMIs injected, RAM under the ROM virgin, simulated all the
 #        way to main ($2000). 3.1 s.
-#      * _verify_save: BOOTS a level and runs the real two-phase LOAD (~1 min).
+#    (2026-10-20, the tools/ clean-up: the gates whose files were long gone --
+#     xdl, menu, wpgive, doorside, native, lights, msg, spectre, flinch,
+#     deathsnd, pjz, spidfire, missile, switch, caco, arena, save -- left the
+#     list; tools/tests holds the six below.)
 if ($Check) {
-  # wpgive: P_GiveWeapon's "full ammo -> the gun stays on the floor" (runs the
-  #   shipped bytes on sim6502). doorside: which SIDE of a door the spacebar
-  #   opens it from, over every door face in the episode -- both are under a
-  #   second and both guard rules that were wrong until 2026-08-11.
-  # native: udiv24 runs on every column, and it used to return in EMULATION mode
-  #   -- where rep/sep of the M/X bits is a no-op, so every 16-bit index in the
-  #   engine silently became a byte (2026-08-14, the automap bug). This asserts
-  #   the quotient AND that the caller's mode survives the call.
-  # lights: every light thinker in the episode, link by link -- spawned, packed,
-  #   inside the BYTE X update_lights walks it with, on the ATR inside the window
-  #   load_level streams, and shading through two DIFFERENT colormap rows. Added
-  #   2026-08-15: the LIGHTS section had grown past TH_HPL into the AI's health
-  #   table, en_init wiped E1M2's last eight thinkers, and NOTHING in the build
-  #   noticed -- because every link measured correct on its own.
-  # spectre: MF_SHADOW's three BCB bytes, and -- the reason it is a gate at all
-  #   -- that spr_shadow still FITS. It sat in a block whose declared END was
-  #   inside BLKTAB, so it silently overwrote en_solid's 3x3 neighbourhood and
-  #   the assembler said nothing (2026-08-16).
-  # flinch: PTAB_EXT[kind] -> TH_WROW is a ROW+1, so a $FF that reaches it
-  #   writes 0 = "not chasing" and ai_tick drops the monster for good. The test
-  #   drives the real ai_pain_row and reads the shipped .dtab blobs back.
-  # deathsnd: A_Scream vs A_XScream. p_inter.c:719 sends anything past
-  #   -spawnhealth to the XDIE chain and that chain yells sfx_slop, not the
-  #   kind's death cry -- for the three monsters info.c gives an xdeathstate
-  #   (zombieman/shotgun guy/imp) AND for the player, at -100. Every boundary
-  #   here is a strict "<", so an off-by-one is a wrong sound and nothing else
-  #   in the build would ever say so. The test calls en_plr_hurt and en_gibq on
-  #   the shipped bytes and then checks snd_play really arms the SLOP sample
-  #   (2026-08-19).
-  foreach ($t in 'xdl', 'menu', 'wpgive', 'doorside', 'native', 'lights',
-  # pjz: the missile's vertical aim. The z leg pushed the per-bolt context past
-  #   32 B, so PJ_SLSTR doubled and the eight slots went from one page of bank
-  #   $01 to two -- pj_slot now has to carry a shift into the page byte, and
-  #   the last slot has to stay clear of DTAB_EXT. Nothing in the build fails
-  #   if it does not: the bolts would simply start eating the death-animation
-  #   table. The test walks all eight and then checks the Q8 step arithmetic,
-  #   sign extension included (2026-08-19).
-  # spidfire: A_SpidRefire and A_BossDeath's timing (2026-08-20). The refire
-  #   loop is the only attack chain in DOOM that does not end when its last
-  #   state does, and it turns a shared shortcut into a LIVELOCK: aif_isvis
-  #   answers "visible" for any monster target, A_Chase is the only thing that
-  #   drops a DEAD one, and the loop never lets A_Chase run -- so the spider
-  #   shot a cacodemon and then fired into the corpse for ever. Nothing in the
-  #   build fails on that; it is a monster that stops behaving. The test drives
-  #   ai_refire and bd_at on the shipped bytes over both.
-  # missile: what a monster's missile does when it lands -- A_Explode for the
-  #   rocket and only the rocket (info.c hangs it off S_EXPLODE1, and the two
-  #   fireballs' burst chains carry no action), MT_ROCKET's double flight rate,
-  #   and PIT_RadiusAttack's "Boss spider and cyborg take no damage from
-  #   concussion", which this port simply did not have (2026-08-20).
-  # switch: P_ChangeSwitchTexture. sw_swap probes the seg's WALL byte and then
-  #   its LOWER byte, but $3F is "no texture", not a texid, and MAP_TEXSWMATE is
-  #   63 entries wide -- so index $3F read the row after it and the empty wall
-  #   byte ATE the swap on every switch that sits on a lower texture. Nine maps
-  #   (E1M8, E2M1/5/7/8, E3M1/2/4/9) fired their action and stayed dark, and
-  #   nothing in the build could say so. The test runs the shipped sw_swap on the
-  #   real textab + seg bytes of every USE switch line in the set, S1 vs SR
-  #   button included (2026-08-20).
-                 'msg', 'spectre', 'flinch', 'deathsnd', 'pjz',
-  # caco: the CACODEMON's attack (2026-08-20). mk_atk was 0 for MT_HEAD, so it
-  #   chased the player through thirteen levels and could never touch him --
-  #   and nothing in the build says so, because a monster that does not fight
-  #   assembles exactly like one that does. The test drives bl_pick/bl_roll/
-  #   ai_fire/ai_cdmg on the shipped bytes, checks the .things header carries
-  #   BAL2 on exactly the cacodemon levels, and PINS the two documented melee
-  #   reductions so they cannot drift unnoticed. It also guards the id layout
-  #   at_tables.inc depends on: the four missile actions must stay at 3..6.
-  # arena: the B1 sprite arena's PER-LEVEL reset (2026-08-25). FARENA is the
-  #   frame-id -> arena-address residency table and it is runtime-only, so
-  #   arena_init has to zero it at every level load -- but its clear is an
-  #   `sta [zp_ptr],y` walk that never set zp_ptr+2, and the coltab run moved to
-  #   bank $08 on 2026-08-21. From then on the clear wiped dead space at
-  #   $08:FC00, FARENA kept the LAST level's table, and every frame id the new
-  #   fireball and health potion (ids 20/109 in both), swapping on its 6-tic
-  #   idle ring. arena_prefetch had the mirror of it and read its FTAB rows out
-  #   of bank $01 from the second id on. Nothing in the build fails on either:
-  #   both blobs are correct, both guards pass, the wrong picture just appears.
-                 'spidfire', 'missile', 'switch', 'caco', 'arena',
   # newdir: ai_newdir's order of tried directions against P_NewChaseDir.
   # hudlt: hud_entry/bar_blit BCB bytes, lt_seg rows, update_lights rules.
   # sr320: every 320 SR screen's list walked as VBXE walks it -- READ THIS!,
@@ -454,10 +392,17 @@ if ($Check) {
   # inflate: inflate816.asm against zlib on streams built to reach what the
   #   ATR's own never hold -- stored and fixed blocks, 256 codes of one
   #   length, codes of 15 bits, a match across a bank line (2026-09-28).
-                 'newdir', 'hudlt', 'sr320', 'inflate') {
-    # a missing test file is an ENVIRONMENT failure, not a test failure -- the
-    # same treatment _verify_save gets below (2026-08-10: most of tools/tests
-    # went missing and the E1M6 build died here instead of building)
+  # doorfit: a closing door against what stands under it (2026-10-01) --
+  #   de_build's edge tables, door_touch's box vs line against PIT_CheckLine /
+  #   P_BoxOnLineSide, door_fit's P_ChangeSector (player box, heights, corpse
+  #   F_DROP, crusher), all on the shipped bank-$01 bytes in sim6502.
+  # floorz: the player's floorz is P_CheckPosition's tmfloorz (2026-10-01,
+  #   drac030's E1M1 stair trap) -- coll_floorz, and move_player off the stair
+  #   side, never stuck.
+  foreach ($t in 'newdir', 'hudlt', 'sr320', 'inflate', 'doorfit', 'floorz') {
+    # a missing test file is an ENVIRONMENT failure, not a test failure
+    # (2026-08-10: most of tools/tests went missing and the E1M6 build died
+    # here instead of building)
     if (-not (Test-Path "tools/tests/_verify_$t.py")) {
       Write-Host "SKIP _verify_$t (tools/tests/_verify_$t.py is missing)" -ForegroundColor Yellow
       continue
@@ -467,31 +412,11 @@ if ($Check) {
     # terminating NativeCommandError right at the assignment
     $tout = cmd /c "$py tools/tests/_verify_$t.py 2>&1"
     if ($LASTEXITCODE -ne 0) {
-      # 2026-08-10: _prof_procs/_verify_bootload exist only as .pyc compiled by
-      # a NEWER Python than the installed 3.12 ("bad magic number"), so these
-      # two tests cannot even import on this machine -- and an unconditional
-      # exit here killed every build and every wadconv conversion at the very
-      # last fence. An ENVIRONMENT failure is a SKIP with a warning (the same
-      # treatment _verify_save's missing file gets below); a real test failure
-      # still stops the build.
-      if (($tout -join "`n") -match 'bad magic number|ModuleNotFoundError') {
-        Write-Host "SKIP _verify_$t (its .pyc harness was compiled by another Python version)" -ForegroundColor Yellow
-      } else {
-        $tout | Select-Object -Last 12
-        Write-Error "_verify_$t failed"; exit 1
-      }
+      $tout | Select-Object -Last 12
+      Write-Error "_verify_$t failed"; exit 1
     } else {
       $tout | Select-Object -Last 1
     }
-  }
-  # 2026-08-09: the file is not in the tree any more, and an unconditional call
-  # to a missing script aborted the build HERE -- before the ATR was ever
-  # written. The engine had meanwhile grown past the sector window, unseen.
-  if (Test-Path "tools/tests/_verify_save.py") {
-    & $py "tools/tests/_verify_save.py" | Select-Object -Last 1
-    if ($LASTEXITCODE -ne 0) { Write-Error '_verify_save failed'; exit 1 }
-  } else {
-    Write-Host 'SKIP _verify_save (tools/tests/_verify_save.py is missing)' -ForegroundColor Yellow
   }
   & $py tools\tests\check_boot.py
   if ($LASTEXITCODE -ne 0) { Write-Error 'boot check failed -- this ATR would not boot'; exit 1 }
@@ -503,7 +428,7 @@ if ($Check) {
 Write-Host ('OK -> build/doom.atr + build/doom_bsp_ant2.atr (ANTONIA II ONLY, not Rapidus)  ({0:N1}s)' -f $swAll.Elapsed.TotalSeconds) -ForegroundColor Green
 
 # build/ holds the BUILD and nothing else -- name whatever does not belong there.
-$buildOk = '.build.lock', '.packed.stamp', 'assets', 'exe',
+$buildOk = '.build.lock', '.packed.stamp', 'assets', 'exe', 'py',
            'boot.xex', 'boot_ant2.xex', 'doom.atr', 'doom_bsp.xex', 'doom_bsp.lst', 'doom_bsp.lab',
            'doom_bsp_ant2.atr', 'doom_bsp_ant2.xex', 'doom_bsp_ant2.lst', 'doom_bsp_ant2.lab', 'doom_test.atr', 'doom-test-level.atr'
 $stray = @(Get-ChildItem build -Force | Where-Object { $buildOk -notcontains $_.Name })

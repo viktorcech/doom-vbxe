@@ -6,10 +6,15 @@ bcbt_resume = *
         org BCBT_STAGE
 ; vline: 1 px wide, height patched, colour via XOR (AND=0)
 bcb_vline_tmpl
+  .if STRIP                    ; 2026-10-15 (paint.asm THE STRIP): the top of a
+        dta <PS_FFT,>PS_FFT,[PS_FFT>>16]   ;   256-byte $FF block, read UP the column
+        dta a($1FFF)                 ;   (src stepY -1) -- every pixel the same
+  .else                              ;   ($FF AND and_mask) as before
         dta <VRAM_BCB_FF,>VRAM_BCB_FF,[VRAM_BCB_FF>>16]   ; src addr: ONE $FF byte,
                                      ;   steps 0 -> every pixel = ($FF AND and_mask)
                                      ;   XOR 0 = and_mask.
         dta a($0000)                 ; src stepY
+  .endif
         dta $00                      ; src stepX
         dta <VRAM_SCREEN             ; dst addr (patched)
         dta >VRAM_SCREEN
@@ -41,7 +46,7 @@ bcb_clear_tmpl
         dta BLT_COPY
 
 ; sprite column: 1 byte wide, source = a column of the sprite (or of the
-; expanded scratch), BLT_BSTENCIL so index-0 texels are left alone = transparent
+; expanded scratch), BLT_BSTENCIL so index-0 texture pixels are left alone = transparent
 bcb_spr_tmpl
         dta $00,$00,$00              ; SRC_ADDR (patched per column, all 3 bytes:
                                      ;   the sprite pool has no fixed bank since
@@ -67,20 +72,18 @@ bcb_spr_tmpl
 
 ; The two one-shot THINGS loaders live up here rather than in the packed $2000
 ; segment (which butts against the streamed map at $4000): they run once at boot.
-                                      ; DRAC_PLAN 3a: nothing lives here any more (the
+                                      ; nothing lives here any more (the
 
 ;--------------------------------------------------------------
-; load_sprites -- B1 (docs/VRAM-PLAN.md par.5): the .spr never lands in VRAM.
+; load_sprites -- B1: the .spr never lands in VRAM.
 ;--------------------------------------------------------------
 sprld2_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc load_sprites
         rts                          ; B2 (2026-08-18): the sprite pool rides
 .endp                                ;   the POOL region -- load_textures'
         .endseg
                                      ;   drain streams it with the textures, ...
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; arena_init -- the per-level B1 reset, chained off load_sprcol: FARENA
@@ -89,18 +92,25 @@ sprld2_resume = *
 ;   (read_ext parked it).
 ;--------------------------------------------------------------
         org ARINIT_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc arena_init
         lda #MAP_EXT_BANK            ; load_sprcol streamed into bank $08 and
         sta ll_bank                  ;   left ll_bank there; its own block is
                                      ;   47 B and had no room to put it back
         sta zp_ptr+2                 ; ...AND THE SAME FOR zp_ptr+2 (2026-08-25).
-        lda #<FARENA_EXT             ; FARENA is 765 B ($01:FC00-$FEFC), so three
-        sta zp_ptr                   ;   pages cover it. The fourth ($FF00, the
-        lda #>FARENA_EXT             ;   old TEXAR) went with the texture arena
-        sta zp_ptr+1                 ;   (2026-08-14) and is free bank-$01 RAM.
+    .ifdef FX127
+        jsr fx_chains_init           ; the chain slots and the COLORMAP rows into
+                                     ;   VRAM (paint.asm)
+        stz sp_andw                  ; the sprite links' word cells: the halves
+        stz sp_ctlw                  ;   spr_shadow never writes stay 0
+        stz sp_xorw+1
+    .endif
+        lda #<ARCLR_BASE             ; FARENA is 765 B ($FC00-$FEFC), so three
+        sta zp_ptr                   ;   pages cover it; FX127 starts a page
+        lda #>ARCLR_BASE             ;   lower: TEXVR_HI, the textures' residency
+        sta zp_ptr+1                 ;   (memory_map.inc ARCLR_*)
                                       ; 2026-09-22 (65816-style: a byte sweep read as words):
-        ldx #3                       ;   two bytes a store, the page step 8-bit
+        ldx #ARCLR_N                 ;   two bytes a store, the page step 8-bit
         ldy #0                       ;   (a 16-bit inc would touch zp_ptr+2)
 ?clp    rep #$20
         .LONGA ON
@@ -128,6 +138,7 @@ sprld2_resume = *
         sta spr_sdram+1              ;   tables died with the 10-level build
         lda #[LVL_SPRSD_C>>16]       ;   (they ran WEAPLD2 into PJHK_BASE)
         sta spr_sdram+2
+    .ifndef FX127                    ; (FX127: tex_vget adds LVL_TEXSD_C itself)
                                       ; 2026-09-28: lower by PT_XB -- paint_col's run
         lda #<[LVL_TEXSD_C-PT_XB]    ;   index starts there (paint.asm), and every
         sta tex_sdram                ;   wall/lower address is this + an offset
@@ -135,6 +146,7 @@ sprld2_resume = *
         sta tex_sdram+1
         lda #[[LVL_TEXSD_C-PT_XB]>>16]
         sta tex_sdram+2
+    .endif
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>arena_prefetch       ;   next byte of this segment -- fall through
 .endp                                ;   play has no first-look copy hitches
@@ -145,8 +157,7 @@ sprld2_resume = *
 ;   id order, until one would not fit.
 ;--------------------------------------------------------------
 apref_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc arena_prefetch
         stz apf_i                    ; (stz/the ora loop below buy the 4 B the
 ?spr    lda apf_i                    ; FTAB[id]: zp_ptr = FTAB_EXT + id*8, in A:
@@ -186,11 +197,11 @@ apref_resume = *
         sta apf_t+1
         lda ar_bump+2
         adc #0
-        cmp #[ARENA_SPR_TOP>>16]
-        bcc ?fit
+        cmp #[APF_TOP>>16]           ; (FX127: 48 KB of it, the rest is the wall
+        bcc ?fit                     ;   textures' -- memory_map.inc)
         bne ?tex                     ; would not fit: leave the tail lazy
         lda apf_t+1                  ; same bank: the middle byte decides. See
-        cmp #[[ARENA_SPR_TOP>>8]&$FF];   spr_fget's copy of this test -- the
+        cmp #[[APF_TOP>>8]&$FF]      ;   ar_alloc's copy of this test -- the
         bcc ?fit                     ;   old `ora apf_t` only held while the top
         bne ?tex                     ;   was 64 KB-aligned, and it stopped being
         lda apf_t                    ;   that on 2026-08-18 (the EPISODE menu).
@@ -203,11 +214,10 @@ apref_resume = *
                                      ;   would not fit: leave the tail lazy
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 apf_i   dta 0
 apf_t   dta 0,0
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org apref_resume
     .if * > ARINIT_END+1
         ert 'arena_init outgrew ARINIT_BASE..END (memory_map.inc)'
@@ -220,7 +230,7 @@ apf_t   dta 0,0
 ;   load_sprites: they use the same RAM as their SIO staging buffer. From here
 ;   on $B000 holds live data (also PLAYPAL, which setup_palette reads).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc load_things
         lda #<THG_SEC1
         sta ll_sec
@@ -275,9 +285,14 @@ apf_t   dta 0,0
         lda #1                       ; a fresh level: put his FEET on the spawn
         sta pl_snap                  ;   floor instead of dropping him into it
                                      ;   from wherever the last one left pl_z
+        stz pl_fz                    ; ...and floorz is not known here yet: the
+        lda #$80                     ;   last level's would measure his first
+        sta pl_fz+1                  ;   steps (pl_zref)
                                       ; 2026-09-22 (drac030 stz): A is dead --
         stz pl_dead                  ;   load_things2 starts with a load
         stz pl_keyw
+        stz bn_drop                  ; it sits in the loader's SECBUF: != 0 left
+                                     ;   there halves every pickup (give_bonus)
         ldx #EYE_H
         stx pl_vh
         stz mv_i
@@ -293,7 +308,7 @@ apf_t   dta 0,0
 .endp                                ;   into load_dtab: still inside the SIO
         .endseg
                                      ;   window, ROM in.
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ps_started dta 0                     ; 0 until the boot-time PSTATE init has run
         .endseg
         org bcbt_resume

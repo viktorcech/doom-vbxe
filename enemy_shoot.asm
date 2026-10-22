@@ -6,7 +6,7 @@
 ;   en_shoot. Called once per shot from wp_fire_a. Cold, so it lives in the
 ;   ENINIT block: the hot $FEDD one is full. Clobbers A/X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_gunshot
         stz en_hit                   ; en_shoot raises it when the shot CONNECTS
         stz en_melee                 ;   (wp_fire_a picks punch/sawhit off it)
@@ -83,7 +83,7 @@
 ; en_r5 -- P_GunShot's damage: 5*(P_Random()%3+1) = 5, 10 or 15. One roll per
 ;   PELLET (the shotgun calls it seven times). Clobbers A and en_t.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_r5
         lda RANDOM                   ; POKEY LFSR (see the header note)
         and #3
@@ -107,7 +107,7 @@
 ;   P_Random() < painchance (p_inter.c P_DamageMobj), so the roll is here too --
 ;   without it a burst of pistol fire makes one long scream. Clobbers A/X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_hurt_snd
 	stz en_painr
         ldx en_kind                  ;   reads the answer out of here
@@ -165,7 +165,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 ;--------------------------------------------------------------
 ; en_shoot -- A = damage. Aim, subtract, kill at <= 0. Clobbers A/X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_shoot
         sta en_dmg
         stz en_bsc
@@ -234,14 +234,13 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
         sta en_t+1
         ora en_t
         beq ?out                     ; health 0 -> a decoration, or already dead
-        sec                          ; P_DamageMobj: health -= damage
-        lda en_t
+        sec                          ; P_DamageMobj: health -= damage (a byte:
+        lda en_t                     ;   the borrow is the high byte's dec)
         sbc en_dmg
         sta en_t
-        lda en_t+1
-        sbc #0
-        sta en_t+1
-        jsr en_ovkill                ; the overkill (the gib test, p_inter.c:719)
+        bcs ?nb
+        dec en_t+1
+?nb     jsr en_ovkill                ; the overkill (the gib test, p_inter.c:719)
                                      ;   and then the clamp -- UNCONDITIONAL now: ...
 ?store  lda en_t+1                   ; write it back (zp_ptr is on the HI page)
         sta [zp_ptr],y
@@ -274,7 +273,7 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 ;   PIT_CheckThing rolls ((P_Random()&7)+1) * mobjinfo.damage (20 for the rocket,
 ;   so 20..160) and P_ExplodeMissile runs A_Explode = P_RadiusAttack(...,128).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_rocket
         lda RANDOM                   ; ((P_Random()&7)+1) * 20
         and #7
@@ -304,9 +303,9 @@ en_ch   dta SCREEN_HALF+1            ;   per shot at the top of en_shoot
 ;        ran out; en_bx/by is then the ray end, which is what en_march did too.
 ;   Clobbers A/X/Y, m_*, zp_ptr/zp_sptr/zp_nid/zp_segcnt, USE_PT_A/B, USE_SS.
 ;--------------------------------------------------------------
-SH_STEP  equ 32                      ; sample spacing. It only has to land in
-                                     ;   every subsector the ray crosses -- the
-                                     ;   crossing test itself uses the whole ray
+SH_STEP  equ 32                      ; sample spacing. A leaf thinner than a step
+                                     ;   along the ray is found by sh_gap (the
+                                     ;   crossing test itself uses the whole ray)
 SH_NBULL equ 32                      ; 1024 units
 SH_NROCK equ 255                     ; 8160 units: a missile has NO range in DOOM
                                      ;   (p_mobj.c flies it until P_TryMove fails)
@@ -314,7 +313,7 @@ SH_NMELEE equ 3                      ; MELEERANGE is 64, and this is 96: the
                                      ;   crossing test needs the ray to pass ...
 SH_REF   equ 10                      ; binary-search steps -> 8160/1024 = 8 units
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sh_trace
         sta sh_n
 	rep #$20
@@ -347,11 +346,10 @@ SH_REF   equ 10                      ; binary-search steps -> 8160/1024 = 8 unit
 	.LONGA ON                    ; (2026-09-26: use_locate returns 16-bit, A = zp_nid)
 	cmp USE_SS
 	beq ?step
-	sta USE_SS
 	sep #$20
 	.LONGA OFF
-        jsr sh_leaf                  ; C=1: a crossed seg stops a bullet
-        bcs ?found
+        jsr sh_gap                   ; 2026-10-20: the leaves the step skipped, then
+        bcs ?found                   ;   this one (it sets USE_SS); C=1: a wall
 	rep #$20
 	.LONGA ON
 	sec
@@ -379,7 +377,7 @@ SH_REF   equ 10                      ; binary-search steps -> 8160/1024 = 8 unit
 ; happen a second apart now -- pj_aim traces for the flight target and pj_hit
 ; blasts when the rocket gets there (proj.asm).
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_boomat
         lda en_k2                    ; --- A_Explode at (en_bx, en_by): en_boom
         pha                          ;     minus en_thing/en_lfind ---
@@ -428,7 +426,7 @@ SH_REF   equ 10                      ; binary-search steps -> 8160/1024 = 8 unit
 ;   A_Explode -- the bolt hurts what it hits and nothing else. Same reduction as
 ;   the rest: it lands the tic it is fired, on the vissprite under the crosshair.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_plasma
         lda RANDOM
         and #7                       ; A <= 7 -> C stays 0 through the whole sum

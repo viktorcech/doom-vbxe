@@ -4,109 +4,145 @@
 ;--------------------------------------------------------------
         org COLMERGE_BASE
 
-;--------------------------------------------------------------
-; cm_reset -- called once per seg, before its column loop.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc cm_reset
-        stz cm_n
-        lda #$FF
-        sta cm_x                     ; no source column yet
-        rts
-.endp
-        .endseg
+; (cm_reset, cm_test and cm_defer -- the per-seg reset, the "would this column
+;  draw exactly what the last one drew" signature compare and the deferred
+;  column's bookkeeping -- live INLINE in process_seg's column loop since
+;  2026-09-15/26 (seg_draw.asm ?mh_prime, ?cm_have, ?cm_do). The dead copies
+;  that stood here went on 2026-10-05: 6502-idioms "code size is RAM", bank
+;  $01 was down to 627 free bytes.)
 
 ;--------------------------------------------------------------
-; cm_test -- C = 1 if the CURRENT column would draw exactly what the pending
-;   source column already drew. Preserves X/Y. Clobbers A.
+; CM_EMIT -- one copy link: A = the LAST row, Y = rows-1. Clobbers A/X/Y.
+;   The body of cm_flush's ?emit subroutine (a macro since 2026-10-05).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc cm_test
-        lda cm_x
-        bpl ?have                    ; nothing drawn yet / run broken: no test,
-        rep #$20                     ;   but the signature is (re)saved in full
-        .LONGA ON                    ;   -- cm_save used to do that
-        lda rs_ycacc+1
-        bra ?c1
-?have
-	rep #$20
-	.LONGA ON
-        lda rs_top		;rs_top and rs_bot are adjacent in memory
-        cmp cm_top		;cm_top and cm_bot are adjacent in memory
-        bne ?c0
-        lda rs_ycacc+1
-        cmp cm_sig
-        bne ?c1
-        lda rs_yfacc+1
-        cmp cm_sig+2
-        bne ?c2
-        lda rs_ybcacc+1
-        cmp cm_sig+4
-        bne ?c3
-        lda rs_ybfacc+1
-        cmp cm_sig+6
-        bne ?c4
-        lda rs_rpt                   ; the painter's per-column scale. It was
-        cmp cm_sig+8                 ;   rs_dscr until 2026-08-27, and rs_dscr
-        bne ?c5                      ;   went with tw_setup; rpt is the stricter
-        .LONGA OFF
-        sep #$20                     ; ---- 8-bit again
-        lda rs_uacc+1
-        cmp cm_sig+10                ; equal -> C=1 (cmp), the "defer" answer
-        bne ?c6
-        rts
-        ; --- MISMATCH at field k (2026-09-14): every field BEFORE it compared ...
+    .if TEX_RUNS
+.macro CM_EMIT
+        phy
+        pha
+        lda tw_chn                   ; X = the OPEN buffer's restore list, read here:
+        sec                          ;   ?link's launch above flips the buffer
+        sbc #>[MEMW+MEMW_CHA_OFF]
+        lsr
+        lsr
+        tax
+        asl                          ; entry = list*CM_RMAX + count (count < CM_RMAX)
+        asl
+        ora cm_rc,x
+        tay
+        inc cm_rc,x
+    .if CM_RMAX != 4
+        ert 'cm_flush indexes its restore lists as list*4 + count'
+    .endif
+        rep #$20
         .LONGA ON
-?c0     lda rs_ycacc+1
-?c1     sta cm_sig
-        lda rs_yfacc+1
-?c2     sta cm_sig+2
-        lda rs_ybcacc+1
-?c3     sta cm_sig+4
-        lda rs_ybfacc+1
-?c4     sta cm_sig+6
-        lda rs_rpt
-?c5     sta cm_sig+8
+        lda zp_pt                    ; zp_pt -> the slot's DST field: back to its base
+    .if PT_ZPOFF                     ;   (FX127: it is the base already)
+        sec
+        sbc #PT_ZPOFF
+        sta zp_pt
+    .endif
         .LONGA OFF
         sep #$20
-        lda rs_uacc+1
-?c6     sta cm_sig+10
+        sta cm_rlo,y                 ; ... and the base is the restore entry
+        xba
+        sta cm_rhi,y
+        rep #$20                     ; ptc_open's hook: `jsl cm_rest` over its bra
+        .LONGA ON
+  .if STRIP                    ; (2026-10-15: ps_rest, which puts the strips'
+        lda #$22|[[[B1CODE_BASE+ps_rest]&$FF]<<8]   ;   slots back and then calls
+        sta.l B1CODE_BASE+ptc_rsh                   ;   cm_rest itself)
+        lda #[[[B1CODE_BASE+ps_rest]>>8]&$FFFF]
+  .else
+        lda #$22|[[[B1CODE_BASE+cm_rest]&$FF]<<8]
+        sta.l B1CODE_BASE+ptc_rsh
+        lda #[[[B1CODE_BASE+cm_rest]>>8]&$FFFF]
+  .endif
+        sta.l B1CODE_BASE+ptc_rsh+2
+        .LONGA OFF
+        sep #$20
+        plx                          ; row -> framebuffer offset. A:B = row*160 + x:
+        lda row_hi,x                 ;   the carry goes into B by the xba pair
+        xba                          ;   (<= $7CFF: no carry out)
+        lda row_lo,x
         clc
-        rts
-.endp
-        .endseg
-
-;--------------------------------------------------------------
-; cm_defer -- identical column: skip the drawing, replay the occlusion state.
-;   Preserves X/Y. Clobbers A.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc cm_defer
-        inc cm_n
-        lda cm_solid
-        beq ?open                    ; portal still open -> its new window
-        sta solid_arr,x              ; closed: same early-out bookkeeping as the
-        dec cols_open                ;   drawing paths do
-        bne ?scl
-        sta frame_done
-?scl    jmp sscl_col                 ; the wall's scale at THIS column; the window
-                                     ;   is the run source's, already in ytopc/ybotc
-                                     ;   (2026-09-30, .claude/skills/6502-idioms/
-                                     ;   SKILL.md "jsr X / rts -> jmp X": same bank)
-?open   lda cm_nt
-        sta ytopc_arr,x
-        lda cm_nb
-        sta ybotc_arr,x
-        rts
-.endp
-        .endseg
+        adc cm_x
+        xba
+        adc #0
+        xba
+        rep #$20
+        .LONGA ON
+        sta [zp_pt]                  ; [0-1] SRC lo/mid: the source column
+        inc @                        ; the destination starts one column right
+        ldy #BCB_DST_ADDR
+        sta [zp_pt],y                ; [6-7]
+    .ifdef FX127                     ; the slot may have held a wall or a fill:
+        lda #[$2000-SCREEN_WIDTH]>>8 ;   [4-5] SRC_STEPY hi, SRC_STEPX = 0 (a wall's
+        ldy #BCB_SRC_STEPY+1         ;   step lo sat there)
+        sta [zp_pt],y
+        lda zback_hi                 ;   [2-3] SRC bank = the back buffer, SRC_STEPY
+        and #$00FF                   ;   lo: -160, the SOURCE walks UP a column as
+        ora #[[$2000-SCREEN_WIDTH]&$FF]<<8   ;   the slot's DST does
+        ldy #BCB_SRC_ADDR+2
+        sta [zp_pt],y
+        .LONGA OFF
+        sep #$20
+        lda cm_n                     ;   [12] WIDTH-1 = deferred columns - 1 ([13]
+        dec @                        ;   is the template's 0)
+        ldy #BCB_WIDTH
+        sta [zp_pt],y
+        pla                          ;   [14] HEIGHT-1 = the strip's rows-1
+        ldy #BCB_HEIGHT
+        sta [zp_pt],y
+        rep #$21
+        .LONGA ON
+        lda #$00FF                   ;   [15-16] AND = $FF, XOR = 0 (a fill's colour)
+        iny
+        sta [zp_pt],y
+        lda #FX_PAT|[FX_CTL_F<<8]    ;   [19-20] pattern + CTRL: a chained copy
+        ldy #BCB_PATTERN
+        sta [zp_pt],y
+        lda #$01|[[BCB_SLOT-BCB_SIZE-3]<<8]   ; [21-24] a relative jump (+3 from its
+        ldy #BCB_SIZE                ;   4th byte) to the next slot OVER the raycasting
+        sta [zp_pt],y                ;   container (its header was there: cm_rest
+        lda #0                       ;   puts it back) -- a raycast cannot walk a
+                                     ;   screen column
+        ldy #BCB_SIZE+2
+        sta [zp_pt],y
+    .else
+        lda #$2000-SCREEN_WIDTH      ; [3-4] SRC_STEPY = -160: the SOURCE walks UP a
+        ldy #BCB_SRC_STEPY           ;   column as the slot's DST does (2026-09-28)
+        sta [zp_pt],y
+        .LONGA OFF
+        sep #$20
+        lda zback_hi                 ; [2] SRC bank = the back buffer
+        dey
+        sta [zp_pt],y
+        lda cm_n                     ; [12] WIDTH-1 = deferred columns - 1 ([13] is
+        dec @                        ;   the template's 0)
+        ldy #BCB_WIDTH
+        sta [zp_pt],y
+        lda #$FF                     ; [15] AND = $FF: a straight copy
+        xba
+        pla                          ; [14] HEIGHT-1 = the strip's rows-1
+        rep #$21
+        .LONGA ON
+        ldy #BCB_HEIGHT
+        sta [zp_pt],y
+    .endif
+        lda zp_pt                    ; -> the next slot's DST field (C = 0)
+        adc #BCB_SLOT+PT_ZPOFF
+        sta zp_pt
+        .LONGA OFF
+        sep #$20
+.endm
+    .endif
 
 ;--------------------------------------------------------------
 ; cm_flush -- replicate the source column across the deferred ones (one blit),
 ;   then break the run. Called before drawing a different column, before any
 ;   skipped column, and at the end of the seg. Preserves X/Y. Clobbers A.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cm_flush
         lda cm_n
         beq ?none
@@ -159,12 +195,20 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         lda cm_bot
         sbc cm_top
         sta MEMW+MEMW_TW_OFF+BCB_HEIGHT
+    .ifdef FX127
+        lda #<VRAM_BCB_TWALL         ; (the templates share a page under FX127)
+        sta VBXE_BL_ADR0
+    .else
         stz VBXE_BL_ADR0             ; <VRAM_BCB_TWALL = 0 and its bank byte too
+    .if [VRAM_BCB_TWALL & $FF] != 0
+        ert 'VRAM_BCB_TWALL moved off a page: put the lda #< back'
+    .endif
+    .endif
         lda #>VRAM_BCB_TWALL
         sta VBXE_BL_ADR1
         stz VBXE_BL_ADR2
-    .if [VRAM_BCB_TWALL & $FF] != 0 || [VRAM_BCB_TWALL >> 16] != 0
-        ert 'VRAM_BCB_TWALL moved off a page in bank 0: put the lda #< / #>>16 back'
+    .if [VRAM_BCB_TWALL >> 16] != 0
+        ert 'VRAM_BCB_TWALL left bank 0: put the lda #>>16 back'
     .endif
         lda #1
         sta VBXE_BL_START            ; async -- AND THE BCB IS *NOT* LATCHED HERE
@@ -186,6 +230,9 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         ; copy needs IS the template: SRC_STEPX 0 (the source column fans out),
         ; DST_STEPY 160, DST_STEPX 1, XOR 0, ZOOM 0, CTRL COPY|NEXT, and the DST
         ; bank byte the frame's stamp chain wrote. Y is kept (cm_flush's contract).
+        ; FX127: the slot may have held a wall (its step, CTRL) or a constant fill
+        ; (XOR = the colour), and every slot carries a raycasting container, so
+        ; the copy writes those too and jumps over the container (CM_EMIT).
         ; 2026-09-28: ONLY THE ROWS THE COLUMN PAINTED. A closed column painted
         ; its whole window; an OPEN portal only top..nt-1 and nb+1..bot -- the
         ; window between is a later seg's (or bg_fill's) and was copied for
@@ -205,7 +252,7 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         cmp cm_nb                    ;   launch what is open first (ptc_fire
         beq ?up                      ;   keeps Y), both links go in one chain
         lda zp_pt
-        cmp #<[BCB_SIZE*PT_LINKS+BCB_DST_ADDR]
+        cmp #<[BCB_SLOT*PT_LINKS+PT_ZPOFF]
         bne ?up
         jsr ptc_fire
 ?up     lda cm_nt                    ; (the links run BOTTOM-UP, paint.asm: a
@@ -235,80 +282,9 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         ldx cm_savex
         bra ?none
         ; ---- one copy link: A = the LAST row, Y = rows-1. Clobbers A/X/Y.
-?emit   phy
-        pha
-        lda tw_chn                   ; X = the OPEN buffer's restore list, read here:
-        sec                          ;   ?link's launch above flips the buffer
-        sbc #>[MEMW+MEMW_CHA_OFF]
-        lsr
-        lsr
-        tax
-        asl                          ; entry = list*CM_RMAX + count (count < CM_RMAX)
-        asl
-        ora cm_rc,x
-        tay
-        inc cm_rc,x
-    .if CM_RMAX != 4
-        ert 'cm_flush indexes its restore lists as list*4 + count'
-    .endif
-        rep #$20
-        .LONGA ON
-        lda zp_pt                    ; zp_pt -> the slot's DST field: back to its base
-        sec
-        sbc #BCB_DST_ADDR
-        sta zp_pt
-        .LONGA OFF
-        sep #$20
-        sta cm_rlo,y                 ; ... and the base is the restore entry
-        xba
-        sta cm_rhi,y
-        rep #$20                     ; ptc_open's hook: `jsl cm_rest` over its bra
-        .LONGA ON
-        lda #$22|[[[B1CODE_BASE+cm_rest]&$FF]<<8]
-        sta.l B1CODE_BASE+ptc_rsh
-        lda #[[[B1CODE_BASE+cm_rest]>>8]&$FFFF]
-        sta.l B1CODE_BASE+ptc_rsh+2
-        .LONGA OFF
-        sep #$20
-        plx                          ; row -> framebuffer offset. A:B = row*160 + x:
-        lda row_hi,x                 ;   the carry goes into B by the xba pair
-        xba                          ;   (<= $7CFF: no carry out)
-        lda row_lo,x
-        clc
-        adc cm_x
-        xba
-        adc #0
-        xba
-        rep #$20
-        .LONGA ON
-        sta [zp_pt]                  ; [0-1] SRC lo/mid: the source column
-        inc @                        ; the destination starts one column right
-        ldy #BCB_DST_ADDR
-        sta [zp_pt],y                ; [6-7]
-        lda #$2000-SCREEN_WIDTH      ; [3-4] SRC_STEPY = -160: the SOURCE walks UP a
-        ldy #BCB_SRC_STEPY           ;   column as the slot's DST does (2026-09-28)
-        sta [zp_pt],y
-        .LONGA OFF
-        sep #$20
-        lda zback_hi                 ; [2] SRC bank = the back buffer
-        dey
-        sta [zp_pt],y
-        lda cm_n                     ; [12] WIDTH-1 = deferred columns - 1 ([13] is
-        dec @                        ;   the template's 0)
-        ldy #BCB_WIDTH
-        sta [zp_pt],y
-        lda #$FF                     ; [15] AND = $FF: a straight copy
-        xba
-        pla                          ; [14] HEIGHT-1 = the strip's rows-1
-        rep #$21
-        .LONGA ON
-        ldy #BCB_HEIGHT
-        sta [zp_pt],y
-        lda zp_pt                    ; -> the next slot's DST field (C = 0)
-        adc #BCB_SIZE+BCB_DST_ADDR
-        sta zp_pt
-        .LONGA OFF
-        sep #$20
+        ;   (2026-10-05: writing it out at both sites put ?link's branches out
+        ;    of reach; the subroutine stays)
+?emit   CM_EMIT
         rts
     .endif
 .endp
@@ -319,7 +295,8 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
 ;   `jsl cm_rest` over ptc_rsh's `rts`): the buffer being reopened has run its
 ;   chain, so its copy slots get the painter template back -- SRC = the $FF
 ;   byte, SRC_STEPY 0, WIDTH 0 (AND, HEIGHT and DST lo/mid every span writes
-;   itself). zp_pt is left as ptc_open set it. Keeps X, Y and P; clobbers A.
+;   itself); FX127: SRC_STEPY 0, WIDTH 0 and the raycasting container's header.
+;   zp_pt is left as ptc_open set it. Keeps X, Y and P; clobbers A.
 ;--------------------------------------------------------------
         .segment B1                  ; 2026-09-22 (vbxe-blitter)
 .proc cm_rest
@@ -345,6 +322,29 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         phy
         rep #$20
         .LONGA ON
+  .ifdef FX127                 ; (a wall link writes SRC itself, a fill is constant)
+        lda #$0000                   ; [3-4] SRC_STEPY 0 = the raycast's row step,
+        ldy #BCB_SRC_STEPY           ;   [12-13] WIDTH-1 = 0: one column
+        sta [zp_pt],y
+        ldy #BCB_WIDTH
+        sta [zp_pt],y
+        lda #FX_RC_HDR               ; [21-22] the raycasting container's header
+        ldy #BCB_SIZE                ;   back over the copy's jump ([22] = X0 lo:
+        sta [zp_pt],y                ;   a wall writes it)
+        .LONGA OFF
+        sep #$20
+  .else
+  .if STRIP                    ; (2026-10-15) the template is the $FF block's
+        lda #PS_FFT&$FFFF            ;   top, read up the column (src stepY -1)
+        sta [zp_pt]
+        lda #$1FFF
+        ldy #BCB_SRC_STEPY
+        sta [zp_pt],y
+        .LONGA OFF
+        sep #$20
+        ert [PS_FFT>>16]<>0
+        lda #0                       ; [2] the block's bank, [12] WIDTH-1 = 0
+  .else
         lda #VRAM_BCB_FF&$FFFF       ; [0-1] SRC = the painter links' $FF byte
         sta [zp_pt]
         lda #$0000                   ; [3-4] SRC_STEPY 0 (2026-09-28: both bytes,
@@ -354,15 +354,17 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         sep #$20
                                       ; A = 0 = the $FF byte's bank [2] ...
         ert [VRAM_BCB_FF>>16]<>0
+  .endif
         dey
         sta [zp_pt],y
         ldy #BCB_WIDTH               ; ... = [12] WIDTH-1 = 0: one column
         sta [zp_pt],y
+  .endif
         ply
         iny
         dec cm_rc,x
         bne ?ent
-        lda #BCB_SIZE+BCB_DST_ADDR   ; zp_pt back to what ptc_open set: slot 1's DST
+        lda #BCB_SLOT+PT_ZPOFF       ; zp_pt back to what ptc_open set: slot 1
         sta zp_pt
         lda tw_chn
         sta zp_pt+1
@@ -420,10 +422,30 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
 ; -- nothing open, or one wide gap where the walk ran out of segs -- cost one
 ; blit or none at all.
 ;==============================================================
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bg_fill
         ldx vw_x0                    ; only the view window: outside it every
-?scan   lda solid_arr,x              ; closed columns are fully painted
+                                     ;   closed column is fully painted
+                                      ; 2026-10-05 (65816-style "a byte sweep read as
+?pair   rep #$20                     ;   words", as check_bbox ?sc / render_world): the
+        .LONGA ON                    ;   closed columns -- nearly all of them -- go TWO
+?scan2  lda solid_arr,x              ;   a read. x0 and xend are even (viewsize.asm,
+        cmp #$0101                   ;   render_world), so a pair never straddles the
+        bne ?some                    ;   end and [0,159] holds only 0/1. An open column
+        inx                          ;   drops into the byte loop below, which emits
+        inx                          ;   its run and comes back here on an even X.
+        cpx vw_xend                  ;   10 cycles a closed column, was 15.
+        bcc ?scan2
+        sep #$20
+        .LONGA OFF
+        rts
+        .LONGA ON                    ; (?some is reached 16-bit, from ?scan2's bne:
+?some   bit #$00FF                   ;   an 8-bit `bit #` here left its third byte
+        .LONGA OFF                   ;   to run as `jsr` -- 2026-10-19). Z = the
+        sep #$20                     ;   even column is the open one
+        beq ?scan
+        inx                          ; else the odd one is
+?scan   lda solid_arr,x
         bne ?nx
         lda ytopc_arr,x
         sta bg_top
@@ -449,12 +471,16 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
         bra ?ext
 ?emit   jsr bg_blit
         cpx vw_xend
-        bcc ?scan
+        bcc ?back
         rts
 ?nx     inx
         cpx vw_xend
-        bcc ?scan
+        bcc ?back
         rts
+?back   txa                          ; back to the pair scan on an even column;
+        lsr @                        ;   an odd one takes one byte step first
+        bcc ?pair
+        bra ?scan
 .endp
         .endseg
 
@@ -463,7 +489,7 @@ cm_sig     dta 0,0,0,0,0,0,0,0,0,0,0 ; 11 compared bytes (see the header)
 ;   rows bg_top..bg_bot. Uses the vline fill BCB (AND 0 / XOR colour) with its
 ;   width widened for the run, and hands it back 1 byte wide. Preserves X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc bg_blit
         stx cm_savex
     .if TEX_RUNS
@@ -541,8 +567,7 @@ bg_w       dta 0
 ;   OUT OF THE FAST BLOCK (2026-08-09). Everything else in this file runs per
 ;--------------------------------------------------------------
 cbo_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc clear_both
         lda #$01                     ; clear FRAME_B (back buffer)
         sta zback_hi
@@ -557,7 +582,6 @@ cbo_resume = *
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org cbo_resume
 
 ;==============================================================
@@ -570,7 +594,7 @@ cbo_resume = *
 ; Quake, Build and every fast software mapper solve this the same way: compute
 ; the exact value only at every Nth column and interpolate linearly in between.
 ; Inside one N-column block the texture is affine instead of perspective, and
-; with N = 8 on a 160-column screen the error stays well under a texel except on
+; with N = 8 on a 160-column screen the error stays well under a texture pixel except on
 ; extremely oblique walls -- the same trade Doom8088 makes with its "approx"
 ; math. Cost per column drops from ~1000 cycles to ~2*1000/N + ~40, i.e. ~4x.
 ;
@@ -578,55 +602,23 @@ cbo_resume = *
 ; per-column step by a shift, so no error accumulates across blocks: every
 ; anchor re-syncs to the exact perspective value.
 ;==============================================================
-CU_SUB    equ 8                      ; columns per block (power of two)
-CU_SHIFT  equ 3                      ; log2(CU_SUB)
+CU_SUB    equ 4                      ; columns per block (power of two). 4 since
+CU_SHIFT  equ 2                      ;   2026-10-20 (was 8): the line between two
+                                     ;   anchors is affine, the true u hyperbolic,
+                                     ;   and on a near wall seen from the side the
+                                     ;   8-column block put texture columns a
+                                     ;   stored column off mid-block (E1M7's door
+                                     ;   from the side). log2(CU_SUB) below.
 
-;--------------------------------------------------------------
-; cu_seg_init -- call once per seg, before its column loop.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc cu_seg_init
-        stz cu_cnt                   ; 0 -> the first column is an anchor
-        lda #$FF                     ; ... and no look-ahead u carries over: the
-        sta cu_cx                    ;   t1/t2 tracks are this seg's now
-        rts
-.endp
-        .endseg
-
-;--------------------------------------------------------------
-; calc_u_sub -- drop-in replacement for `jsr calc_u` in the column loop.
-;   Preserves X (the column index). Clobbers A/Y + the math scratch.
-;   Per-column paths only; the block-start body is cu_anchor below.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc calc_u_sub
-        lda tws_exact                ; steep block (tw_setup_sub's verdict): the
-        bne ?exact                   ;   affine step tears whole texels there, so
-        dec cu_cnt                   ;   u is exact per column while it holds
-        bmi ?far
-        rep #$21                     ; interpolate: rs_uacc += cu_step, 24-bit --
-        .LONGA ON                    ;   the low word in ONE add, the carry rides
-        lda rs_uacc                  ;   into the top byte (drac030, 2026-09-14)
-        adc cu_step
-        sta rs_uacc
-        .LONGA OFF
-        sep #$20                     ; (sep leaves C alone)
-        lda rs_uacc+2
-        adc cu_sgn
-        sta rs_uacc+2
-        rts
-?far    bra cu_anchor
-?exact  jsr calc_u                   ; exact u at THIS column (calc_u keeps X)
-        stz cu_cnt                   ; leaving steep mode re-anchors immediately
-        rts
-.endp
-        .endseg
+; (cu_seg_init and calc_u_sub -- the per-seg reset and the per-column half of
+;  the subdivision: steep -> exact, else rs_uacc += cu_step, an anchor every
+;  CU_SUB columns -- live INLINE in process_seg's column loop since 2026-09-15
+;  (seg_draw.asm ?mh_prime, mskr/?cu_done). Dead copies removed 2026-10-05.)
 
 cu_cnt   dta 0                       ; columns left in this block
 cu_step  dta 0,0                     ; per-column u step (Q8, 16-bit)
 cu_sgn   dta 0                       ; its sign extension for the 24-bit add
 cu_u0    dta 0,0,0                   ; exact u at the block's first column
-                                      ; DRAC_PLAN 5: 32-bit cells, word arithmetic
 cu_save  dta 0,0,0,0,0,0,0,0         ; rs_t1/rs_t2 (32-bit) across the look-ahead
 cu_sx    dta 0
 cu_ah    dta 0,0,0                   ; exact u at the column the look-ahead hit
@@ -638,13 +630,19 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
 ;   linear step in between. Entered by jmp, returns straight to the column loop.
 ;   Fast block on purpose: both calc_u calls and the track walk are hot.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 ;--------------------------------------------------------------
 ; CALC_DELTA -- (16-bit A) m_prod(32) = A << las_sh (0..CU_SHIFT). A macro
 ;   since 2026-09-26: cu_anchor's two calls (342 a frame) paid a jsr/rts each.
 ;--------------------------------------------------------------
 .macro CALC_DELTA
 	.LONGA ON
+  .ifdef ANTONIA2                    ; 2026-10-15 (6502-idioms: compute in A): A * las_n
+	sta.l ANT_MUL                ;   (= 1 << las_sh) on the card instead of the
+	lda las_n                    ;   shift ladder; the product STAYS there -- the
+	and #$00FF                   ;   adds read it with PRADC / PRSBC (las_sh is
+	sta.l ANT_MUL+2              ;   las_n's neighbour: masked)
+  .else
 	stz m_prod+2
 	ldy las_sh
 	beq ?d_ok
@@ -653,6 +651,74 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
 	dey
 	bne ?d_sh
 ?d_ok	sta m_prod
+  .endif
+.endm
+;--------------------------------------------------------------
+; TWLAS_ROOM -- look-ahead room check (F6): from column X (preserved), clamp
+;   the block to the largest power of two <= min(CU_SUB, rs_sxR - X). las_n =
+;   1, 2, 4 or 8 columns, las_sh = its shift. rs_sxR >= X always (X <= xb <=
+;   sxR). A macro since 2026-10-05 (6502-cycles-layout: inline what is smaller
+;   than its 12-cycle call -- two callers, 106 calls a frame; was twlas_room).
+;   OUT: Y = las_n, A = las_sh (6502-idioms "use what a routine already
+;   produced": tws_anchor counts the block down from Y, no reload).
+;--------------------------------------------------------------
+.macro TWLAS_ROOM
+        lda rs_sxR+1
+        bne ?full                    ; sxR >= 256 -> room >= 97
+        txa
+        eor #$FF                     ; A = sxR - X (borrow impossible)
+        sec
+        adc rs_sxR
+        cmp #CU_SUB
+        bcs ?full
+        cmp #4
+        bcs ?n4
+        cmp #2
+        bcs ?n2
+        ldy #1                       ; room 0..1: anchor-only block (the step is
+        sty las_n                    ;   dead -- las_n-1 = 0 columns follow it)
+        lda #0
+        bra ?ssh                     ; always
+?n2     ldy #2
+        sty las_n
+        lda #1
+        bra ?ssh
+?n4     ldy #4
+        sty las_n
+        lda #2
+        bra ?ssh
+?full   ldy #CU_SUB
+        sty las_n
+        lda #CU_SHIFT
+?ssh    sta las_sh
+.endm
+; TWLAS_ROOM16 -- TWLAS_ROOM for a 16-bit caller (cu_anchor, 2026-10-16,
+;   drac030: few rep/sep pairs): sxR - X as one word (sxR >= 256 lands in
+;   ?full by itself), las_n and las_sh written as one word. OUT: Y = las_n.
+.macro TWLAS_ROOM16
+        .LONGA ON
+        txa                          ; X: 8-bit, so B comes out 0
+        eor #$FFFF                   ; A = sxR - X (borrow impossible)
+        sec
+        adc rs_sxR
+        cmp #CU_SUB
+        bcs ?full
+        cmp #4
+        bcs ?n4
+        cmp #2
+        bcs ?n2
+        ldy #1                       ; room 0..1: anchor-only block
+        lda #0*256+1
+        bra ?ssh                     ; always
+?n2     ldy #2
+        lda #1*256+2
+        bra ?ssh
+?n4     ldy #4
+        lda #2*256+4
+        bra ?ssh
+?full   ldy #CU_SUB
+        lda #CU_SHIFT*256+CU_SUB
+?ssh    sta las_n                    ; las_n, las_sh (bsp_main.asm: neighbours)
 .endm
 .proc cu_anchor
         stx cu_sx                    ; calc_u preserves X, but the t1/t2 shuffle
@@ -664,22 +730,16 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
 	sta cu_u0
 	lda cu_ah+1		;1/2
 	sta cu_u0+1
-	sep #$20
-	.LONGA OFF
         bra ?have0                   ; always (dey wrapped to $FF)
-?fresh  jsr calc_u                   ; exact u at THIS column
-	rep #$20
+?fresh  jsr calc_u                   ; exact u at THIS column (16-bit A back)
 	.LONGA ON
         lda rs_uacc                  ; keep it: the block starts here
         sta cu_u0
         lda rs_uacc+1
         sta cu_u0+1
-	sep #$20
-	.LONGA OFF
-?have0  jsr twlas_room               ; F6: never walk past the seg's right edge
+?have0  TWLAS_ROOM16                 ; F6: never walk past the seg's right edge
+                                     ;   (16-bit on both ways in, 2026-10-16)
         ; --- t1/t2 las_n columns ahead (they advance by constants per column) --
-                                      ; DRAC_PLAN 5: 32-bit cells, word arithmetic
-        rep #$20
         .LONGA ON
                                      ; 2026-09-22 (65816-style): both 32-bit tracks
                                      ;   ride the stack, not a RAM cell (the restore
@@ -692,25 +752,22 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         CALC_DELTA
         clc
         lda rs_t1
-        adc m_prod
+        PRADC 0                      ; (m_prod, or the card: math.asm, 2026-10-15)
         sta rs_t1
         lda rs_t1+2                  ; bytes 2-3 in one add: byte 2 is what the
-        adc m_prod+2                 ;   8-bit add made (m_prod+3 is ?calc_delta's
+        PRADC 2                      ;   8-bit add made (m_prod+3 is ?calc_delta's
         sta rs_t1+2                  ;   scratch, it only feeds the padding)
         lda rs_utL                   ; (CALC_DELTA starts with asl: no carry in)
         CALC_DELTA
         sec
         lda rs_t2
-        sbc m_prod
+        PRSBC 0
         sta rs_t2
         lda rs_t2+2
-        sbc m_prod+2
+        PRSBC 2
         sta rs_t2+2
-        sep #$20
-        .LONGA OFF
-        jsr calc_u                   ; exact u at column x + las_n
-	rep #$20
-	.LONGA ON
+        jsr calc_u                   ; exact u at column x + las_n (16-bit A in
+	.LONGA ON                    ;   and out: calc_u opens with rep #$21)
 	lda rs_uacc
 	sta cu_ah
 	lda rs_uacc+1
@@ -721,7 +778,6 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         clc
         adc las_n
         sta cu_cx
-                                      ; DRAC_PLAN 5: 32-bit cells, word arithmetic
         rep #$20                     ; put the real tracks back
         .LONGA ON
                                      ; (LIFO: rs_t2+2 was pushed last)
@@ -759,14 +815,12 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         lda #0                       ;   in (an arithmetic shift keeps its sign), so
         sbc #0                       ;   no store/reload: C = positive -> 0 - 0 - !C
         sta cu_sgn                   ;   = $00 / $FF, no branch
-	rep #$20		;size-optimization here, 2 bytes gain, 2 cycles loss
-	.LONGA ON
-        lda cu_u0                    ; the block starts at the exact value
-        sta rs_uacc
-        lda cu_u0+1
-        sta rs_uacc+1
-	sep #$20
-	.LONGA OFF
+        lda cu_u0                    ; the block starts at the exact value: the
+        sta rs_uacc                  ;   three bytes in 8 bits (2026-10-16,
+        lda cu_u0+1                  ;   drac030: few rep/sep pairs -- the
+        sta rs_uacc+1                ;   rep/sep round two words cost 2 cycles
+        lda cu_u0+2                  ;   more than this)
+        sta rs_uacc+2
         ldy las_n
         dey
         sty cu_cnt
@@ -776,7 +830,7 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
         .endseg
 
 ;==============================================================
-; tw_setup_sub -- the same subdivision, applied to the texel RATE
+; tw_setup_sub -- the same subdivision, applied to the texture pixel RATE
 ;--------------------------------------------------------------
 ; tw_setup's tpr = 4096*worldH / dscr is the second udiv24 every textured column
 ; pays (its memo only hits when dscr is EXACTLY equal, i.e. on walls square to
@@ -791,22 +845,10 @@ cu_cx    dta $FF                     ; ... and which column that was ($FF = none
 ; What is left here is the F3 steep verdict, which the perspective-u track still
 ; needs (calc_u_sub reads tws_exact), and the block counter that paces it.
 ;==============================================================
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc tw_seg_init
-        stz tws_cnt
-        stz tws_exact                ; steep mode never leaks across segs
-        rts
-.endp
-        .endseg
-
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc tw_setup_sub
-        dec tws_cnt                  ; the rate itself needs nothing per column
-        bmi ?far                     ;   now -- this only paces the steep re-test
-        rts
-?far    bra tws_anchor
-.endp
-        .endseg
+; (tw_seg_init and tw_setup_sub -- the per-seg reset and the per-column
+;  `dec tws_cnt / bmi -> tws_anchor` -- live INLINE in process_seg since
+;  2026-09-15 (seg_draw.asm ?mh_prime, ?cu_done). Dead copies removed
+;  2026-10-05.)
 
 tws_cnt   dta 0
 tws_exact dta 0                      ; 1 = steep block: per-column exact u
@@ -822,55 +864,21 @@ tws_exact dta 0                      ; 1 = steep block: per-column exact u
 twa_resume = *
         org TWANCHOR_BASE
 
-;--------------------------------------------------------------
-; twlas_room -- look-ahead room check (F6): from column X (preserved), clamp the
-;   block to the largest power of two <= min(CU_SUB, rs_sxR - X). las_n = 1, 2,
-;   4 or 8 columns, las_sh = its shift. rs_sxR >= X always (X <= xb <= sxR).
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc twlas_room
-        lda rs_sxR+1
-        bne ?full                    ; sxR >= 256 -> room >= 97
-        txa
-        eor #$FF                     ; A = sxR - X (borrow impossible)
-        sec
-        adc rs_sxR
-        cmp #CU_SUB
-        bcs ?full
-        cmp #4
-        bcs ?n4
-        cmp #2
-        bcs ?n2
-        lda #1                       ; room 0..1: anchor-only block (the step is
-        sta las_n                    ;   dead -- las_n-1 = 0 columns follow it)
-        lda #0
-        bra ?ssh                     ; always
-?n2     lda #2
-        sta las_n
-        lda #1
-        bra ?ssh
-?n4     lda #4
-        sta las_n
-        lda #2
-        bra ?ssh
-?full   lda #CU_SUB
-        sta las_n
-        lda #CU_SHIFT
-?ssh    sta las_sh
-        rts
-.endp
-        .endseg
+; (twlas_room is the TWLAS_ROOM macro above since 2026-10-05: inline at both
+;  callers, cu_anchor and tws_anchor.)
 
                                       ; 2026-09-21: in page 1 now (bsp_main.asm): fast writes
 ;--------------------------------------------------------------
 ; tws_anchor -- tw_setup_sub's block start. First the F3 steep test; a steep
 ;   column gets the exact rate (+ ladder) and keeps anchoring every column.
 ;   Otherwise the normal look-ahead anchor with F6 room + F1 memo + F2 Q16 step.
+;   2026-10-05 (6502-cycles-layout "rare case out of line"): nosteep, the
+;   common verdict, sits right behind the fast path -- the two early not-steep
+;   exits reach it with a short branch (the tws_nsj jmp trampoline went, -3)
+;   and the fast path falls into it (its `bra nosteep` went, -3). ?big (D >=
+;   65536, a wall over 256 rows) moved out of line behind the steep exit.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-tws_nsj jmp tws_anchor.nosteep       ; the far reach for tws_anchor's two
-                                     ;   not-steep exits (both mostly fall through:
-                                     ;   a short branch here is 2 then, 3 long)
+        .segment B1
 .proc tws_anchor
         stx tws_sx
         ; ---- F3 steep test: D = yfacc - ycacc (24-bit, the wall's screen ...
@@ -883,13 +891,15 @@ tws_nsj jmp tws_anchor.nosteep       ; the far reach for tws_anchor's two
         .LONGA OFF
         sep #$20
         lda rs_yfacc+2
-        sbc rs_ycacc+2
-        sta m_prod+2
-	bmi tws_nsj
+        sbc rs_ycacc+2               ; (2026-10-15, 6502-idioms: store only what is
+  .ifndef ANTONIA2                   ;   read -- on ANTONIA2 D's top byte is ?big's
+        sta m_prod+2                 ;   alone, so its sta moved there)
+  .endif
+	bmi nosteep
 	bne ?big                     ; D >= 65536 > 4096: the 24-bit test below
         lda m_prod+1
         cmp #$10                     ; D >= 4096 <=> mid byte >= $10 (hi = 0)
-        bcc tws_nsj
+        bcc nosteep
         ; ---- D in [4096, 65535]: the 16-bit fast path (2026-09-15). dS as ...
         rep #$20
         .LONGA ON
@@ -911,10 +921,28 @@ tws_nsj jmp tws_anchor.nosteep       ; the far reach for tws_anchor's two
         .LONGA OFF
         sep #$20
         bcs ?steep
-        bra nosteep
+nosteep                              ; (falls through: the common verdict)
+                                     ; F6: the block still ends where the u track's
+        stz tws_exact                ;   does, so the two stay in step -- but with
+        TWLAS_ROOM                   ;   nothing to interpolate that is all an
+        dey                          ;   anchor has left to do (inline, 2026-10-05:
+        sty tws_cnt                  ;   Y = las_n comes out of the macro)
+        ldx tws_sx
+        rts
+        .LONGA ON
+?steep16 sep #$20                    ; (the fast path's 16-bit exits land here)
+        .LONGA OFF
+?steep  lda #1
+        sta tws_exact
+        stz tws_cnt                  ; cnt 0 -> re-test steepness NEXT column too
+        ldx tws_sx
+        rts
 ?big
+  .ifdef ANTONIA2
+        sta m_prod+2                 ; (A = D's top byte: the bne's)
+  .endif
 	                             ; dS = yfS - ycS as SIGNED 17-bit: both are
-        stz m_res                    ;   s16, so the plain 16-bit difference can
+        stz m_res                   ;   s16, so the plain 16-bit difference can
         stz m_res+1                  ;   wrap -- extend both before subtracting
         lda rs_yfS+1
         bpl ?ya
@@ -962,7 +990,7 @@ tws_nsj jmp tws_anchor.nosteep       ; the far reach for tws_anchor's two
         ldy #0
         lda m_b                      ; steep <=> |dS|<<6 >= D
         cmp m_prod+2
-        bcc nosteep
+        jcc nosteep                  ; (Jcc: out of line, the reach is long)
         bne ?steep
 	rep #$20
 	.LONGA ON
@@ -970,25 +998,8 @@ tws_nsj jmp tws_anchor.nosteep       ; the far reach for tws_anchor's two
 	cmp m_prod
 	sep #$20
 	.LONGA OFF
-        bcc nosteep
-        .LONGA ON
-?steep16 sep #$20                    ; (the fast path's 16-bit exits land here)
-        .LONGA OFF
-?steep  lda #1
-        sta tws_exact
-        stz tws_cnt                  ; cnt 0 -> re-test steepness NEXT column too
-        ldx tws_sx
-        rts
-
-nosteep
-                                     ; F6: the block still ends where the u track's
-        stz tws_exact                ;   does, so the two stay in step -- but with
-        jsr twlas_room               ;   nothing to interpolate that is all an
-        ldy las_n                    ;   anchor has left to do
-        dey
-        sty tws_cnt
-        ldx tws_sx
-        rts
+        jcc nosteep
+        bra ?steep
 .endp
         .endseg
 

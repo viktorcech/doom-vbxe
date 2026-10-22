@@ -10,7 +10,7 @@
 ;        moving ($FF = the player)
 ;   OUT: A/Z nonzero = something solid is already there
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_solid
         lda #<TH_RAD                 ; every per-thing page is 256 B aligned, so
         sta zp_ptr                   ;   the low byte is 0 for all of them and
@@ -46,7 +46,10 @@
         ldx #8                       ;   answer is only yes/no, so the order is free),
         lda #>BLK_HEAD               ; the cell heads' page, set ONCE: an empty
         sta zp_ptr+1                 ;   cell leaves it, a full one puts it back
-?cell   stx sol_n                    ;   sol_cy/blk_oy are rows * 8 (blk_tgt)
+?cell
+  .ifndef ANTONIA2
+        stx sol_n                    ;   sol_cy/blk_oy are rows * 8 (blk_tgt)
+  .endif
         lda sol_cx
         clc
         adc blk_ox,x
@@ -60,7 +63,12 @@
         tay
         lda [zp_ptr],y               ; the first thing filed in that cell
         cmp #$FF
+  .ifdef ANTONIA2
+        beq ?ncx                     ; (2026-10-15, 6502-idioms: an empty cell keeps
+        stx sol_n                    ;   X -- only a full one parks it in sol_n)
+  .else
         beq ?ncell
+  .endif
 ?item   sta sol_i
         cmp sol_self                 ; p_map.c: "don't clip against self"
         beq ?nitem
@@ -96,7 +104,7 @@
         lda #>BLK_HEAD               ; the list is over: the heads' page back
         sta zp_ptr+1
 ?ncell  ldx sol_n
-        dex
+?ncx    dex
         jpl ?cell
 ?no     lda #0
         rts
@@ -160,7 +168,7 @@
 ;   every thing on the level. The rule rad_of applies is checked at BUILD time
 ;   by tools/pack_things.py _check_radius_rule.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_radfill
 	rep #$20
 	.LONGA ON
@@ -196,7 +204,7 @@
 ;   classification half of en_radfill (see there); it lives out here because
 ;   the THCOLL block is full to the byte. Clobbers A/X/Y and en_kind/en_k2.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc rad_of
         ldy #7                       ; record +7 = flags
         lda (sp_ptr),y
@@ -220,7 +228,7 @@
 .endp
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 blk_ox  dta $FF,0,1,$FF,0,1,$FF,0,1  ; en_solid's 3x3 neighbourhood (wrapped)
                                       ; 2026-09-23: rows * 8 (sol_cy is row * 8)
 blk_oy  dta $F8,$F8,$F8,0,0,0,8,8,8
@@ -235,7 +243,7 @@ blk_oy  dta $F8,$F8,$F8,0,0,0,8,8,8
 ; en_thing -- the exploding thing (en_k2) -> sp_ptr = its 8-byte record;
 ;   en_th2 is the same from an index already in A.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_thing
         lda en_k2
 en_th2
@@ -274,7 +282,7 @@ en_th2w rep #$20                     ;   RETURNS 16-bit -- for the callers that 
 ;   Parked in this block because collision.asm's own two are full; it is one
 ;   absolute jsr either way.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc coll_mon
         ldx ai_k                     ; info.c radius -> the power-of-two bucket
         lda mk_rad,x

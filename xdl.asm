@@ -52,7 +52,7 @@ XDL_BARB  equ xdl_tab_end - xdl_tab - XDL_VIEWB  ; 128 B: the bar tail, and the
 ;   end with, LR and reading FRAME_A rows 168-199. ?barlr writes it over list L's
 ;   copy of the SR tail.
 ;--------------------------------------------------------------
-        .segment D0                  ; DRAC_PLAN 3a: OUT of the 1 KB staging
+        .segment D0                  ; OUT of the 1 KB staging
 xdl_bar_lr                           ;   buffer -- 128 B of data, not code
         .rept 7                                  ; rows 168..195
         dta XDL_C1, XDL_C2, 2
@@ -79,19 +79,16 @@ xdl_bar_lr                           ;   buffer -- 128 B of data, not code
         ora #$04                     ; bit2 = window $8000-$BFFF -> slow (chip
         sta.l $FF0080                ;   bus, MEMAC-A ok); win1 stays as boot
                                      ;   set it: FAST ($4000-$7FFF, en_tick!)
-                                      ; DRAC_PLAN 3b: 16 KB window
         ldy #>[MEMW16+[[XDL_BANKA&3]<<12]]
         lda #BANK_EN | XDL_BANKA
         jsr xb_copy                  ; list A: every entry reads FRAME_A
         lda #1                       ; list B: the VIEW entries read FRAME_B.
         jsr ?pat                     ;   The bar entries keep bank 0 -- rows
-                                      ; DRAC_PLAN 3b: 16 KB window
         ldy #>[MEMW16+[[[XDL_BANKA+1]&3]<<12]]
         lda #BANK_EN | XDL_BANKA+1   ;   in FRAME_A only (memory_map.inc)
         jsr xb_copy
         lda #FRAME_C_BANK            ; list C: the VIEW entries read FRAME_C
         jsr ?pat                     ;   (2026-08-11, the triple buffer)
-                                      ; DRAC_PLAN 3b: 16 KB window
         ldy #>[MEMW16+[[XDL_BANKA&3]<<12]+$800]
         lda #BANK_EN | XDL_BANKA     ;   (VRAM_XDL_C -- never-streamed padding)
         jsr xb_copy
@@ -180,9 +177,8 @@ xdl_bar_lr                           ;   buffer -- 128 B of data, not code
 ;--------------------------------------------------------------
 xdlatt_resume = *
         org XDLATT_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc xdl_att                        ; A = the byte -> ALL THREE lists (list C
-                                      ; DRAC_PLAN 3b: 16 KB window
         ldx #BANK_EN | XDL_BANKA+1   ;   rides chunk 8 at +$800, 2026-08-11)
         stx VBXE_BANK_SEL
         sta MEMW16+[[[XDL_BANKA+1]&3]<<12]+8

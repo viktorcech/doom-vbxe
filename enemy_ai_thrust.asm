@@ -10,7 +10,7 @@
 ;   and a half, and it costs a table read where DOOM's angle costs a divide.
 ;   Clobbers A/X/Y, the AI's step scratch and m_a/m_b/m_prod.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_thrust
         sty ai_t
         sta m_a                      ; damage, 16 bit for umul16
@@ -78,7 +78,7 @@
 ;   other way round), Y = the offset into ai_sx. Writes the signed 16-bit step
 ;   P_TryMove takes. Clobbers A and m_a.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc thr_comp
         sta thr_s
         and #$03
@@ -117,7 +117,7 @@
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; ai_mcnt -- P_TryWalk's tail, evicted from the AI block (the ten bytes that
@@ -136,7 +136,7 @@ thrc_resume = *
 ;   whether the thing survived: p_inter.c kicks the dying too, and thr_tail is
 ;   what tells a step from a corpse's slide.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_thrust_bl
         rep #$20
         .LONGA ON
@@ -157,7 +157,7 @@ thrc_resume = *
 ; en_thrust_plr -- the PLAYER's caller wrapper (en_shoot): Y = the thing his
 ;   bullet just failed to kill, en_dmg = what it took off.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_thrust_plr
         rep #$20
         .LONGA ON
@@ -171,7 +171,7 @@ thrc_resume = *
         jmp en_thrust
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ; The octant (oct_of: 0 = east, counting counter-clockwise) -> how much of the
 ; slide goes on each axis: 0 = none, 1 = all of it, 2 = three quarters (the
 ; diagonals), bit7 = negative.
@@ -202,7 +202,7 @@ thrdat_resume = *
 ;   along it. Both en_thrust (a survivor's whole slide, at once) and en_slide
 ;   (a tic's worth of a corpse's) end here. Clobbers A/Y, m_a, the AI scratch.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc thr_step
         ldy #0
         lda thr_sx,x
@@ -215,7 +215,7 @@ thrdat_resume = *
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc thr_tail
         ldy ai_t
         lda #<TH_HPL
@@ -244,7 +244,7 @@ thrdat_resume = *
 ;   this spends an EIGHTH of what is left, which is three shifts instead of a
 ;   when a tic's worth no longer reaches a unit. Clobbers A/X/Y and the AI
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_slide
         ldy sl_th
         iny                          ; $FF = nothing sliding -> 0. NOT `bmi`: a

@@ -1,6 +1,11 @@
 ;--------------------------------------------------------------
 ; automap.asm -- DOOM's automap (am_map.c) on TAB. The drawing code is an overlay in
 ;   the MENU_RUN window; the per-level tables ride at the end of the SEG region.
+;
+; 16-BIT (drac030, 2026-10-16): "switch all registers to 16-bit at the beginning
+;   and go". A/X/Y run 16-bit (rep #$30); 8-bit only for hardware (POKEY, VBXE
+;   registers, a VRAM pixel byte). BRIDGE = a rep/sep at the edge to code not yet
+;   converted; it goes when that file is converted.
 ;--------------------------------------------------------------
 ; am_mark -- r_segs.c:398, `linedef->flags |= ML_MAPPED`: the seg about to be
 ;   drawn belongs to a line the player has now SEEN, so the automap may draw it.
@@ -17,103 +22,112 @@ AM_SEEN_N equ [MAP_AMFLG-MAP_AMSEEN]/2
     .if AM_SEEN_N > 2*128*8
         ert 'AMSEEN holds more linedefs than the save bitmap page (SGK_AMB)'
     .endif
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_amout                       ; AMSEEN -> SG_BUF (save)
+        rep #$30                     ; BRIDGE: the savegame overlay calls 8-bit
+        .LONGA ON
+        .LONGI ON
         jsr sg_amptr
         ldx #0
-?byte   lda #8
+?word   lda #16                      ; 16 bits = the two bitmap bytes at X
         sta sg_ambc
 ?bit    lda zp_ptr                   ; past the table? AMFLG follows it: a 0 bit
-        cmp #<MAP_AMFLG
-        lda zp_ptr+1
-        sbc #>MAP_AMFLG
+        cmp #MAP_AMFLG
         bcc ?in
         clc
         bcc ?put                     ; (always)
-                                      ; 2026-09-21 (drac030: [dp] without the index): same
-?in     lda [zp_ptr]                 ;   word test, Y = 1 at the end as before, -2 cycles
-        ldy #1                       ;   a bit (8-bit on purpose: the savegame path)
-        ora [zp_ptr],y
+?in     lda [zp_ptr]                 ; the slot's word
         cmp #1                       ; C = the slot is non-zero (SEEN)
-?put    rol SG_BUF,x
+?put    rol sg_ambits
         jsr sg_amnext
         dec sg_ambc
         bne ?bit
+        lda sg_ambits                ; the first bit is bit 15: xba puts it at
+        xba                          ;   bit 7 of the byte at X, the order the
+        sta SG_BUF,x                 ;   byte-wise rol made
         inx
-        bpl ?byte
+        inx
+        cpx #128
+        bcc ?word
+        sep #$30                     ; BRIDGE: back to the 8-bit overlay
+        .LONGA OFF
+        .LONGI OFF
         lda #MAP_EXT_BANK            ; the parked bank back, then home (a jsl'd
         sta zp_ptr+2                 ;   proc carries its own rtl: b1_check)
         rtl
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_amin                        ; SG_BUF -> AMSEEN (load, over the fresh zeros)
+        rep #$30                     ; BRIDGE: the savegame overlay calls 8-bit
+        .LONGA ON
+        .LONGI ON
         jsr sg_amptr
         ldx #0
-?byte   lda #8
+?word   lda SG_BUF,x                 ; the two bitmap bytes, the byte at X in
+        xba                          ;   the high half: its bit 7 is bit 15
+        sta sg_ambits
+        lda #16
         sta sg_ambc
-?bit    asl SG_BUF,x                 ; bit 7 first, the order sg_amout rol'd in
+?bit    asl sg_ambits                ; bit 15 first, the order sg_amout rol'd in
         bcc ?nx
         lda zp_ptr                   ; never past the table (that is AMFLG)
-        cmp #<MAP_AMFLG
-        lda zp_ptr+1
-        sbc #>MAP_AMFLG
+        cmp #MAP_AMFLG
         bcs ?nx
-        ldy #0                       ; the slot's OWN address, which is exactly
-        lda zp_ptr                   ;   what am_mark stores there
-        sta [zp_ptr],y
-        iny
-        lda zp_ptr+1
-        sta [zp_ptr],y
+        lda zp_ptr                   ; the slot's OWN address, which is exactly
+        sta [zp_ptr]                 ;   what am_mark stores there
 ?nx     jsr sg_amnext
         dec sg_ambc
         bne ?bit
         inx
-        bpl ?byte
+        inx
+        cpx #128
+        bcc ?word
+        sep #$30                     ; BRIDGE: back to the 8-bit overlay
+        .LONGA OFF
+        .LONGI OFF
         lda #MAP_EXT_BANK            ; the parked bank back, then home (a jsl'd
         sta zp_ptr+2                 ;   proc carries its own rtl: b1_check)
         rtl
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
+        .LONGA ON
+        .LONGI ON
 .proc sg_amptr                       ; zp_ptr = AMSEEN slot of bit sg_src*8, bank $03
-                                      ; 2026-09-21 (drac030 #41: shifts belong in A): the low
-        lda sg_src+1                 ;   byte stays in the accumulator through the loop and
-        sta zp_ptr+1                 ;   into the add -- asl @ is 2 cycles, asl zp 5, and the
-        lda sg_src                   ;   sta/lda round trip goes. STILL 8-BIT ON PURPOSE: the
-        ldx #4                       ;   savegame path never proves native mode (no rep here).
-?s      asl @                        ; *16: 8 bits a byte, 2 B a slot
-        rol zp_ptr+1
-        dex
-        bne ?s
+        lda sg_src
+        asl @                        ; *16: 8 bits a byte, 2 B a slot
+        asl @
+        asl @
+        asl @
         clc
-        adc #<MAP_AMSEEN
+        adc #MAP_AMSEEN
         sta zp_ptr
-        lda zp_ptr+1
-        adc #>MAP_AMSEEN
+        xba                          ; zp_ptr+1 again and the bank in zp_ptr+2:
+        and #$00FF                   ;   one word, zp_tsrc behind it untouched
+        ora #MAP_SEG_BANK*256
         sta zp_ptr+1
-        lda #MAP_SEG_BANK
-        sta zp_ptr+2
         rts
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sg_amnext                      ; zp_ptr += 2 (the next linedef's slot)
         lda zp_ptr
         clc
         adc #2
         sta zp_ptr
-        bcc ?r
-        inc zp_ptr+1
-?r      rts
+        rts
 .endp
+        .LONGA OFF
+        .LONGI OFF
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a
-sg_ambc dta 0                        ; bits left in the current bitmap byte
+        .segment D0
+sg_ambc dta a(0)                     ; bits left in the current bitmap word
+sg_ambits dta a(0)                   ; the bitmap word being shifted
         .endseg
         org am_resume
 am_amb = *                           ; the ambient PC: everything below orgs its
@@ -141,14 +155,12 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ;   into it -- or into render_world. The overlay's own rts still returns to
 ;   main: jml pushes nothing.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc am_gate
         jml B1CODE_BASE+b1_amgate    ; the WHOLE gate runs in bank $01 now
 .endp                                ;   (b1_amgate: test am_on, serve page 1 of
         .endseg
                                      ;   the overlay from AMOVL_EXT, jml into ...
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; am_kgate -- AM_Responder eats only the automap's own keys and G_Responder
@@ -160,13 +172,20 @@ am_amb = *                           ; the ambient PC: everything below orgs its
     .if [KEY_MINUS^KEY_EQUALS] <> 1 || [KEY_LT^KEY_GT] <> 1 || [KEY_MINUS&1] <> 0 || [KEY_LT&1] <> 0
         ert 'am_kgate: each zoom pair is one even code and the odd one after it'
     .endif
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc am_kgate
+        rep #$30                     ; BRIDGE: game_loop calls 8-bit
+        .LONGA ON
+        .LONGI ON
         lda am_on
+        and #$00FF                   ; (a byte: am_sh is behind it)
         bne ?am                      ; the map up: out of line
-?keys   jmp read_keys
-?am     lda SKSTAT
+?keys   sep #$30                     ; BRIDGE: read_keys is 8-bit
+        .LONGA OFF
+        .LONGI OFF
+        jmp read_keys
+?am     sep #$30                     ; 8-bit: POKEY, and both exits are 8-bit
+        lda SKSTAT
         and #4                       ; bit2 = 0 while a key is held
         bne ?keys
         lda KBCODE
@@ -178,48 +197,61 @@ am_amb = *                           ; the ambient PC: everything below orgs its
 ?map    jmp mn_key
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; am_wgate -- no player sprite over the map. DOOM's automap replaces the view,
 ;   gun and all; the status bar stays, which is why only draw_weapon is gated
 ;   and draw_hud_gate's other three calls run as usual.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc am_wgate
+        rep #$30                     ; BRIDGE: hud calls 8-bit
+        .LONGA ON
+        .LONGI ON
         lda am_on
+        and #$00FF                   ; (a byte: am_sh is behind it)
+        sep #$30                     ; BRIDGE: both exits are 8-bit (Z survives)
+        .LONGA OFF
+        .LONGI OFF
         bne ?skip
         jmp draw_weapon
 ?skip   rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; am_key -- TAB toggles the map (AM_STARTKEY / AM_ENDKEY, am_map.c:96-97).
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc am_key
+        rep #$30                     ; BRIDGE: mn_key jumps here 8-bit
+        .LONGA ON
+        .LONGI ON
+        and #$00FF                   ; the key code (B was not ours)
         cmp #KEY_TAB
         bne ?ret
         lda mn_arm
+        and #$00FF                   ; (a byte)
         beq ?ret
-        dec mn_arm                   ; acts once per press (mn_arm was 1)
-        lda am_on
-        eor #1                       ; toggle 0 <-> 1: the flag stopped carrying
-        sta am_on                    ;   a VRAM bank when the overlay moved to
-                                     ;   Rapidus bank $01 (am_gate jsl's ...
+        dec mn_arm                   ; acts once per press (mn_arm was 1: no
+                                     ;   borrow into the byte behind it)
+        lda am_on                    ; the word am_on|am_sh: bit 0 flips, am_sh
+        eor #1                       ;   is stored back as it was. Toggle 0 <-> 1:
+        sta am_on                    ;   the flag stopped carrying a VRAM bank when
+                                     ;   the overlay moved to Rapidus bank $01
+        and #$00FF                   ;   (am_gate jsl's ...
         beq ?v                       ; AM_Stop: the lists follow by themselves
         jsr am_open                  ; AM_Start (st_frame switches the lists)
 ?v      lda #3                       ; ...and re-arm the BORDER repaint, ONCE.
+        sep #$30                     ; (vw_dirty is a byte)
+        .LONGA OFF
+        .LONGI OFF
         sta vw_dirty                 ;   render_world only re-opens the columns
                                      ;   vw_x0..vw_xend (renderer.asm), so ...
-?ret    jmp fps_key                  ; the tail this displaced
+?ret    sep #$30                     ; BRIDGE: fps_key is 8-bit
+        jmp fps_key                  ; the tail this displaced
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; am_open -- AM_Start's share of the 320 automap (the rest is strip.asm's:
@@ -243,22 +275,27 @@ AM_CWIN   equ MEMW16+[AM_CLRV&$3FFF]
     .endif
         .segment B1
 .proc am_open
+        sep #$20                     ; 8-bit: st_tlev is a byte (st_tw behind
+        .LONGA OFF                   ;   it) and VBXE_BANK_SEL a register
         lda #$FF
         sta st_tlev
         lda #BANK_EN | [AM_CLRV>>12]
         sta VBXE_BANK_SEL
         rep #$20
         .LONGA ON
+        .LONGI ON
         ldx #3*BCB_SIZE-1            ; 32 words (the last is the pad)
 ?w      lda.l B1CODE_BASE+am_cimg,x  ; long,x both ways: bank $01 data, and no
         sta.l AM_CWIN,x              ;   dummy read of the window
         dex
         dex
         bpl ?w
+        sep #$20                     ; VBXE_BANK_SEL is a register
         .LONGA OFF
-        sep #$20
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
+        rep #$20
+        .LONGA ON
         rts
 .endp
 ;   AM_clearFB: S0 in one fill, S1 as two (AND 0, XOR = BACKGROUND)
@@ -285,35 +322,25 @@ am_arot_w1
 ?p      jsr ?x                       ; the partial sums ride the stack across
         ldx #zp_cos-zp_sin           ;   smul_14, which takes X and Y
         jsr am_m1                    ; x cos
-        .LONGA ON
         pha
-        .LONGA OFF
-        sep #$20
         jsr ?y
         ldx #0
         jsr am_m1                    ; y sin
-        .LONGA ON
         eor #$FFFF                   ; x' = x cos - y sin
         sec
         adc 1,s
         sta 1,s
-        .LONGA OFF
-        sep #$20
         jsr ?x
         ldx #0
         jsr am_m1                    ; x sin
-        .LONGA ON
         pha
-        .LONGA OFF
-        sep #$20
         jsr ?y
         ldx #zp_cos-zp_sin
         jsr am_m1                    ; y cos
-        .LONGA ON
         clc
         adc 1,s                      ; y' = x sin + y cos
         sta 1,s
-        lda am_ri                    ; (the byte above it: the and)
+        lda am_ri
         and #$00FF
         asl @
         asl @
@@ -322,13 +349,11 @@ am_arot_w1
         sta am_apt+2,x
         pla
         sta am_apt,x
-        .LONGA OFF
-        sep #$20
         dec am_ri
         bpl ?p
         rtl
-?x      lda am_ri                    ; A = point am_ri's x (smul_14 takes X/Y)
-        asl @
+?x      lda am_ri                    ; A = point am_ri's x (smul_14 takes X/Y;
+        asl @                        ;   am_m1 keeps the low byte of the word)
         tax
         lda.l B1CODE_BASE+am_arp,x
         rts
@@ -346,8 +371,6 @@ am_arot_w1
 ;   byte times the player's sin/cos (Q14), >> 14 (smul_14).
 ;--------------------------------------------------------------
 .proc am_m1
-        rep #$20
-        .LONGA ON
         and #$00FF                   ; sign-extended: (b ^ $80) - $80
         eor #$0080
         sec
@@ -355,10 +378,17 @@ am_arot_w1
         sta m_a
         lda zp_sin,x
         sta m_b
+        sep #$30                     ; BRIDGE: smul_14 (math.asm) is 8-bit ...
         .LONGA OFF
-        sep #$20
-        jmp smul_14                  ; (returns 16-bit, A = m_res)
+        .LONGI OFF
+        jsr smul_14
+        rep #$30                     ;   ... and returns with 16-bit A
+        .LONGA ON
+        .LONGI ON
+        rts
 .endp
+        .LONGA OFF
+        .LONGI OFF
         .endseg
 
         org am_amb
@@ -444,6 +474,9 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ;   index, this overlay has one way in.
 ;--------------------------------------------------------------
 .proc am_head
+        rep #$30                     ; BRIDGE: menu_run_w0 calls 8-bit
+        .LONGA ON
+        .LONGI ON
         ldx #0
 ?p      lda.l EXT_BASE+AMOVL_EXT+$100,x
         sta MENU_RUN+$100,x
@@ -454,7 +487,11 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         lda.l EXT_BASE+AMOVL_EXT+$400,x
         sta MENU_RUN+$400,x
         inx
+        inx
+        cpx #$100
         bne ?p
+        sep #$20                     ; 8-bit: VBXE registers, the byte flags
+        .LONGA OFF                   ;   and the byte-wide patches below
         lda #BANK_EN | BANK_OVERHEAD ; the window ONTO the BCB bank
         sta VBXE_BANK_SEL
 ?pend   lda XDLA_PEND                ; the last flip published: ZFRONT is the
@@ -463,7 +500,8 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         lda ZFRONT                   ;   up -- then S1 on list B. The one drawn
         beq ?pg                      ;   is never the one shown
         dex
-?pg     stx zback_hi                 ; swap_buffers publishes list A or B
+?pg     txa                          ; swap_buffers publishes list A or B
+        sta zback_hi                 ;   (a byte: a 16-bit stx would write two)
         lda am_psp,x                 ; am_plot for this surface: where S1's
         sta am_plot.sp+1             ;   second half starts (S0: never) and
         lda am_pc0,x                 ;   the halves' MEMAC chunk bases
@@ -472,6 +510,8 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         sta am_plot.c1+1
         lda am_pclr,x                ; AM_clearFB: the surface's clear chain
         pha
+        sep #$10                     ; BRIDGE: blitter_wait is 8-bit
+        .LONGI OFF
         jsr blitter_wait_t
         pla
         sta VBXE_BL_ADR0
@@ -479,8 +519,17 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         sta VBXE_BL_ADR1
         lda #1
         sta VBXE_BL_START
+        rep #$30
+        .LONGA ON
+        .LONGI ON
         jsr am_keys                  ; AM_Ticker: the zoom keys, under the clear
+        sep #$30                     ; BRIDGE: blitter_wait is 8-bit
+        .LONGA OFF
+        .LONGI OFF
         jsr blitter_wait_t           ; the CPU plots next
+        rep #$30
+        .LONGA ON
+        .LONGI ON
         jsr am_walls                 ; AM_drawWalls
         jmp am_arrow                 ; AM_drawPlayers, AM_drawCrosshair
 .endp
@@ -493,13 +542,19 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ;--------------------------------------------------------------
 .proc am_keys
         lda am_sh
+        and #$00FF                   ; (a byte: am_karm is behind it)
         cmp #AM_SHMIN
         bcc ?init
         cmp #AM_SHMAX+1
         bcc ?ok
-?init   lda #AM_SH0
+?init   lda am_sh                    ; the word am_sh|am_karm: am_karm is
+        and #$FF00                   ;   stored back as it was
+        ora #AM_SH0
         sta am_sh
-?ok     ldx #0                       ; X = the zoom key down this frame
+?ok     sep #$30                     ; 8-bit: POKEY, and the byte cells am_karm
+        .LONGA OFF                   ;   and am_sh
+        .LONGI OFF
+        ldx #0                       ; X = the zoom key down this frame
         lda SKSTAT
         and #4                       ; bit2 = 0 while a key is held
         bne ?edge
@@ -525,12 +580,15 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         cmp #AM_SHMIN
         beq ?ret
         dec am_sh
-        rts
+        bra ?ret
 ?out    lda am_sh
         cmp #AM_SHMAX
         beq ?ret
         inc am_sh
-?ret    rts
+?ret    rep #$30
+        .LONGA ON
+        .LONGI ON
+        rts
 .endp
 
 ;--------------------------------------------------------------
@@ -540,47 +598,36 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ;       no back sector          -> WALLCOLORS      (a solid wall)
 ;--------------------------------------------------------------
 .proc am_walls
-        rep #$20                     ; ---- 16-bit A: the three counters and the
-        .LONGA ON                    ;   bound are words
         stz am_i2                    ; the loop variable is the AMSEG STRIDE (i*2)
         stz am_i8                    ;   rather than i, and x8 (the seg record)
         stz am_iskip                 ;   and >>3 (the AMSKIP byte) walk with it
         lda MAP_HNSEG                ; bound = this level's seg count x2
         asl @
         sta am_nseg2
-        sep #$20
-        .LONGA OFF
         lda #1
         sta am_smask
-?loop   rep #$20                     ; one word compare, not a byte chain
-        .LONGA ON
-        lda am_i2
+?loop   lda am_i2
         cmp am_nseg2
-        sep #$20                     ; (C survives)
-        .LONGA OFF
         bcc ?go
 ?dn     rts                          ; every seg walked -- the exit is HERE and
                                      ;   not at the bottom, so the test that
                                      ;   reaches it stays a short branch
 ?go
-        rep #$10                     ; --- AMSKIP: the BACK side of a two-sided
+                                     ; --- AMSKIP: the BACK side of a two-sided
         ldx am_iskip                 ;     line is MARKED but never drawn (its
         lda.l AMSKIP_EXT,x           ;     front side's segs tile the same line)
-        sep #$10
-        and am_smask
-        beq ?vis
+        and am_smask                 ;   (a word with the high byte 0: the byte
+        beq ?vis                     ;   behind the AMSKIP one drops out)
 ?nx     jmp ?next                    ; ?next is out of branch range from up here,
                                      ;   so the early exits go through this
 ?vis    stz am_gry                   ; 0: the ladder decides the colour
-        rep #$10                     ; --- AMSEG[i] = &AMSEEN[its linedef] ---
+                                     ; --- AMSEG[i] = &AMSEEN[its linedef] ---
         ldx am_i2
         lda.l AMSEG_EXT,x
         sta am_slot
-        lda.l AMSEG_EXT+1,x
-        sta am_slot+1
         ldx am_slot                  ; --- ML_MAPPED? am_mark wrote a non-zero
         lda.l AM_BANK0,x             ;     address here the first time this line
-        ora.l AM_BANK0+1,x           ;     was rendered (r_segs.c:398)
+                                     ;     was rendered (r_segs.c:398)
         bne ?seen
         lda PW_FLAGS                 ; not lit by the walk -- but the COMPUTER MAP
         and #PWF_ALLMAP              ;   reveals it anyway, in GRAYS+3 (am_map.c:
@@ -589,28 +636,24 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         sta am_gry                   ;   that arm does too
         bra ?seen
 ?none
-        sep #$10                     ; never seen and no map -> nothing
+                                     ; never seen and no map -> nothing
         jmp ?next
 ?seen   lda.l AMFLG_EXT_D,x          ; ... and its flags, same X, fixed delta
-        sep #$10
-        sta am_flg
-        and #AMF_DONTDRAW            ; LINE_NEVERSEE: never on the automap
+        sta am_flg                   ;   (the word: every test below is an and
+        and #AMF_DONTDRAW            ;   with a byte mask) LINE_NEVERSEE: never on the automap
         bne ?nx
-        rep #$10                     ; --- the seg record ---
+                                     ; --- the seg record ---
         ldx am_i8
         lda.l SEGS_EXT+SEG_BACK,x
+        and #$00FF                   ; (bytes in the record)
         sta am_back
         lda.l SEGS_EXT+SEG_FRONT,x
+        and #$00FF
         sta am_front
         lda.l SEGS_EXT+SEG_V1,x
         sta am_v1
-        lda.l SEGS_EXT+SEG_V1+1,x
-        sta am_v1+1
         lda.l SEGS_EXT+SEG_V2,x
         sta am_v2
-        lda.l SEGS_EXT+SEG_V2+1,x
-        sta am_v2+1
-        sep #$10
         ; --- the colour ladder ---
         lda am_gry
         bne ?col
@@ -641,8 +684,7 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ?cd     lda #AM_CDWALL               ;   in DOOM (only the IDDT cheat shows it)
 ?col    sta am_col
         jsr am_draw
-?next   rep #$21                     ; ---- 16-bit A, C=0: i2 += 2, i8 += 8
-        .LONGA ON
+?next   clc                          ; ---- i2 += 2, i8 += 8
         lda am_i2
         inc @
         inc @
@@ -650,15 +692,13 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         lda am_i8
         adc #8
         sta am_i8
-        sep #$20
-        .LONGA OFF
         asl am_smask                 ; ... and the AMSKIP bit walks with it
-        bne ?lp
+        lda am_smask                 ;   (a word: past bit 7 is the next byte)
+        cmp #$0100
+        bcc ?lp
         lda #1
         sta am_smask
         inc am_iskip
-        bne ?lp
-        inc am_iskip+1
 ?lp     jmp ?loop
 .endp
 
@@ -676,16 +716,14 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         jsr ?one
         lda am_back
         ldx #3
-?one    rep #$20                     ; ---- 16-bit A: id*8 + MAP_SECTORS, in A
-        .LONGA ON
-        and #$FF                     ; (the byte load left junk in B)
+?one    and #$FF                     ; ---- id*8 + MAP_SECTORS, in A
         asl @
         asl @
         asl @                        ; a sector id is < 8192: the shifts carry 0,
         adc #MAP_SECTORS             ;   so no clc
         sta zp_ptr,x                 ; x=0 -> zp_ptr, x=3 -> zp_tsrc (the .if above
-        sep #$20                     ;   guards the adjacency); +2, the bank
-        .LONGA OFF                   ;   byte, is not touched
+                                     ;   guards the adjacency); +2, the bank
+                                     ;   byte, is not touched
         rts
 .endp
 
@@ -694,12 +732,8 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ;   back sectors agree on it. Clobbers A/Y.
 ;--------------------------------------------------------------
 .proc am_cmp
-        rep #$20                     ; ---- 16-bit A: one compare (Z survives the sep)
-        .LONGA ON
         lda (zp_ptr),y
         cmp (zp_tsrc),y
-        sep #$20
-        .LONGA OFF
         rts
 .endp
 
@@ -713,16 +747,24 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 .proc am_draw
         lda am_v1
         sta zp_vidx
-        lda am_v1+1
-        sta zp_vidx+1
+        sep #$30                     ; BRIDGE: load_vertex is 8-bit
+        .LONGA OFF
+        .LONGI OFF
         jsr load_vertex_t
+        rep #$30
+        .LONGA ON
+        .LONGI ON
         ldx #0                       ; am_proj stores THROUGH X -- see below
         jsr am_proj
         lda am_v2
         sta zp_vidx
-        lda am_v2+1
-        sta zp_vidx+1
+        sep #$30                     ; BRIDGE: load_vertex is 8-bit
+        .LONGA OFF
+        .LONGI OFF
         jsr load_vertex_t
+        rep #$30
+        .LONGA ON
+        .LONGI ON
         ldx #am_x2-am_x1
         jsr am_proj
         jmp am_line
@@ -735,10 +777,12 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ;   the index work). 2026-08-14: this REPLACED a separate am_sx/am_sy landing
 ;--------------------------------------------------------------
 .proc am_proj
-        rep #$20                     ; ---- 16-bit A: the arithmetic shifts in the
-        .LONGA ON                    ;   accumulator (cmp #$8000 puts the sign in
-        lda zp_rx                    ;   C, ror brings it back in on top)
-        ldy am_sh                    ; sx = 160 + (rx >> sh)
+        lda am_sh                    ; (a byte: am_karm is behind it)
+        and #$00FF
+        tay                          ; ---- the arithmetic shifts in the
+        lda zp_rx                    ;   accumulator (cmp #$8000 puts the sign in
+                                     ;   C, ror brings it back in on top)
+                                     ; sx = 160 + (rx >> sh)
 ?xs     cmp #$8000
         ror @
         dey
@@ -746,8 +790,10 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         clc
         adc #AM_CX
         sta am_x1,x
+        lda am_sh
+        and #$00FF
+        tay
         lda zp_ry                    ; sy = 84 - (ry >> sh)
-        ldy am_sh
 ?ys     cmp #$8000
         ror @
         dey
@@ -756,8 +802,6 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         sec
         adc #AM_CY
         sta am_y1,x
-        sep #$20
-        .LONGA OFF
         rts
 .endp
 
@@ -765,8 +809,6 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ; am_line -- (am_x1,am_y1)-(am_x2,am_y2), signed 16-bit, colour am_col.
 ;--------------------------------------------------------------
 .proc am_line
-        rep #$20                     ; ---- 16-bit A for the whole line, am_plot
-        .LONGA ON                    ;   included
         lda am_x1
         and am_x2
         bmi ?rej                     ; both x < 0
@@ -791,10 +833,8 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         sbc #VIEW_HEIGHT
         ora am_t
         bmi ?ok                      ; at least one is above the bottom edge
-?rej    sep #$20
-        .LONGA OFF
-        rts
-?ok     .LONGA ON                    ; (still 16-bit on this path)
+?rej    rts
+?ok
                                       ; 2026-09-23: a step is ONE `inc/dec am_x1|am_y1`
         sec                          ;   (16-bit RMW) whose opcode is patched here
         lda am_x2                    ;   once a line, in one loop per major axis: no
@@ -802,10 +842,10 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         bpl ?dxp                     ;   err is stored once (-12 a pixel, -29 on a
         eor #$FFFF                   ;   minor step). Same decisions, same pixels.
         inc @
-        ldx #$CE                     ; `dec abs`: x runs down
-        bra ?dxs
-?dxp    ldx #$EE                     ; `inc abs`: x runs up
-?dxs    sta am_dx
+        ldx #$CE+[<am_x1]*256        ; `dec abs`: x runs down. X is a WORD: the
+        bra ?dxs                     ;   opcode and the operand's low byte, which
+?dxp    ldx #$EE+[<am_x1]*256        ;   the store writes back as it was
+?dxs    sta am_dx                    ; `inc abs`: x runs up
         stx ?xmj                     ; (the overlay runs in bank-0 RAM: plain stores)
         stx ?xmn
         sec
@@ -814,9 +854,9 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         bpl ?dyp
         eor #$FFFF
         inc @
-        ldx #$CE
+        ldx #$CE+[<am_y1]*256
         bra ?dys
-?dyp    ldx #$EE
+?dyp    ldx #$EE+[<am_y1]*256
 ?dys    sta am_dy
         stx ?ymj
         stx ?ymn
@@ -842,10 +882,7 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ?xmj    inc am_x1                    ; SMC: the MAJOR step
         dec am_n
         bne ?lx
-        sep #$20
-        .LONGA OFF
         rts
-        .LONGA ON
 ?ymaj   lda am_dy
         lsr @
         sta am_err
@@ -866,8 +903,6 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ?ymj    inc am_y1                    ; SMC: the MAJOR step
         dec am_n
         bne ?ly
-        sep #$20
-        .LONGA OFF
         rts
 .endp
 
@@ -886,32 +921,29 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
 ;   in 16-bit A (am_line's loop).
 ;--------------------------------------------------------------
 .proc am_plot
-        .LONGA ON
         lda am_x1
         cmp #AM_W
         bcs ?out
         lda am_y1
         cmp #VIEW_HEIGHT
         bcs ?out
-        sep #$20
-        .LONGA OFF
         tay                          ; the row (< VIEW_HEIGHT)
 sp      cpy #VIEW_HEIGHT             ; SMC: S1's split row -- S0's never comes
         bcs ?bot                     ;   (out of line: S0 and S1's top fall through)
 c0      lda #0                       ; SMC: the first half's chunk base
 ?h      sta am_ck
-        lda row_hi,y                 ; B:A = row*160
+        lda row_lo,y                 ; row*160 out of the two byte tables:
+        and #$00FF                   ;   the low byte ...
+        sta am_t
+        lda row_hi,y                 ;   ... and the high one, xba'd up
         xba
-        lda row_lo,y
-        rep #$21
-        .LONGA ON
+        and #$FF00
+        ora am_t
         asl @                        ; row*320 + x < 53760: no carry anywhere
-        adc am_x1
-        sta zp_ptr
-        .LONGA OFF
-        sep #$20
+        adc am_x1                    ;   (row*160 < $8000: the asl leaves C = 0)
+        sta zp_ptr                   ; the offset in the half, for now
         xba                          ; A = its page
-        tay
+        and #$00FF
         lsr @
         lsr @
         lsr @
@@ -919,23 +951,28 @@ c0      lda #0                       ; SMC: the first half's chunk base
         ora am_ck
         cmp am_lastbk
         bne ?bk                      ; a new 4 KB chunk: out of line (rare)
-?same   tya
-        and #$3F                     ; the 14-bit offset in the 16 KB page
-        ora #>MEMW16
-        sta zp_ptr+1
+?same   lda zp_ptr                   ; the 14-bit offset in the 16 KB page,
+        and #$3FFF                   ;   as one word: zp_ptr+2 (the bank) is
+        ora #MEMW16                  ;   not touched
+        sta zp_ptr
+        sep #$20                     ; 8-bit: ONE pixel byte into VRAM
+        .LONGA OFF
         lda am_col
         sta (zp_ptr)
         rep #$20
         .LONGA ON
 ?out    rts
-        .LONGA OFF
 ?bot    tya                          ; (C = 1) the second half's own row
         sbc #AM_S1B
         tay
 c1      lda #0                       ; SMC: ... and its chunk base
         bra ?h
 ?bk     sta am_lastbk
+        sep #$20                     ; VBXE_BANK_SEL is a register
+        .LONGA OFF
         sta VBXE_BANK_SEL
+        rep #$20
+        .LONGA ON
         bra ?same
 .endp
 ;   per page (0 = S0 on list A, 1 = S1 on list B)
@@ -956,12 +993,16 @@ AM_NARL equ 7
         sta am_col
         ldx #2*AM_NARL-2             ; the lines, last first (the line index
 ?l      phx                          ;   rides the stack: am_proj takes X and Y)
-        ldy am_alin,x                ; the line's first point -> am_x1/am_y1
+        lda am_alin,x                ; the line's first point -> am_x1/am_y1
+        and #$00FF                   ;   (a byte table)
+        tay
         ldx #0
         jsr am_ppt
         plx
         phx
-        ldy am_alin+1,x              ; ... and its second -> am_x2/am_y2
+        lda am_alin+1,x              ; ... and its second -> am_x2/am_y2
+        and #$00FF
+        tay
         ldx #am_x2-am_x1
         jsr am_ppt
         jsr am_line
@@ -971,15 +1012,14 @@ AM_NARL equ 7
         bpl ?l
         lda #AM_XHAIR                ; fb[(f_w*(f_h+1))/2]: (160, 84)
         sta am_col
-        rep #$20
-        .LONGA ON
         lda #AM_CX
         sta am_x1
         lda #AM_CY
         sta am_y1
         jsr am_plot
-        .LONGA OFF
-        sep #$20
+        sep #$30                     ; VBXE_BANK_SEL is a register -- and the
+        .LONGA OFF                   ;   BRIDGE: am_head's caller is 8-bit
+        .LONGI OFF
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
         rts
@@ -990,17 +1030,17 @@ am_alin dta 0*4,1*4, 1*4,2*4, 1*4,3*4, 0*4,4*4, 0*4,5*4, 6*4,7*4, 6*4,8*4
 ;--------------------------------------------------------------
 ; am_ppt -- Y = a point's offset in am_apt, X = which end: am_proj.
 ;--------------------------------------------------------------
-.proc am_ppt
-        rep #$20
         .LONGA ON
+        .LONGI ON
+.proc am_ppt
         lda am_apt,y
         sta zp_rx
         lda am_apt+2,y
         sta zp_ry
-        .LONGA OFF
-        sep #$20
         jmp am_proj
 .endp
+        .LONGA OFF
+        .LONGI OFF
 
 ; ---- per-frame scratch. NOT STATE: the overlay is re-copied every frame, so
 ;      every cell below is back to the value here before anything reads it. What
@@ -1015,25 +1055,25 @@ am_y2    dta a(0)
 am_i2    dta a(0)                    ; seg index x2 (AMSEG's stride) -- the loop
 am_i8    dta a(0)                    ;   variable -- and x8 (the seg record)
 am_iskip dta a(0)                    ;   ... >>3 (the AMSKIP byte) ...
-am_smask dta 1                       ;   ... and 1 << (i & 7)
+am_smask dta a(1)                    ;   ... and 1 << (i & 7)
 am_nseg2 dta a(0)                    ; the level's seg count x2, the loop bound
 am_slot  dta a(0)                    ; &AMSEEN[this seg's linedef]
-am_flg   dta 0                       ; that line's AMFLG byte
-am_front dta 0
-am_back  dta 0
+am_flg   dta a(0)                    ; that line's AMFLG byte (+ the one behind it)
+am_front dta a(0)
+am_back  dta a(0)
 am_v1    dta a(0)
 am_v2    dta a(0)
-am_col   dta 0
+am_col   dta a(0)
 am_dx    dta a(0)                    ; Bresenham: MAJOR delta after the swap ...
 am_dy    dta a(0)                    ;   ... and MINOR
 am_err   dta a(0)
 am_n     dta a(0)
-am_ck    dta 0                       ; am_plot: the half's chunk base
-am_gry   dta 0                       ; am_walls: GRAYS+3, or 0 (the ladder)
-am_ri    dta 0                       ; am_arot's point
+am_ck    dta a(0)                    ; am_plot: the half's chunk base
+am_gry   dta a(0)                    ; am_walls: GRAYS+3, or 0 (the ladder)
+am_ri    dta a(0)                    ; am_arot's point
 am_apt   :AM_NARP*4 dta 0            ; player_arrow, rotated: {x, y} words
 am_t     dta a(0)
-am_lastbk dta $FF                    ; the MEMAC bank last selected ($FF = none,
+am_lastbk dta a($FF)                 ; the MEMAC bank last selected ($FF = none,
                                      ;   so the first plot of a frame always
                                      ;   writes VBXE_BANK_SEL)
 

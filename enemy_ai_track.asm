@@ -8,7 +8,7 @@
 ; ai_track -- ai_t = thing, zp_nid = the leaf locate_floor just reached. Insert
 ;   or refresh its entry. Called on every committed step and once on waking.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_track
         lda ai_t
         jsr ai_ischase
@@ -48,7 +48,7 @@
 ;   a CORPSE and hand it over: C=1 and X = that slot, C=0 if all AI_DMAX of them
 ;   are still chasing (then the caller keeps today's spawn-subsector fallback).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_evict
                                       ; 2026-09-22 idiom: ai_bank inlined (see ai_look)
         stz zp_ptr                   ; zp_ptr = TH_WROW (bank $01)
@@ -78,7 +78,7 @@
 ;   is not. Called per thing in spr_add's prefix loop, so it stays a plain scan
 ;   over at most AI_DMAX bytes and the caller checks ai_dn first.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_ischase
         ldx ai_dn
                                       ; 2026-09-23: dex/bne closes the loop (no bra a
@@ -99,12 +99,13 @@
 ;   chaser standing in it. Same projection the prefix loop uses, so it needs the
 ;   same thing-record pointer and the same alive test.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_chase
         ldx zp_nid                   ; the gate: no entry shares this leaf's low
         lda ai_dcnt,x                ;   byte -> nothing to scan (most leaves)
         beq ?out
-        ldx ai_dn
+sc_gated                             ; (2026-10-15: ANTONIA2's spr_chased tests the
+        ldx ai_dn                    ;   gate itself and enters here)
                                       ; 2026-09-23: zp_nid stays in A across the misses
 ?re     lda zp_nid                   ;   (reloaded only after a hit or a high miss)
 ?lp     dex

@@ -7,8 +7,7 @@
 ;   and this runs a handful of times per crossing test.
 ;--------------------------------------------------------------
 mvp_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_ptr
 	lda mv_i
 	rep #$20
@@ -27,7 +26,7 @@ mvp_resume = *
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
     .if * > $B810                  ; hud_blit moved to FAST RAM on 2026-09-09; $B810+ is
         ert 'mv_ptr overran $B7C1-$B80F (memory_map.inc)'   ; free now, the guard keeps the block's size
     .endif
@@ -41,8 +40,7 @@ mvp_resume = *
 ;   multiplying again.
 ;--------------------------------------------------------------
 mvs_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_step
         lda DOOR_FADD
         asl
@@ -62,7 +60,6 @@ mvs_resume = *
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org MVSLOW_BASE
 
 ;--------------------------------------------------------------
@@ -70,7 +67,7 @@ mvs_resume = *
 ;   THIS record instead of the port's one-per-direction base.
 ;   Clobbers A/Y; X is untouched, both callers reload it straight after.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_slow
         ldy mv_slot
         lda MV_SPD,y
@@ -96,7 +93,7 @@ mvs_resume = *
 ;--------------------------------------------------------------
 ; mv_crossed -- C=1 if the player's movement segment crosses the trigger line.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_crossed
         ; Same idea as the doors: instead of geometry, ask which sector the ...
         ldy #0                       ; either room next to the line will do
@@ -145,11 +142,16 @@ mvs_resume = *
 ;--------------------------------------------------------------
 ; mv_sector -- m_a = the sector the player is in (BSP descent, as door_at_point).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_sector
                                       ; 2026-09-22 idiom: mvg_arm inlined (-12): arms the
         lda #40                      ;   depth guard (deeper than any tree these maps
-        sta mv_dep                   ;   build) and hands back MAP_HROOT in A
+  .ifdef ANTONIA2                    ;   build) and hands back MAP_HROOT in A
+        sta m_a                      ; (ANTONIA2: the guard counts in m_a, a word --
+        stz m_a+1                    ;   node_side never touches it, ?leaf sets it)
+  .else
+        sta mv_dep
+  .endif
         lda MAP_HROOT
                                      ;   MAP_HROOT, the root node index (map ...
         sta zp_nid
@@ -160,6 +162,24 @@ mvs_top                              ; (mv_guard comes back here). NOT
                                      ;   the floor-mover's own proc above.
 ?w      lda zp_nid+1
         bmi ?leaf
+  .ifdef ANTONIA2
+        ; 2026-10-15 (6502-loops-tables-smc / 65816-windows): the whole descent
+        ; in one 16-bit window, the leaf test on the stored child's N and the
+        ; 40-node guard counted down in m_a -- no mv_guard round trip, no
+        ; rep/sep and no zp_nid+1 reload per node. The 40th step bails to
+        ; ?leaf whatever it found, as mv_guard does.
+        rep #$20
+        .LONGA ON
+        lda zp_nid
+?l      jsr node_side
+        lda [zp_nodeptr],y
+        sta zp_nid
+        bmi ?leaf
+        dec m_a
+        bne ?l
+        bra ?leaf
+        .LONGA OFF
+  .else
         rep #$20                     ; 2026-09-26: node_side (renderer.asm) = calc_
         .LONGA ON                    ;   nodeptr + point_on_side fused, Y = the child's
         lda zp_nid                   ;   offset: one jsr and the 0/1 re-test less
@@ -170,6 +190,7 @@ mvs_top                              ; (mv_guard comes back here). NOT
 	.LONGA OFF
         jmp mv_guard                 ; ...which is `jmp ?w` unless the descent has
                                      ;   run 40 deep, and then it bails to ?leaf
+  .endif
 mvs_leaf                             ; (mv_guard's bail-out lands here)
 ?leaf
 	rep #$20
@@ -204,26 +225,18 @@ mvs_leaf                             ; (mv_guard's bail-out lands here)
 ; mv_psec_set -- latch the player's sector for this frame's trigger scan.
 ;--------------------------------------------------------------
 mvps_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mv_psec_set
-        jsr mv_sector                ; m_a = sector under (zp_px, zp_py)
-        lda m_a
-        sta mv_psec
-        rts
-.endp
-        .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+; (mv_psec_set -- mv_sector, then m_a -> mv_psec -- is inline at both its
+;  callers since 2026-09-22; the dead proc went 2026-10-05.)
+        .segment D0
 mv_psec dta 0                        ; the latched sector id (a byte: see mv_crossed)
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org mvps_resume
 
 ;--------------------------------------------------------------
 ; mv_side_line -- A = 0/1: which side of the trigger line (mv_px, mv_py) is on.
 ;   sign of (px-x1)*(y2-y1) - (py-y1)*(x2-x1).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_side_line
 	rep #$20
 	.LONGA ON
@@ -254,8 +267,8 @@ msl_w16                              ; (2026-09-22: 16-bit callers enter here)
         sbc (zp_ptr),y
         sta cx_d
                                      ; 2026-09-22 (65816-windows): into cross_pos past
-        jmp cross_pos.cp_w16         ;   its rep, still 16-bit (this sep and that rep
-        .LONGA OFF
+        jmp cross_pos.cp_sign        ;   its rep, still 16-bit; 2026-10-05: the sign
+        .LONGA OFF                   ;   shortcut (only A is read)
 .endp
         .endseg
 
@@ -267,7 +280,7 @@ msl_w16                              ; (2026-09-22: 16-bit callers enter here)
 ;--------------------------------------------------------------
 mvx2_resume = *
         org MVX2_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_cross2
         ldy #4                       ; side of line end 1 vs the move...
         jsr mv_side_pt
@@ -289,7 +302,7 @@ mvx2_resume = *
 ;   zp_px/py) the record point at offset Y (x lo/hi, y lo/hi) is on:
 ;   sign of (Px-Ox)*(Ny-Oy) - (Py-Oy)*(Nx-Ox). Clobbers A/Y, cx_a..cx_d.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_side_pt
 	rep #$20
 	.LONGA ON
@@ -315,8 +328,8 @@ mvx2_resume = *
         sbc mv_ox
         sta cx_d
                                      ; 2026-09-22 (65816-windows): into cross_pos past
-        jmp cross_pos.cp_w16         ;   its rep, still 16-bit
-        .LONGA OFF
+        jmp cross_pos.cp_sign        ;   its rep, still 16-bit; 2026-10-05: the sign
+        .LONGA OFF                   ;   shortcut (only A is read)
 .endp
         .endseg
     .if * > MVX2_END+1
@@ -347,7 +360,7 @@ mvx2_resume = *
 mvu_resume = *
         org MVUSED_BASE
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc check_triggers
                                       ; 2026-09-22 idiom: mv_psec_set inlined (-12)
         jsr mv_sector                ; WHICH ROOM IS THE PLAYER IN -- once for
@@ -386,7 +399,7 @@ mvu_resume = *
 ; mv_used_get / mv_used_set -- bit mv_i of the fired bitmap. get returns C=1
 ;   when the trigger is spent. Both clobber A/X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_used_get
         lda mv_i
         cmp #MV_TRIGS
@@ -408,7 +421,7 @@ mvu_resume = *
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_used_set
         lda mv_i
         cmp #MV_TRIGS
@@ -421,7 +434,7 @@ mvu_resume = *
         .endseg
 
 ;   X = byte index, Y = bit index, A = the byte
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_used_idx
         lda mv_i
         lsr
@@ -457,7 +470,7 @@ mv_used :[MV_TRIGS/8] dta 0          ; MV_TRIGS triggers, one bit each. E1M4 hit
 ;--------------------------------------------------------------
 mvs2_resume = *
         org MVSEC_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_secptr
 	rep #$20
 	.LONGA ON
@@ -481,7 +494,7 @@ mvs2_resume = *
 ; mv_reset -- per level: park every slot and clear the W1 fired bitmap. Moved
 ;   out of the $E760 block, which is full to the byte.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_reset
         ldx #MV_TABEND-MV_TAB        ; 200 B: dex/bne, NOT dex/bpl -- the index
 ?mv     dex                          ;   starts above 127 and bpl would fall out
@@ -504,7 +517,7 @@ mvs2_resume = *
 ;   record (b10), tp_any = the level has one. ai_tele's gates. Also clears
 ;   pl_rt, so no reactiontime is carried into the next level.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc tp_build
         ldx #31
 ?cl     stz tp_bits,x
@@ -555,7 +568,7 @@ tp_any  dta 0                        ; nonzero: the level has a teleport line
 ; mv_raise -- state 4: the floor CREEPS UP to MV_DST and stops there. X = the
 ;   slot, zp_mvsec = its sector (update_movers set both).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_raise
         lda DOOR_STEP                ; Q8 step / 2 (mv_step's fast path is x2)
         lsr
@@ -615,7 +628,7 @@ tp_any  dta 0                        ; nonzero: the level has a teleport line
 ;   room for a second jsr (update_pz already tail-calls update_damage and
 ;   update_door30 for exactly that reason), so the pair is wrapped here.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_frame
         jsr mv_carry                 ; BEFORE the step, not after: a slot armed
         jmp update_movers            ;   this frame has to record where its floor
@@ -627,7 +640,7 @@ tp_any  dta 0                        ; nonzero: the level has a teleport line
 ; mv_carry -- p_map.c P_ChangeSector's half that matters here: a floor that
 ;   moves takes what is standing on it along.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_carry
         ldx #MV_NMAX-1
 ?slot   lda MV_STATE,x
@@ -684,7 +697,7 @@ tp_any  dta 0                        ; nonzero: the level has a teleport line
 ; mvc_things -- the sweep. mvc_old = the height the floor just left, zp_ptr =
 ;   the sector that moved, loc_floor after each locate_floor = where it is now.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mvc_things
 	rep #$20
 	.LONGA ON
@@ -778,7 +791,7 @@ mvc_now  dta 0                                         ; is the slot still live?
 ;   start SFX now matches the original exactly: sfx_pstart belongs to a DWUS
 ;   LIFT and nothing else (p_plats.c:217).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_sndst
                                       ; 2026-09-21: 4 = the T_MoveFloor raise, the
         cmp #4                       ;   ONLY silent start. 1 and 3 are plats (3 =
@@ -808,7 +821,7 @@ mv2_resume = *
 ; mv_free -- C=1 and X = the slot to arm for the record at zp_ptr, C=0 if this
 ;   trigger must be dropped. Two reasons to drop it:
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_free
         jsr mv_secptr                ; zp_mvsec = &MAP_SECTORS[this record]
         ldx #MV_NMAX-1
@@ -837,21 +850,14 @@ mv2_resume = *
 ;--------------------------------------------------------------
 ; mv_start -- X = the slot mv_free found. Arms it from the record at zp_ptr.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mv_stop
-        ldx #MV_NMAX-1               ; park EVERY running slot. DOOM stops only
-?l      stz MV_STATE,x               ;   the sectors carrying the line's tag, but
-        dex                          ;   one record per TAGGED SECTOR is 40 of
-        bpl ?l                       ;   them on E2M2 alone and that map's piece
-        rts                          ;   2 has 1920 B. On E2M2 and E2M3 -- the
-.endp
-        .endseg
+; (mv_stop -- park EVERY running slot -- had no caller left; the dead proc
+;  went 2026-10-05.)
 
 
 
 ;--------------------------------------------------------------
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_start
                                       ; 2026-09-21: + p_plats.c perpetualRaise (87).
         stx mv_slot                  ;   Same stores as the .else side, with the
@@ -925,7 +931,7 @@ mv2_resume = *
 ;--------------------------------------------------------------
 mvchg_resume = *
         org MVCHG_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mv_change
         pha                          ; mv_sndst reads the state out of A
         pei (zp_ptr)                 ; BUG FIX 2026-09-15: keep the RECORD pointer
@@ -985,7 +991,7 @@ mvchg_resume = *
 ; update_movers -- one step per frame per live slot, on DOOM's clock: slide
 ;   down, dwell, raise back.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc update_movers
         ldx #MV_NMAX-1
 ?slot   lda MV_STATE,x
@@ -1160,7 +1166,7 @@ mvchg_resume = *
 SCROLL_Q8   equ 90
 usc_resume = *
         org SCROLL_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc update_scroll
         ldx MAP_HSCRTEX
         bmi ?out                     ; $FF: nothing scrolls on this level
@@ -1174,6 +1180,20 @@ usc_resume = *
 ?nx     dey
         bne ?acc
 ?out    rts
+  .ifdef FX127
+;   FX127 (2026-10-20): the column OFFSET only, as DOOM's textureoffset -- the
+;   tiles sit in the VRAM arena, copied once (tex_vget), so moving the SDRAM
+;   address moved nothing on screen, and a re-fetch read a half-tile-shifted
+;   copy (64 B a step against the 128 B tile) into the next texture's bytes.
+;   process_seg adds ts_col to rs_segoff on the scroll texid's segs.
+?column lda ts_col
+        cmp MAP_TEXWMASK,x           ; wrap after the last stored column
+        bcs ?wrap
+        inc ts_col
+        rts
+?wrap   stz ts_col
+        rts
+  .else
 ;   advance MAP_TEXADDR[x] by h bytes, or back to the start after w columns
 ?column lda ts_col                   ; wmask = w-1 = the last column the base may
         cmp MAP_TEXWMASK,x           ;   stand on; one more and it must come back
@@ -1225,6 +1245,7 @@ usc_resume = *
         adc #0
         sta MAP_TEXADDRHI,x
         rts
+  .endif
 .endp
         .endseg
     .if * > SCROLL_END+1
@@ -1239,8 +1260,7 @@ usc_resume = *
 ;   0 = an ordinary record, 1 = EXIT, 2 = SECRET EXIT.
 ;--------------------------------------------------------------
 tgx_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc trig_exit
         ldy #3
         lda (zp_ptr),y
@@ -1257,7 +1277,6 @@ tgx_resume = *
         ert *<>trig_walk            ;   next byte of this segment -- fall through
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org tgx_resume
 
 ;==============================================================
@@ -1265,7 +1284,7 @@ tgx_resume = *
 ;==============================================================
 tgw_resume = *
         org TRIGW_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc trig_walk
         ldy #13
         lda (zp_ptr),y
@@ -1314,7 +1333,7 @@ tgw_resume = *
 ;==============================================================
 dmg_resume = *
         org DMGSEC_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc update_damage
         lda dmg_timer                ; THE CLOCK FIRST, and it FREE-RUNS: DOOM's
         sec                          ;   test is `!(leveltime & 0x1f)` on the
@@ -1326,9 +1345,11 @@ dmg_resume = *
                                      ;   WALKS ACROSS incapable of ever charging
                                      ;   him: E2M1's cross is 64 units wide, i.e.
         lda pl_dead                  ; P_PlayerThink hands a PST_DEAD player to
-        ora pl_air                   ;   P_DeathThink and RETURNS, so
+        ora pl_offs                  ;   P_DeathThink and RETURNS, so
         bne ?out                     ;   P_PlayerInSpecialSector never runs on a
-                                     ;   corpse: the nukage stops burning it and, ...
+                                     ;   corpse -- nor on a player whose z is not
+                                     ;   this sector's floor (p_spec.c:1016):
+                                     ;   falling, or on a ledge his body overhangs
         ldy #7
         lda (zp_ptr),y               ; sector flags: b0 sky, b1-b3 damage class
         and #$0E
@@ -1360,7 +1381,7 @@ dmg_resume = *
 ;     OUT A = what got through (the caller subtracts it from health), armour
 ;         points and pl_armt updated. X is untouched, C is NOT meaningful.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_armsub
         ldy pl_armt
         beq ?out                     ; no armour: all of it lands on health
@@ -1408,17 +1429,20 @@ dmg_amt dta 0,5,10,20,20             ; P_PlayerInSpecialSector's damage per tic
 ;==============================================================
 d30_resume = *
         org DOOR30_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc update_door30
+        lda D30_ON                   ; nothing armed or counting: no scan at all
+        beq ?ret
+        stz D30_ON                   ; ...and the scan sets it again while one is
         ldx MAP_HNDOOR
         beq ?ret
         dex
 ?l      lda.l DOORSTAY,x
         and #$06
         beq ?nx
-        and #$04                     ; b2 = the countdown is already running.
-        bne ?cnt                     ;   IT WAS `lsr / lsr / bcs` (2026-08-28):
-                                     ;   two LSRs after `and #$06` put bit ONE in ...
+        sta D30_ON                   ; (non-zero: this one still needs us)
+        and #$04                     ; b2 = the countdown is already running
+        bne ?cnt
         lda.l DOOR_STATE,x           ; armed: not shut yet -> nothing to do
         bne ?nx
         lda #4
@@ -1433,20 +1457,16 @@ d30_resume = *
         sbc dt_vbl
         sta.l DOOR_WAIT,x
         bcs ?nx
-        lda.l DOOR_FRAC,x            ; borrowed into the high half. No read-
-	dec
-        sta.l DOOR_FRAC,x            ;   group only, so DEC long,X does not
-        cmp #$FF                     ;   exist. A still holds the new value.
-        bne ?nx
-        lda #0
-        sta.l DOOR_FRAC,x            ; no stale Q8 remainder for the rise
-        lda #1                       ; 30 s up: send it back up -- and PARK it
-        sta.l DOORSTAY,x             ;   open. p_doors.c removes the thinker when
-                                     ;   a close30ThenOpen reaches the top, so it
-                                     ;   must NOT dwell and close again.
-        jsr door_force_open.dfo_go   ; X = door index: open + positional SFX --
-                                     ;   and the GUARDED DOOR_NACT bump, which is
-                                     ;   the whole reason this is a call now.
+        lda.l DOOR_FRAC,x            ; borrowed into the high half: a 0 there
+        beq ?up                      ;   means the 30 s are up (and leaves no
+        dec @                        ;   stale Q8 remainder for the rise)
+        sta.l DOOR_FRAC,x
+        bra ?nx
+?up     lda #1                       ; send it back up -- and PARK it open:
+        sta.l DOORSTAY,x             ;   p_doors.c removes the thinker when a
+                                     ;   close30ThenOpen reaches the top
+        jsr door_force_open.dfo_go   ; X = door index: open + positional SFX and
+                                     ;   the guarded DOOR_NACT bump
 ?nx     dex
         bpl ?l
 ?ret    rts

@@ -3,7 +3,7 @@
 ;   impact, and the damage spent at the hit.
 ;--------------------------------------------------------------
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_plasma2
         pha                          ; the roll, while pj_pick eats A
         jsr pj_pick                  ; which bolt is this shot?
@@ -41,7 +41,7 @@
 ;--------------------------------------------------------------
 ; pj_rspawn / pj_pspawn -- arm the shared missile for this shot's look.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_rspawn
         lda #SFX_BAREXP              ; MT_ROCKET deathsound (info.c:1981) -- and
         sta pj_bsnd                  ;   the flag that says there IS an A_Explode
@@ -69,7 +69,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_pspawn
         lda #SFX_FIRXPL              ; MT_PLASMA deathsound (info.c:2007), and
         sta pj_bsnd                  ;   the flag that keeps pj_hit's A_Explode
@@ -94,7 +94,7 @@
 ;--------------------------------------------------------------
 ; pj_go (part A) -- position, target, deltas, the ball's shrink loop.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_go
         rep #$20                     ; ---- 16-bit A: launch point, target and the
         .LONGA ON                    ;   aim vector are word moves; the target is
@@ -148,7 +148,7 @@
         .endseg
 
 ; m_prod = A * pj_f (umul16, high half 0)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_mul
         sta m_a
         stz m_a+1
@@ -176,7 +176,7 @@
 ;   was never drawn again. Which shots broke depended on the FIRING DIRECTION
 ;   (only negative legs are affected) and on the operands -- exactly the "some
 ;   times you see the rocket, sometimes not, and I cannot tell you when".
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_leg
                                       ; 2026-09-22 (65816-style): Y rides the stack
         phy
@@ -197,26 +197,8 @@
 .endp
         .endseg
 
-; A = |A| (the deltas fit a byte once pj_go's shrink loop is done)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc pj_abs
-        bpl ?pos
-        eor #$FF
-        inc @                        ; (C is dead in every caller: sta / cmp / ldy)
-?pos    rts
-.endp
-        .endseg
-
-; |m_a(16)| with A = the high byte on entry; Z=1 iff the result is < 256.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (callers are bank-$01 code)
-.proc pj_a16
-        sta m_a+1
-        bpl ?p
-        jsr m_neg
-?p      lda m_a+1
-        rts
-.endp
-        .endseg
+; (pj_abs -- A = |A| -- is inline at its callers since 2026-09-22, and pj_a16
+;  had none left; both dead procs went 2026-10-05.)
 
 ;--------------------------------------------------------------
 ; pj_thit -- p_map.c PIT_CheckThing, the MF_MISSILE half, for the rocket where
@@ -233,7 +215,7 @@ PJ_ROCKR equ 11                      ; info.c MT_ROCKET radius
 ;   record pointer, but only for the few candidates the health byte lets
 ;   through -- the sweep runs once per SUB-STEP, up to five a frame per
 ;   bolt, and the old form was most of a flying frame's budget.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_thit
         stx pj_ti                    ; the caller's counter; X = the cursor
         ldx #$FF
@@ -294,7 +276,7 @@ PJ_ROCKR equ 11                      ; info.c MT_ROCKET radius
 ;   the moment any slot's mirror changes, and spr_chasec's one-load "is
 ;   ANYTHING flying" gate. The ldx pj_cur puts back the X every pj_save
 ;   caller holds (pj_save promises X preserved, and X is always pj_cur there).
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_orup
         ldx #PJ_NSLOT-1
         lda #0
@@ -310,7 +292,7 @@ PJ_ROCKR equ 11                      ; info.c MT_ROCKET radius
 ;--------------------------------------------------------------
 ; pj_go2 -- k7 row, the x2 speed scale, sign, arm the flight.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_go2
                                       ; 2026-09-22 idiom: pj_abs inlined (-12 each; C is
         lda pj_dx                    ;   dead at every use: sta / cmp / ldy)
@@ -428,13 +410,13 @@ PJ_GUARD equ 600                     ; sub-steps: past the aim ray's reach
 ;   (movers, the imp's ball, then this missile) -- and the once-per-level
 ;   id fetch, both out of the packed flight island.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_frameb
         jsr mv_frameb
         jmp pj_frameN
 .endp
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_relvl
         sta pj_lvl                   ; new level: forget every bolt (pj_clr at
         lda #0                       ;   the tail), learn the sprite ids, park
@@ -458,7 +440,7 @@ PJ_GUARD equ 600                     ; sub-steps: past the aim ray's reach
                                      ;   in the missile's per-frame path and want ...
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; pj_capdbl -- pj_go2's tail on pj_cap (A = pj_ctab's entry for this shot's
@@ -467,7 +449,7 @@ PJ_GUARD equ 600                     ; sub-steps: past the aim ray's reach
 ;   where the rocket takes twenty-odd, so pacing the two the same was wrong
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_capdbl
         ldx pj_bsnd                  ; the deathsound is what says "rocket"
         cpx #SFX_BAREXP              ;   (MT_PLASMA has no A_Explode -- pj_hit)
@@ -479,7 +461,7 @@ PJ_GUARD equ 600                     ; sub-steps: past the aim ray's reach
         .endseg
 
 PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_frame                       ; ONE bolt, the one pj_load just swapped in
         lda pj_on                    ;   (the level check moved to pj_frameN --
         bne ?run                     ;   pj_relvl has to run with no bolt up too)
@@ -555,7 +537,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ; pj_burst / pj_btick -- the impact: park, play the deathsound, walk the
 ;   burst frames on their own clocks (pj_bt0/1/2, VBLANKS).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_burst
         lda pj_bsnd
         jsr snd_qp_pj                ; barexp / firxpl AT the impact (STEREO:
@@ -570,13 +552,13 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         bra pj_leaf                  ; the record parks WHERE it burst
 .endp
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_gone                        ; the missile is done (both tails)
         stz pj_on
         rts
 .endp
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_btick
         sec                          ; this frame ate dt_vbl VBLANKs of the frame
         lda pj_ttl                   ;   clock -- C=0 (it ran past) or Z=1 (it
@@ -604,7 +586,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;   there), plus the pseudo-record refresh. locate_floor reads zp_px/py,
 ;   so borrow them, ball-style.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_leaf
         pei (zp_px)                  ; locate_floor reads the player's zp_px/py:
         pei (zp_py)                  ;   both words onto the stack (pei is M-blind)
@@ -630,7 +612,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
                                      ;  no-op on this path and the mode switch ...
 .endp
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_rec_up
         rep #$20                     ; ---- 16-bit A (idempotent from pj_leaf)
         .LONGA ON
@@ -657,7 +639,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 ;   direct damage on the thing pj_aim picked, then A_Explode at the impact
 ;   point.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_hit
         lda pj_vic
         cmp #$FF                     ; $FF = it was flying at a wall. NOT `bmi`
@@ -672,7 +654,11 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
         lda.l EXT_BASE+TH_HPH,x       ;   in bank $01 (no [zp_ptr] re-aiming --
         beq ?blast                   ;   en_bhit and en_bthings aim their own)
 ?alv    lda pj_dmg                   ; already dead -> no second death chain
-        jsr en_bhit                  ; P_DamageMobj + the voice + the chain
+        jsr en_bhit                  ; P_DamageMobj's arithmetic + the death chain,
+        jsr en_bpain                 ;   then its tail for a survivor: the painchance
+                                     ;   roll, the flinch, MF_JUSTHIT (2026-10-20:
+                                     ;   p_map.c:324 PIT_CheckThing -> P_DamageMobj
+                                     ;   -> p_inter.c:894; plasma never flinched)
 ?blast  lda pj_bsnd                  ; THE DEATHSOUND SAYS WHAT LANDED: bit 0 --
         lsr                          ;   see the .else side for why one lsr sorts
         bcs ?spray                   ;   BAREXP / RXPLOD / FIRXPL, and the ert
@@ -694,7 +680,7 @@ PJ_MAXSUB equ 24                     ; sub-steps (VBLANKs) per drawn frame, max.
 .endp
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
     .if [SFX_RXPLOD&1]=0 .or [SFX_BAREXP&1]<>0 .or [SFX_FIRXPL&1]<>0
         ert 'pj_hit dispatches on bit0: SFX_RXPLOD must be the ONLY odd id of the three'
     .endif

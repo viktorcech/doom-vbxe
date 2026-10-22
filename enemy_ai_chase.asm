@@ -5,7 +5,7 @@
 ; ai_tick -- ONE DOOM tic, from wp_think next to en_tick. Sweeps the same 256
 ;   things en_tick does; only the ones with a TH_WROW cost more than a branch.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_tick
         ; 2026-09-09 (drac030 style): the sweep reads TH_WROW as WORDS -- two
         ; things per [zp_ptr],y -- so the idle path is 16 cycles a PAIR where
@@ -75,7 +75,7 @@ ait_lim2 cpx #0
 ;   tics are info.c's, and its action -- A_Chase, on every single RUN state --
 ;   runs here.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_state
         jsr ai_ismon                 ; it may have died since the last tic
         bne ?live
@@ -140,7 +140,7 @@ ait_lim2 cpx #0
 ;   moving at all), then the movement half:
 ;       if (--movecount < 0 || !P_Move(actor)) P_NewChaseDir(actor);
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_chase
         jsr aif_ttick                ; P_KillMobj clears MF_SHOOTABLE on the dead
         beq ?stand                   ;   player, so A_Chase's target test fails and
@@ -179,7 +179,7 @@ ait_lim2 cpx #0
 ;   [zp_ptr],y read or write into bank $01 with the SAME index, so folding it
 ;   into a pair of helpers is what keeps this module inside its hole.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_get
         sta zp_ptr+1
         stz zp_ptr                   ; all the pages share the low byte (0)
@@ -189,7 +189,7 @@ ait_lim2 cpx #0
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_put
                                       ; 2026-09-23: the N/Z the callers read (sg_seen's
         stx zp_ptr+1                 ;   `jsr ai_put / beq ?blind`) come from an ora #0
@@ -206,7 +206,7 @@ ait_lim2 cpx #0
 ; ai_move -- P_Move. A/Z: nonzero = it moved, zero = blocked, which is what
 ;   A_Chase reads as "pick a new direction".
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_move
         lda #>TH_DIR
         jsr ai_get
@@ -343,7 +343,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ;   leaf's seg (locate_floor), sp_ptr = the thing. zp_nid stays the leaf the
 ;   thing ends in, for ai_track.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_tele
         ldy #SEG_FRONT
         lda [zp_sptr],y              ; the room it stepped into: mv_crossed
@@ -471,7 +471,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ;   then the old direction, the sweep and the turnaround. The turnaround ban
 ;   is what stops a monster oscillating in a doorway.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_newdir
         jsr aif_tpos                 ; actor->target, which is not always the
                                     ; 2026-09-22 (65816-windows): aif_tpos returns 16-bit
@@ -621,7 +621,7 @@ ai_step lda ai_t                     ; P_TryMove ENTRY for a step someone else
 ; ai_trywalk -- P_TryWalk: A = the direction to try. Commits it and asks
 ;   P_Move. Z=0 (bne) = it moved.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_trywalk
         ldx #>TH_DIR
         jsr ai_put

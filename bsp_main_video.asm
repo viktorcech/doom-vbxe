@@ -4,7 +4,6 @@
 ; setup_memac -- MEMAC-A 4K window at MEMW, CPU access, bank $0A
 ;==============================================================
 .proc setup_memac
-                                      ; DRAC_PLAN 3b: 16 KB window
         lda #MEMW_HI | MC_CPU | MC_16K
         sta VBXE_MEMAC_CTL
         stz VBXE_MEMAC_B
@@ -57,11 +56,13 @@ xdlstg_resume = *
         sta.l MEMW+MEMW_TW_OFF,x
         dex
         bpl ?tw
+    .ifndef FX127                    ; (FX127: no expander, slot 0 is unused)
         ldx #BCB_SIZE-1
 ?t8     lda bcb_tex8_tmpl,x
         sta.l MEMW+MEMW_T8_OFF,x
         dex
         bpl ?t8
+    .endif
         ldx #BCB_SIZE-1
 ?sp     lda bcb_spr_tmpl,x           ; sprite column (byte-stencil transparency)
         sta.l MEMW+MEMW_SP_OFF,x
@@ -74,6 +75,16 @@ xdlstg_resume = *
         bpl ?hd
         lda #1                       ; ... but walks the source row by row
         sta MEMW+MEMW_HD_OFF+BCB_SRC_STEPX
+  .if STRIP                    ; 2026-10-15 (paint.asm THE STRIP): the $FF block
+        ldx #0                       ;   the vline template reads up from PS_FFT --
+        lda #$FF                     ;   VRAM $00A000-$00A0FF, the window's MEMW
+?ff     sta.l MEMW,x                 ;   page (free VRAM, memory_map.inc VRAM_XDL)
+        inx
+        bne ?ff
+    .if [PS_FFT & $FFFF00] <> [VRAM_OVERHEAD & $FFFF00] || [VRAM_OVERHEAD & $FFFF] <> MEMW
+        ert 'the $FF block must be the window page MEMW = VRAM_OVERHEAD ($00A000)'
+    .endif
+  .endif
                                       ; 2026-09-22 (vbxe-blitter: templates): bg_blit's
         lda #BG_COLOUR               ;   fill colour, once -- it was stored per blit
         sta MEMW+MEMW_VL_OFF+BCB_XOR ;   (emulation mode here: 8-bit stores only)
@@ -100,6 +111,9 @@ setchn_resume = *
                                      ; (2026-09-28: the five boot-time stz that
                                      ;   opened this proc are setup_bcbs' now --
                                      ;   the slots' DST_STEPY patch needed the room)
+    .ifndef FX127                    ; (FX127: the slots are 32 B and prefilled per
+                                     ;   level by fx_chains_init, paint.asm -- this
+                                     ;   hole ends at $4B9E, bank $01 has the room)
                                      ; 2026-09-22 (rapidus-bus-timing): the prefill
         stz zp_savex                 ;   writes the window through [zp_tsrc],y (bank
         stz zp_tsrc                  ;   byte 0): a (dp),y store dummy-reads it first
@@ -110,6 +124,7 @@ setchn_resume = *
         lda #>[MEMW+MEMW_CHB_OFF]
         sta zp_tsrc+1                ; (2026-09-22: ?one walks zp_tsrc now)
         jsr ?one
+    .endif
     .if !TEX_RUNS
         rts                          ; the blit path patches CTRL per link itself
     .endif
@@ -121,14 +136,14 @@ setchn_resume = *
         sta.l MEMW+MEMW_VL_OFF+2*BCB_SIZE,x
         dex
         bpl ?st
-        lda #BCB_SIZE+BCB_DST_ADDR+2 ; -> slot 1's DST bank byte...
+        lda #BCB_SLOT+BCB_DST_ADDR+2 ; -> slot 1's DST bank byte...
         sta MEMW+MEMW_VL_OFF+BCB_SIZE+BCB_DST_ADDR
         sta MEMW+MEMW_VL_OFF+2*BCB_SIZE+BCB_DST_ADDR
         lda #>VRAM_BCB_CHA           ; ... of chain buffer A / B
         sta MEMW+MEMW_VL_OFF+BCB_SIZE+BCB_DST_ADDR+1
         lda #>VRAM_BCB_CHB
         sta MEMW+MEMW_VL_OFF+2*BCB_SIZE+BCB_DST_ADDR+1
-        lda #BCB_SIZE                ; dst step = 21: next slot's bank byte
+        lda #BCB_SLOT                ; dst step = the slot: next slot's bank byte
         sta MEMW+MEMW_VL_OFF+BCB_SIZE+BCB_DST_STEPY
         sta MEMW+MEMW_VL_OFF+2*BCB_SIZE+BCB_DST_STEPY
         lda #PT_LINKS-1              ; HEIGHT-1: all 47 painter slots
@@ -138,6 +153,7 @@ setchn_resume = *
         sta MEMW+MEMW_VL_OFF+BCB_SIZE+BCB_CTRL
         rts                          ; (the $FF source byte + pc_colw+1: ptc_stamp,
                                      ;  bank $01 -- this bank-0 hole ends at $4B9E)
+    .ifndef FX127
                                       ; 2026-09-22: [zp_tsrc],y -- no dummy read of the
 ?one    ldy #BCB_SIZE-1              ;   window before each store (see setup_chains)
 ?s0     lda bcb_tex8_tmpl,y
@@ -175,6 +191,7 @@ setchn_resume = *
         dex
         bne ?slot
         rts
+    .endif
 .endp
     .if * > SETCHN_END+1
         ert 'setup_chains outgrew SETCHN_BASE..END (memory_map.inc)'
@@ -189,8 +206,7 @@ setchn_resume = *
 ;--------------------------------------------------------------
     .if TEX_RUNS
 pfr_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ptc_frame
         jsr ptc_stamp                ; the chain's DST-bank stamp -- and the
                                      ;   MEMAC window pointed at the BCBs FIRST
@@ -217,14 +233,13 @@ pfr_resume = *
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org pfr_resume
     .endif                           ; TEX_RUNS (ptc_frame)
 
 ;==============================================================
 ; clear_screen -- fill whole framebuffer with colour in A
 ;==============================================================
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc clear_screen
                                       ; 2026-09-22 (vbxe-blitter: fire early, wait late):
         pha                          ;   WAIT FIRST -- a running clear still reads this
@@ -252,8 +267,7 @@ pfr_resume = *
 ;   Out here because PTCFRAME_END ($BC47) was stale by 21 B: the block really
 ;--------------------------------------------------------------
 ptcs_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ptc_stamp
         lda #BANK_EN | BANK_OVERHEAD
         sta VBXE_BANK_SEL
@@ -266,7 +280,6 @@ ptcs_resume = *
         rts                          ;   16-bit column word (low byte: process_seg)
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org ptcs_resume
 
 ;==============================================================
@@ -286,7 +299,7 @@ ptcs_resume = *
 ;   owns sits in the $00Axxx overhead bank). Fires, then flips tw_chn so the
 ;   next chain builds in the other buffer while this one runs. Clobbers A.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ptc_tail
         sta VBXE_BL_ADR0
         lda tw_chn                   ; $97/$9B window page -> $A7/$AB VRAM page
@@ -303,7 +316,7 @@ ptcs_resume = *
 ;--------------------------------------------------------------
 ptcgo_resume = *
         org PTCGO_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ptc_go
                                       ; 2026-09-15: NO second wait. Both paths into
                                      ;   ptc_tail -- ptc_fire (textures.asm) and ...
@@ -327,7 +340,8 @@ ptcgo_resume = *
 ;   cache hit leaves it nonzero and there is nothing to fire.
 ;   so flipping tw_chn here keeps both users on the same selector. Clobbers A.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+    .ifndef FX127                    ; (FX127: no expander chain)
+        .segment B1
 .proc spr_chfire
         lda tw_x1st
         bne ?skip
@@ -342,6 +356,7 @@ ptcgo_resume = *
 ?skip   rts
 .endp
         .endseg
+    .endif
 
 ;--------------------------------------------------------------
 ; ptc_fire_wait -- close + launch the open painter chain (if any), then wait
@@ -349,13 +364,13 @@ ptcgo_resume = *
 ;   about to READ what the chain paints or repatch a shared BCB (cm_flush's
 ;   copy, bg_blit's fill).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ptc_fire_wait
         jsr ptc_fire
         bra blitw_hard               ; tail call (both in bank $01)
 .endp
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ptc_fbg
         jsr ptc_fire
         jmp bg_fill
@@ -408,7 +423,7 @@ ptcgo_resume = *
 ;==============================================================
 ; blitter_wait -- spin until idle
 ;==============================================================
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc blitter_wait
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>blitw_hard           ;   next byte of this segment -- fall through
@@ -416,10 +431,10 @@ ptcgo_resume = *
         .endseg
 blw_resume = *
         org BLITW_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc blitw_hard
-?ag     ldx #4                       ; BUSY must read 0 FOUR times in a row: the
-?ck     lda VBXE_BL_BUSY             ;   FX core can drop BUSY for an instant
+?ag     ldx #BLW_READS               ; BUSY must read 0 BLW_READS times in a row:
+?ck     lda VBXE_BL_BUSY             ;   the FX core can drop BUSY for an instant
         bne ?ag                      ;   between chained BCB fetches, and a
         dex                          ;   single clean read let swap publish a
         bne ?ck                      ;   frame whose last ceiling chains (the
@@ -427,6 +442,7 @@ blw_resume = *
 .endp                                ;   were still being blitted -- the old
         .endseg
                                      ;   VBLANK spin used to mask exactly this
+                                     ;   (vbxe_regs.inc BLW_READS)
     .if * > BLITW_END+1
         ert 'blitw_hard outgrew BLITW_BASE..END (memory_map.inc)'
     .endif

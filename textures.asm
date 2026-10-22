@@ -13,7 +13,7 @@ tmpl_resume = *
 ; --- per-column textured wall BCB (1 byte wide, col-major src in banks $20+) --
 bcb_twall_tmpl
         dta $00,$00,$02              ; SRC_ADDR (patched per column)
-        dta a(1)                     ; SRC_STEPY = 1 (next texel down = next byte)
+        dta a(1)                     ; SRC_STEPY = 1 (next texture pixel down = next byte)
         dta 0                        ; SRC_STEPX = 0 (single column slice)
         dta <VRAM_SCREEN             ; DST_ADDR (patched)
         dta >VRAM_SCREEN
@@ -30,12 +30,12 @@ bcb_twall_tmpl
         dta BLT_COPY                 ; CTRL
 
         org BCBTMPL2_BASE
-; --- 8x column expander BCB: texture column -> VRAM_TEX8, each texel x8 down ---
+; --- 8x column expander BCB: texture column -> VRAM_TEX8, each texture pixel x8 down ---
 tw_cnm1 dta TW_RUNROWS-1             ; qsmul needs an address, not an immediate
 
 bcb_tex8_tmpl
         dta $00,$00,$02              ; SRC_ADDR (patched per column = rs_tsrc)
-        dta a(1)                     ; SRC_STEPY = 1 (column-major: next texel)
+        dta a(1)                     ; SRC_STEPY = 1 (column-major: next texture pixel)
         dta 0                        ; SRC_STEPX = 0
         dta <VRAM_TEX8               ; DST_ADDR = scratch
         dta >VRAM_TEX8
@@ -59,9 +59,9 @@ bcb_tex8_tmpl
 ;--------------------------------------------------------------
 
 ;--------------------------------------------------------------
-; tw_setup -- PER-COLUMN setup. IN: rs_worldh (front ceil-floor == texels) and
+; tw_setup -- PER-COLUMN setup. IN: rs_worldh (front ceil-floor == texture pixels) and
 ;   the front wall's plane accumulators rs_ycacc/rs_yfacc.
-;   OUT: rs_dscr (Q4 screen rows), rs_tpr (Q8 texels/row), tw_use8 (1 = sample
+;   OUT: rs_dscr (Q4 screen rows), rs_tpr (Q8 texture pixels/row), tw_use8 (1 = sample
 ;        the 8x scratch), tw_spy (SRC_STEPY), tw_rpt (ZOOMY).
 ;   Preserves X. Ports tools/_tex_tile.py (tpr = 1/inv).
 ;--------------------------------------------------------------
@@ -95,17 +95,34 @@ twchain_resume = *
                                      ;   wait and ptc_tail/ptc_go are inline -- the two
                                      ;   jsl wrappers cost 52 cycles a fire (89 a frame)
 ptc_fire
-        lda zp_pt                    ; low byte still at slot 1 = empty chain
-                                      ; 2026-09-22: zp_pt points at the slot's DST field
-        cmp #BCB_SIZE+BCB_DST_ADDR   ;   (paint_col's phase rewrite)
+        lda zp_pt+1                  ; empty = still at slot 1: its page (tw_chn)
+        cmp tw_chn                   ;   AND its low byte -- the 32-byte slots of
+        bne ptc_go2                  ;   the first FX127 build repeated a low byte
+        lda zp_pt                    ;   every 8 slots, and the low byte alone took
+        cmp #BCB_SLOT+PT_ZPOFF       ;   a chain of 8k links for an empty one
         beq ptc_out
+ptc_go2
         phx                          ; THE PREVIOUS CHAIN (blitw_hard inline): BUSY
-ptc_bw  ldx #4                       ;   must read 0 four times in a row -- it can
-ptc_bc  lda VBXE_BL_BUSY             ;   drop for an instant between chained BCB
+ptc_bw  ldx #BLW_READS               ;   must read 0 BLW_READS times in a row -- it
+ptc_bc  lda VBXE_BL_BUSY             ;   can drop for an instant between chained BCB
         bne ptc_bw                   ;   fetches, and a START while busy is dropped
         dex
         bne ptc_bc
         plx
+    .ifdef FX127
+        rep #$20                     ; the last link's CTRL byte loses NEXT: the
+        .LONGA ON                    ;   list ends there (EXT stays: its container
+        lda zp_pt                    ;   is loaded, harmless). Every
+        sec                          ;   link writes CTRL, so the previous chain's
+        sbc #BCB_SLOT-BCB_CTRL       ;   terminated slot needs no re-arm (2026-10-19)
+        sta.l B1CODE_BASE+ptc_p1+1   ; (long: the code is in bank $01, DBR is 0;
+        sta.l B1CODE_BASE+ptc_p2+1   ;   the initial target is an unused byte)
+        sep #$20
+        .LONGA OFF
+ptc_p1  lda MEMW+MEMW_VL_OFF+63
+        and #$FF-BLT_NEXT
+ptc_p2  sta MEMW+MEMW_VL_OFF+63
+    .else
         lda #BLT_COPY|BLT_NEXT       ; it is done: re-arm ITS terminated slot
 ptc_p1  sta MEMW+MEMW_VL_OFF+63      ; ptc_put INLINED, both stores (2026-09-15):
         rep #$20                     ;   the operands are patched below on every
@@ -119,7 +136,8 @@ ptc_p1  sta MEMW+MEMW_VL_OFF+63      ; ptc_put INLINED, both stores (2026-09-15)
         .LONGA OFF
         lda #BLT_COPY                ; ... loses the chain bit = end of list
 ptc_p2  sta MEMW+MEMW_VL_OFF+63
-        lda #BCB_SIZE                ; ptc_tail/ptc_go inline: launch from slot 1 (slot
+    .endif
+        lda #BCB_SLOT                ; ptc_tail/ptc_go inline: launch from slot 1 (slot
         sta VBXE_BL_ADR0             ;   0 is the 8x expander's); ADR2 is 0 for good
         lda tw_chn                   ; $97/$9B window page -> $A7/$AB VRAM page
         clc
@@ -133,16 +151,19 @@ ptc_p2  sta MEMW+MEMW_VL_OFF+63
         bra ptc_oa                   ; A = tw_chn, as ptc_open loads it
 ptc_open                             ; (re)open: builder -> tw_chn's slot 1
         lda tw_chn
-ptc_oa  sta zp_pt+1                  ; 2026-09-22: zp_pt -> slot 1's DST field, and the
-        clc                          ;   builder's END slot (tw_chn:00 + 21*48 = tw_chn+3
-        adc #>[BCB_SIZE*TW_MAXLINKS] ;   : $F0) into the two `cmp #` operands
-        sta.l B1CODE_BASE+paint_col.pc_cend+2   ; paint_col/pt_span test zp_pt against
-        sta.l B1CODE_BASE+pt_span.ps_cend+2
-        lda #BCB_SIZE+BCB_DST_ADDR
+ptc_oa  sta zp_pt+1                  ; 2026-09-22: zp_pt -> slot 1 (its DST field; FX127:
+        clc                          ;   its base), and the builder's END slot (tw_chn:00
+        adc #>[BCB_SLOT*TW_MAXLINKS] ;   + the slots) into the two `cmp #` operands'
+        sta.l B1CODE_BASE+paint_col.pc_cend+2   ;   high bytes: paint_col/pt_span test
+        sta.l B1CODE_BASE+pt_span.ps_cend+2     ;   zp_pt against it
+    .ifdef FX127
+        sta.l B1CODE_BASE+spr_clink.sc_cend+2   ;   (and the sprite links)
+    .endif
+        lda #BCB_SLOT+PT_ZPOFF
         sta zp_pt
         stz zp_savex                 ; zp_pt+2: the bank of [zp_pt],y -- the window is bank 0
-    .if <[BCB_SIZE*TW_MAXLINKS] != $F0 || >[BCB_SIZE*TW_MAXLINKS] != 3 || <[BCB_SIZE*TW_MAXLINKS] + BCB_DST_ADDR > $FF
-        ert 'ptc_open patches the END operand as tw_chn+3:$F0 -- TW_MAXLINKS or BCB_SIZE moved'
+    .if <[BCB_SLOT*TW_MAXLINKS] + PT_ZPOFF > $FF
+        ert 'ptc_open patches only the END operand''s high byte: its low byte must not carry'
     .endif
                                       ; 2026-09-22 (vbxe-blitter): cm_flush's copy links --
 ptc_rsh rts                          ;   PATCHED to `jsl cm_rest` (4 bytes) while a copy
@@ -212,14 +233,16 @@ ptc_out rts                          ;   unhooked it is this rts again (cm_rest)
 spre_resume = *
         org SPREXP_BASE
     .if TEX_RUNS
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+    .ifndef FX127                    ; (FX127: no expander -- the raycaster)
+        .segment B1
 .proc tw_expand_spr
         jsr tw_expand
         jmp spr_chfire
 .endp
         .endseg
+    .endif
     .else
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc tw_expand_spr
         jsr tw_chain_open
         jsr tw_expand
@@ -234,13 +257,14 @@ spre_resume = *
 
 ;--------------------------------------------------------------
 ; tw_expand -- queue the 8x expansion of the current texture column (rs_tsrc,
-;   [tw_t0, tw_t0+tw_need) texels) into the OTHER scratch as slot 0 of the
+;   [tw_t0, tw_t0+tw_need) texture pixels) into the OTHER scratch as slot 0 of the
 ;   chain. Skipped when either scratch already holds the range (tw_lastsrc).
 ;   Leaves tw_base = the scratch the runs must sample. Clobbers A/Y.
 ;--------------------------------------------------------------
 twem_resume = *
         org TWEMIT_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+    .ifndef FX127                    ; (FX127: no expander -- the raycaster)
+        .segment B1
 .proc tw_expand
 	stz tw_base
         stz tw_base+2                ; VRAM_TEX8 is in bank 0 (ert); the mid byte
@@ -269,7 +293,7 @@ twem_resume = *
                                      ; 2026-09-22 (rapidus-bus-timing): SRC lo/mid as ONE
         rep #$21                     ;   bus word (the slot's base is the pointer: the
         .LONGA ON                    ;   unindexed [dp] store, BCB_SRC_ADDR = 0)
-        lda tw_t0                    ; SRC = column base + t0 texels (t0 a byte: the
+        lda tw_t0                    ; SRC = column base + t0 texture pixels (t0 a byte: the
         and #$00FF                   ;   word read drags its neighbour in)
         adc rs_tsrc
         sta [zp_nodeptr]
@@ -306,6 +330,7 @@ twem_resume = *
                                      ;  here; nothing branches to it any more)
 .endp
         .endseg
+    .endif
 
 ;--------------------------------------------------------------
 ; tw_blit -- EMIT one run as the chain's next link: tw_base + tw_boff (source),
@@ -407,7 +432,7 @@ twem_resume = *
         sbc rs_pegrow+1
         sta m_a+1
         bpl ?apos
-                                     ; a above the peg (clip slack) -> texel 0
+                                     ; a above the peg (clip slack) -> texture pixel 0
         stz m_a
         stz m_a+1
 ?apos   lda rs_tpr
@@ -415,7 +440,7 @@ twem_resume = *
         lda rs_tpr+1
         sta m_b+1
         jsr umul16                   ; m_prod(32) = (a-peg) * tpr_q8
-        lda rs_vsh                   ; DOOM peg shift (r_segs.c): whole texels, so
+        lda rs_vsh                   ; DOOM peg shift (r_segs.c): whole texture pixels, so
         beq ?novsh                   ;   it lands on m_prod+1. The modulo below
         clc                          ;   folds it back inside the tile. (No carry
         adc m_prod+1                 ;   into m_prod+3: the code below already
@@ -440,6 +465,7 @@ twem_resume = *
         lda rs_texh_cur
         sta m_den+1
         jsr udiv24                   ; m_rem = wt inside the tile (destroys m_prod)
+        UD8                          ; (udiv24 hands back 16-bit A)
         lda m_rem
         sta tw_wt
         lda m_rem+1
@@ -450,7 +476,7 @@ twem_resume = *
         stz tw_soff+1
         lda tw_use8
         bne ?exp8
-        lda rs_tsrc                  ; raw texture column, tile = texH texels
+        lda rs_tsrc                  ; raw texture column, tile = texH texture pixels
         sta tw_base
         lda rs_tsrc+1
         sta tw_base+1
@@ -464,7 +490,7 @@ twem_resume = *
     .if TW_SAFE
         jmp ?full                    ; TW_SAFE: always expand the whole column
     .endif
-        lda tw_wt+1                  ; t0 = first texel the span touches
+        lda tw_wt+1                  ; t0 = first texture pixel the span touches
         sta tw_t0
  .ifdef ANTONIA2
         lda rs_tpr+1                 ; ANTONIA II: m_prod = h*tpr + wt in ONE
@@ -486,7 +512,7 @@ twem_resume = *
         jmp ?htail                   ; (jmp keeps C)
 ?hsw
  .endif
-        qsmul tw_h, rs_tpr, qs_p           ; m_prod = h*tpr + wt  -> last texel at >>8
+        qsmul tw_h, rs_tpr, qs_p           ; m_prod = h*tpr + wt  -> last texture pixel at >>8
         lda qs_p
         sta m_prod
         lda qs_p+1
@@ -509,7 +535,7 @@ twem_resume = *
         lda m_prod+2
         adc #0
         sta m_prod+2
-        bne ?full                    ; last texel >= 256 -> past any texH
+        bne ?full                    ; last texture pixel >= 256 -> past any texH
 
         sec                          ; need = t1 - t0 + 1
         lda m_prod+1
@@ -522,8 +548,8 @@ twem_resume = *
         cmp rs_texh_cur
         beq ?sized
         bcs ?full
-?sized  ; Expand a few texels MORE than this span needs: the next screen column
-        ; usually wants a range shifted by a texel or two, and the containment
+?sized  ; Expand a few texture pixels MORE than this span needs: the next screen column
+        ; usually wants a range shifted by a texture pixel or two, and the containment
         ; test in tw_expand then serves it from the scratch instead of blitting
         ; the column again.
         lda tw_t0                    ; end = t0 + need + TW_PAD
@@ -542,7 +568,7 @@ twem_resume = *
         lda rs_texh_cur
         sta tw_need
 ?tile8
-        jsr tw_expand                ; texels [t0, t0+need) -> VRAM_TEX8 (or a
+        jsr tw_expand                ; texture pixels [t0, t0+need) -> VRAM_TEX8 (or a
                                      ;   cache hit on a range that contains them) ...
         lda tw_lastt0                ; tw_soff = lastt0 * S (samples)
         sta tw_soff
@@ -630,7 +656,7 @@ twruns_resume = *
         asl
         sta tw_zoomv
         ; ======================= one run per source tile =======================
-?run    lda tw_use8                  ; tw_off = wt >> 5 (samples) or wt >> 8 (texels)
+?run    lda tw_use8                  ; tw_off = wt >> 5 (samples) or wt >> 8 (texture pixels)
         beq ?offraw
 	rep #$20
 	.LONGA ON

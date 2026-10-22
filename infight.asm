@@ -2,13 +2,12 @@
 ; infight.asm -- monsters fighting each other (P_DamageMobj's tail +
 ;   actor->target): who a monster is angry at.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; aif_reset -- ai_reset's tail: a fresh level starts with everything after the
 ;   player, no threshold anywhere, and NOTHING IN SIGHT.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_reset
         lda #<TH_TARG                ; 0 -- every per-thing page is 256 B aligned
         sta zp_ptr                   ;   (zp_ptr+2 = MAP_EXT_BANK, init_level)
@@ -34,7 +33,7 @@
 ;   actor->target->x/y in P_NewChaseDir, P_CheckMeleeRange and A_FaceTarget
 ;   alike; this port read the player in all three. Clobbers A/Y, sp_ptr, m_prod.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_tpos
         lda #>TH_TARG
         jsr ai_get
@@ -68,7 +67,7 @@
 ;       if (actor->threshold) { if (!target || target->health <= 0)
 ;   OUT A/Z: nonzero = go on thinking, zero = stand still (the player is dead
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_ttick
         lda #>TH_TARG
         jsr ai_get
@@ -102,7 +101,7 @@
 ;   can count on -- P_KillMobj has not started its death chain (TH_STATE = 0)
 ;   after -- and ai_t3 = TH_HPL. Clobbers A, ai_t3. Preserves X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_live
         stz zp_ptr                   ; <TH_STATE = 0 (every per-thing page is
     .if [TH_STATE & $FF] != 0        ;   256 B aligned: ert)
@@ -131,7 +130,7 @@
 ;--------------------------------------------------------------
 ; aif_thdec -- threshold--, floored at 0. Clobbers A/X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_thdec
         lda #>TH_THRS
         jsr ai_get
@@ -147,7 +146,7 @@
 ; aif_isvis -- ai_try_atk's P_CheckSight. Against the player it is the port's
 ;   vissprite oracle; against another monster it is simply true (see the header).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_isvis
         lda #>TH_TARG
         jsr ai_get
@@ -165,7 +164,7 @@
 ;   ai_t = the thing that was just hurt (ai_hurt has already stored it),
 ;   ai_src = whoever hurt it, +1 (0 = the player). Clobbers A/X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_retal
         lda ai_src
         beq ?gate                    ; the player is always a legal target
@@ -203,7 +202,7 @@
 ; aif_hurt -- ai_fire's damage sink. A = damage, ai_t = the monster firing,
 ;   ai_vic = a body the shot stopped in ($FF = it reached what it aimed at).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_hurt
         sta ai_t3                    ; the damage, across the target lookup
         lda ai_vic
@@ -235,7 +234,7 @@
 ;   retaliation. ai_t/ai_k are the CALLER's -- ai_hurt stores the victim over
 ;   ai_t and ai_start rewrites ai_k -- so both are saved across it.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_dmg
         sta ai_t4
         ldy ai_vt                    ; "if (target->health <= 0) return" -- the
@@ -294,7 +293,7 @@
 ;   a hitscan at ai_tx/ai_ty; find the nearest shootable body the line passes
 ;   through and put it in ai_vic ($FF = the line is clear).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_block
         lda #$FF
         sta ai_vic
@@ -362,7 +361,7 @@
 ;--------------------------------------------------------------
 ; aif_bvis -- thing ai_bi: C=1 if it is in this frame's vissprite list.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_bvis
         ldx sp_n
 ?lp     dex
@@ -382,7 +381,7 @@
 ;   it. en_bthings' own liveness pair (not already dying, health left) plus the
 ;   MF_SOLID radius -- p_map.c:979 lets a corpse or a pickup through.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_alive
         ldy ai_bi
         jsr aif_live                 ; not dying, health left (aif_live leaves
@@ -403,7 +402,7 @@
 ; aif_cand -- thing ai_bi against the line of fire. C=1 = the shot stops here,
 ;   and ai_alen is its distance from the shooter (the loop's new cutoff).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_cand
         lda ai_bi                    ; c = candidate - shooter
         jsr en_thing.en_th2w          ; 2026-09-22: returns 16-bit
@@ -455,7 +454,7 @@
 ;   i.e. the shot passes closer to the candidate's centre than its own radius.
 ;   cross_pos (math.asm) leaves the full signed 32-bit cross product in cx_p1.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_perp
 	rep #$20
 	.LONGA ON
@@ -524,13 +523,13 @@
 ;   dominant axis, which is what the "in front" test above reads.
 ;   OUT ai_alen. Clobbers A, ai_aax/ai_aay/ai_t4.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc aif_alen                          ; THE THUNK -- see bank01.asm.
         jsl B1CODE_BASE+b1_aif_alen
         rts                          ; the tail call comes back through the rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ; ---- scratch, all of it inside this block ----------------------------------
 ai_tx    dta 0,0                     ; where ai_t's TARGET stands (aif_tpos)
@@ -562,4 +561,3 @@ ai_ahalf dta 0,0                     ; the smaller magnitude, halved (16-bit)
 ai_axmaj dta 0
 
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)

@@ -171,7 +171,10 @@ b1_code2_start = *
 ;--------------------------------------------------------------
 ; b1_build_frac -- build_frac_tables' body: TSIN/TCOS = 4*|sin|*b, 4*|cos|*b
 ;   (b=0..255) by running sum.
+;   (2026-10-15, 6502-idioms "delete what nothing reads": ANTONIA2's FMUL
+;   multiplies on the card, builds no tables and never calls this.)
 ;--------------------------------------------------------------
+  .ifndef ANTONIA2
 .proc b1_build_frac
         ; --- |sin| + sign -> TSIN ---
                                       ; 2026-09-23: m_ma = 4*|sin| in the same window,
@@ -251,6 +254,7 @@ b1_code2_start = *
         bne ?cl
         rtl
 .endp
+  .endif
 
 ;--------------------------------------------------------------
 ; b1_amgate -- am_gate's whole body (its bank-0 block is 11 bytes and holds
@@ -265,10 +269,10 @@ b1_code2_start = *
         sta MENU_RUN,x
         inx
         bne ?p
-        jsl menu_run_w0              ; (DRAC_PLAN 2b) the overlay returns with
+        jsl menu_run_w0              ; the overlay returns with
         rts                          ;   rts: enter it through a bank-0 jsr/rtl
                                      ;   wrapper, or it returns into bank 0
-?world  jml B1CODE_BASE+render_world   ; (bank $01 since DRAC_PLAN 2b)
+?world  jml B1CODE_BASE+render_world
 .endp
 
 ; (b1_sq2_restore is GONE, 2026-08-31 pm: the SQ2 tables live at

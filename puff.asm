@@ -47,7 +47,7 @@ pf_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
 ;--------------------------------------------------------------
 pf_resume = *
         org SHREF_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sh_refine
         stz sh_lo                    ; the wall is somewhere in [0, sh_hi], and
         stz sh_lo+1                  ;   sh_hi is still the full ray
@@ -128,7 +128,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ;   puff, so there is nothing to do. A shot that hit nothing gets the wall
 ;   traced and the puff put there.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pf_shot
         lda pf_on
         bne ?busy                    ; one already showing: let it finish (ONE
@@ -315,7 +315,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ;   reached something, so it leaves BLOOD there -- or a puff, if the thing has
 ;   MF_NOBLOOD.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pf_gore
         lda en_kind                  ; MF_NOBLOOD -> a puff: kind 0 (a shootable
         beq ?puff                    ;   this port names no kind for) and the
@@ -373,7 +373,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ; pf_leaf -- which subsector the puff hangs in, so spr_chased knows when to
 ;   project it. locate_floor reads zp_px/zp_py, so borrow them (pj_leaf's dance).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pf_leaf
         pei (zp_px)                  ; locate_floor reads zp_px/zp_py: park both
         pei (zp_py)                  ;   words (pj_leaf's dance, 16-bit)
@@ -405,7 +405,7 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ; pf_frameb -- the frame loop's projectile call, retargeted once more: the
 ;   missile's chain first (which starts with the movers), then the puff clock.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pf_frameb
         jsr pj_frameb
         lda current_level
@@ -460,13 +460,22 @@ pf_tan  dta a(-1640),a(-1435),a(-1230),a(-1025),a(-820),a(-615),a(-410),a(-205)
 ; spr_chased -- spr_add's chase hook, retargeted a third time (sprites.asm
 ;   calls this one): the ball and the missile first, then the puff.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_chased
         lda bl_on                    ; 2026-09-30 (6502-cycles-layout + 6502-idioms
         ora pj_any                   ;   jsr/rts -> jmp): nothing flying and no puff
         ora pf_on                    ;   (the usual leaf, 35 a frame) -> the monsters
-        jeq spr_chase                ;   alone as a tail call, no taken branch.
-                                     ;   spr_chase never writes these three.
+  .ifdef ANTONIA2                    ;   alone as a tail call, no taken branch.
+        bne ?full                    ;   spr_chase never writes these three.
+        ldx zp_nid                   ; (2026-10-15, 6502-idioms "jsr X / rts":
+        lda ai_dcnt,x                ;   spr_chase's empty-leaf gate HERE -- the
+        bne ?gch                     ;   usual leaf returns without the jmp, on a
+        rts                          ;   not-taken branch)
+?gch    jmp spr_chase.sc_gated
+?full
+  .else
+        jeq spr_chase
+  .endif
         jsr spr_chase                ; the monsters (enemy_ai.asm) ...
         lda bl_on                    ; --- spr_chaseb (ball.asm) INLINED: the
         beq ?cb_out                  ;   imp's fireball, when it is in this leaf

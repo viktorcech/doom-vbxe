@@ -22,23 +22,21 @@ COLDSV   equ $E477                   ; OS cold start -- QUIT DOOM's exit
 ;   for the 2026-09-26 chunk map; the ert below trips if pack_menu moves it.
 ;--------------------------------------------------------------
 mnld_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 mn_dtab                              ; --- phase A: pakA at MENU_BOUNCE ---
-        dta $00,$00,$74, $00,$00,$02, $00,$80   ; title+pristine 1/3 -> $020000
-        dta $00,$80,$74, $00,$80,$02, $00,$80   ; ... 2/3
-        dta $00,$00,$75, $00,$00,$03, $00,$D0   ; ... 3/3
-        dta $00,$D0,$75, $00,$B0,$00, $00,$30   ; the M_* patches -> $00B000
-        dta $00,$00,$76, $00,$E0,$00, $00,$20   ; menu+savegame CODE -> $00E000
+        dta $00,$00,$90, $00,$00,$02, $00,$80   ; title+pristine 1/3 -> $020000
+        dta $00,$80,$90, $00,$80,$02, $00,$80   ; ... 2/3
+        dta $00,$00,$91, $00,$00,$03, $00,$D0   ; ... 3/3
+        dta $00,$D0,$91, $00,$B0,$00, $00,$30   ; the M_* patches -> $00B000
+        dta $00,$00,$92, $00,$E0,$00, $00,$20   ; menu+savegame CODE -> $00E000
 MN_D_B  equ * - mn_dtab              ; --- phase B: pakB at MENU_BOUNCE ---
-        dta $00,$00,$74, $00,$D0,$03, $00,$30   ; episode picker + M_DOOM
-        dta $00,$30,$74, $00,$00,$05, $00,$80   ; the intermission run
+        dta $00,$00,$90, $00,$D0,$03, $00,$30   ; episode picker + M_DOOM
+        dta $00,$30,$90, $00,$00,$05, $00,$80   ; the intermission run
 MN_D_N  equ * - mn_dtab
-    .if MENU_TCHUNKS<>29 || MENU_PCHUNKS<>3 || MENU_OCHUNKS<>2 || MENU_TBANK<>$20 || MENU_PBANK<>$0B || MENU_OBANK<>$0E || MENU_LVCH<>83 || MENU_LVCHUNKS<>3 || MENU_WICH<>86 || MENU_WICHUNKS<>8 || MENU_LVBANK<>$3D || WI_BANK<>$50 || MENU_BOUNCE<>$740000
+    .if MENU_TCHUNKS<>29 || MENU_PCHUNKS<>3 || MENU_OCHUNKS<>2 || MENU_TBANK<>$20 || MENU_PBANK<>$0B || MENU_OBANK<>$0E || MENU_LVCH<>83 || MENU_LVCHUNKS<>3 || MENU_WICH<>86 || MENU_WICHUNKS<>8 || MENU_LVBANK<>$3D || WI_BANK<>$50 || MENU_BOUNCE<>$900000
         ert 'mn_dtab rows are literal for the 2026-09-26 menu.bin chunk map -- regenerate them'
     .endif
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org mnld_resume              ;   memory_map.inc for why it moved
 
 ;--------------------------------------------------------------
@@ -49,7 +47,7 @@ MN_D_N  equ * - mn_dtab
 ;   plain chunk walk (2026-09-26).
 ;--------------------------------------------------------------
 .proc mn_binf
-        stz inf_out                  ; MENU_BOUNCE = $74:0000
+        stz inf_out                  ; MENU_BOUNCE = $90:0000
         stz inf_out+1
         lda #MENU_BOUNCE>>16
         sta inf_out+2
@@ -170,8 +168,13 @@ mn_le   dta 0
                                      ;   would eat the first ESC of the session ...
         jsl B1CODE_BASE+con_msg_w1   ; "M_Init: ..." -- the whole boot runs
                                      ;   on the TEXT console (console.asm)
-        lda #<MENU_SEC1              ;   (2026-09-26): the title comes up at
-        sta ll_sec                   ;   the END, fully loaded, like the PC
+        jsl B1CODE_BASE+con_msg_w1   ; "R_Init: ... - [ ]", the dots gate up:
+                                     ;   EVERY boot read runs under it, and
+                                     ;   inflate ticks the dots per sector
+        jsr load_hud_t               ; the status bar via MENU_BOUNCE, before
+                                     ;   the menu rows claim the bounce
+        lda #<MENU_SEC1              ; the title comes up at the END, fully
+        sta ll_sec                   ;   loaded, like the PC
         lda #>MENU_SEC1
         sta ll_sec+1
         jsr mn_binf                  ; pakA: title + patches + CODE overlays
@@ -186,15 +189,14 @@ mn_le   dta 0
         ldx #MN_D_B
         lda #MN_D_N
         jsr mn_dist
-        jsl B1CODE_BASE+con_msg_w1   ; (an empty entry: a spare call site)
-        jsl B1CODE_BASE+con_msg_w1   ; "R_Init: ... - [ ]", the dots gate up
-        jsr load_textures_t ; the WHOLE tex+spr pool (B2: one blob for all
-                                     ;   27 levels): inflate ticks a dot per
-                                     ;   32 KB -- the PC's R_Init line, real
-        jsl B1CODE_BASE+con_msg_w1   ; "P_Init/I_Init/I_Startup*", dots down
-                                     ;   (sound + net print from load_sounds)
+        jsr load_textures_t ; the tex+spr pool groups the first level needs
+                                     ;   (the split pool; load_level_c adds
+                                     ;   what a picked level lacks)
         jsr load_sounds_t ; ... the digi SFX, the weapon psprites, the
                                      ;   songs and the world maps
+        jsl B1CODE_BASE+con_msg_w1   ; "P_Init/I_Init/I_Startup*": the room's
+                                     ;   last dots, the gate down
+        jsl B1CODE_BASE+con_msg_w1   ; "I_StartupSound ... S_Init"
         jsr snd_init_t ; the mixer, now that its samples are in
                                      ; (NO MUSIC HERE.
         jsl B1CODE_BASE+con_msg_w1   ; "HU_Init/ST_Init"
@@ -226,7 +228,6 @@ mn_resume = *
 ;--------------------------------------------------------------
         org MNOPEN_BASE
 .proc mn_open
-                                      ; DRAC_PLAN 3b: 16 KB window
         sta VBXE_BANK_SEL
         and #3                       ; page 0 of chunk A: MEMW16+(A&3)*$1000
         asl
@@ -250,7 +251,7 @@ mn_resume = *
 ; mn_key -- read_keys' tail: ESC opens the control panel (m_menu.c:1699).
 ;--------------------------------------------------------------
         org MNKEY_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mn_key
                                       ; 2026-09-23 (rapidus-bus-timing): read_keys' tail comes
         lda SKSTAT                   ;   in at mnk_rk with ITS sample (kb_sk) -- one I/O
@@ -289,8 +290,7 @@ mnk_rk  lda kb_sk                    ;   (am_kgate, no read_keys) still reads SK
 ;   caller still has load_things to run, and that resets THING_ALIVE and
 ;   re-streams the things blob -- straight over a restored save.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mn_pend
         lda rd_pend                  ; READ THIS! picked from the in-game menu
         beq ?nord
@@ -322,12 +322,15 @@ RD_XATT equ XDL_ATT_BASE|FL_PAL_NORM|[PRI_ALL<<8]            ; the lists' ATT pa
     .if [VRAM_XDL_R&$FFC000] <> [VRAM_OVERHEAD&$FFC000]
         ert 'mn_rdgame: list R must sit in the 16 KB the window is parked on'
     .endif
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mn_rdgame
-                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a)
-        lda #$40                     ;   DRAC_PLAN 4a: siov_r banks the ROM in)
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts
+        lda #$40                     ;   siov_r banks the ROM in)
         sta NMIEN
         cli
+        jsr mus_stop                 ; 2026-10-06: the level's song too -- its VBLANK
+                                     ;   player writes AUDF3/4, SIO's baud clock
+                                     ;   (snd_pokey's mus_again starts it again)
         jsl snd_stop_w0              ; the DAC quiet before SIO takes POKEY
         stz SOUNDR_R
         jsr rd_pages
@@ -580,18 +583,16 @@ sr_put_w1 jsr sr_put                 ; wi.asm's (stage 2, bank 0)
         rtl
 
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a
+        .segment D0
 rd_pend dta 0                        ; 1 = mn_rdgame on the next mn_pend
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;==============================================================
 ; PART 2b -- THE MENU'S BLITTER: DOOM's 320 on an SR screen, boot and game.
 ;==============================================================
 mnsr_resume = *
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; mn_sdraw -- zp_ptr = a 7-byte menu_tab/epi.tab/hud row, X = the column and
 ;   Y = the row in DOOM pixels: V_DrawPatch 1:1 onto the menu's SR screen
@@ -605,7 +606,7 @@ ROW_HALF equ $40
     .if BLT_ZOOM_2X <> 1 || ROW_HALF <> $40
         ert 'mn_sdraw turns ROW_HALF into the zoom by two shifts and a rol'
     .endif
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mn_sdraw
         stx mn_sx                    ; the column, a word below
         stz mn_sx+1
@@ -663,7 +664,7 @@ ROW_HALF equ $40
         sta MEMW+MEMW_HD_OFF+BCB_CTRL
         jsr mn_sdst
         jsl hud_fire_w0              ; hud_blit's own "wait, then start" tail
-        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
+        rts
         .LONGA ON
 ?w9     ora #$0100                   ; the ninth bit
         bra ?w8
@@ -695,7 +696,7 @@ ROW_HALF equ $40
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; mn_togame -- hand the machine back to the renderer. menu_boot calls it on the
@@ -710,7 +711,7 @@ ROW_HALF equ $40
         ert 'mn_togame: the loading screen halves must be FRAME_A and WIPE_START'
     .endif
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mn_togame
                                       ; the BCB as bus WORDS (rapidus-bus-timing)
         rep #$20
@@ -755,9 +756,7 @@ ROW_HALF equ $40
         .LONGA OFF
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; mn_sbox -- mb_x/mb_y/mb_w/mb_h (160 units across: two DOOM pixels, so a box
 ;   restores a pixel more at worst) back to the BACKGROUND: the pristine copy
@@ -765,7 +764,7 @@ ROW_HALF equ $40
 ;   0, in game -- the frozen frame in FRAME_A, zoomed 2x the way mn_frz built
 ;   the screen out of it. The menu never draws below its row 168.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc mn_sbox
         lda mb_y
         sta mn_sy2
@@ -816,7 +815,7 @@ ROW_HALF equ $40
     .endif
         stz MEMW+MEMW_HD_OFF+BCB_CTRL          ; [20] BLT_COPY
         jsl hud_fire_w0
-        rts                          ; DRAC_PLAN 4b (xbank_fix.py)
+        rts
 .endp
 
 ;--------------------------------------------------------------
@@ -903,7 +902,7 @@ mn_sname_w1
         jsr mn_sdraw
         rtl
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 mn_sx   dta a(0)                     ; mn_sdst's column (a word) and row, after
 mn_sy2  dta 0                        ;   V_DrawPatch's offsets
 mn_st   dta a(0)                     ; ...and the offset it computes, which
@@ -928,8 +927,6 @@ sr_sx   dta 2                        ;   read as the BCB's words [0-1] [2-3] [4-
 sr_x    dta a(0)                     ; sr_put's column (wi.asm's wi_px)
 sr_t    dta a(0)                     ; ...and its row*320
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;==============================================================
 ; PART 3 -- THE OVERLAY. Assembled for MENU_RUN ($1000-$14FF), parked in the
@@ -1047,6 +1044,11 @@ go      ldx mn_x                     ; (mn_slotdig comes in here with zp_ptr
 .proc mn_boot
         stz mn_ing                   ; boot: NEW GAME just returns (menu_boot
                                      ;   does the loading)
+        lda mus_cur                  ; 2026-10-06: the title's song (d_main.c:
+        bne ?sung                    ;   S_StartMusic(mus_intro)), ONCE a boot --
+        lda #MUS_INTRO               ;   mus_cur is 0 until a song was started and
+        jsr mus_reset_t              ;   this one leaves it 1; mn_vsync feeds it,
+?sung                                ;   mn_quiet or its own end stops it
         jsr mn_anykey                ; (mn_arm and mn_sy are seeded by menu_boot:
                                      ;  they are PERMANENT bytes, so their init ...
 ?again  jsr mn_run
@@ -1173,11 +1175,10 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         lda mn_arm2                  ;   rested: not while held, not in the
         stx mn_arm2                  ;   bounce of a contact
         bne ?loop
-        lda TRIG0
-        lsr
-        bcc ?sel                   ; (?sel is out of branch range from here
-        ;jmp ?sel                     ;  now that the slot picker is in the
-?ntrig  lda STICK0                   ;  dispatch below it)
+        jsr mn_trig                  ; 2026-10-20: fire held at four lines of the
+        bcc ?sel                   ;   frame, not at one read (mn_trig)
+        ;jmp ?sel                     ; (?sel was out of branch range from here once
+?ntrig  lda STICK0                   ;  the slot picker went into the dispatch below)
         lsr                          ; bit0 = UP
         bcc ?up
         lsr                          ; bit1 = DOWN
@@ -1251,8 +1252,10 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         cmp #4
         beq ?read                    ; 4 = READ THIS! (mn_readthis, PART 1)
         cmp #5
-        bne ?back2                   ; 1 = options: no submenu
-        lda #BANK_EN | SGOVL_BANK    ; quitdoom: the quit sound, ENDOOM and the
+        beq ?quit
+        jsr mn_optflip               ; 1 = OPTIONS: no submenu, one setting
+        bra ?back2
+?quit   lda #BANK_EN | SGOVL_BANK    ; quitdoom: the quit sound, ENDOOM and the
         ldx #SG_E_QUIT               ;   reboot are the OTHER overlay's
         jmp mn_open                  ;   (quit.asm quit_doom) -- QUIT never
                                      ;   comes back
@@ -1313,6 +1316,41 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
 .endp
 
 ;--------------------------------------------------------------
+; mn_optflip -- the OPTIONS row (2026-10-06): it steps the one setting there is,
+;   what a LEVEL sounds of: SOUND (its effects, four voices) -> MUSIC (its song,
+;   eight) -> BOTH (the song, the effects mixed into one voice a chip). In a
+;   game the song starts or stops now.
+;   2026-10-15: a mono machine steps it too -- it has its own set of the songs
+;   (music.asm load_music); the mus_mono test went (6502-idioms).
+;--------------------------------------------------------------
+.proc mn_optflip
+        lda mus_mode
+        inc @
+        cmp #OPT_N
+        bcc ?m
+        lda #0
+?m      sta mus_mode
+    .if mb_y <> mb_x+1 || mb_h <> mb_w+1
+        ert 'mn_optflip stores mb_x/mb_y and mb_w/mb_h as two words'
+    .endif
+        rep #$20                     ; the old word off the picture (mn_sbox: the
+        .LONGA ON                    ;   background's own pixels, 160 units across).
+        lda #[OPT_LX/2]|[OPT_LY<<8]  ;   2026-10-06 (65816-windows): two adjacent
+        sta mb_x                     ;   pairs, one block, two word stores
+        lda #[OPT_LW/2]|[7<<8]       ; (7: hu_font's 8 rows - 1)
+        sta mb_w
+        .LONGA OFF
+        sep #$20
+        jsr mn_box
+        jsr mn_optlab                ; ... and the new one on
+        jsr mus_stop_t
+        lda mn_ing
+        beq ?out                     ; the boot menu: the next level takes it up
+        jmp mus_level_t
+?out    rts
+.endp
+
+;--------------------------------------------------------------
 ; mn_items -- M_DrawMainMenu: the M_DOOM banner and MainMenu[]'s six lines,
 ;   over whatever is on screen, exactly as DOOM draws them.
 ;--------------------------------------------------------------
@@ -1339,7 +1377,15 @@ mn_enter lda mn_n                    ; mn_bot = the LAST row (top + (n-1)*16)
         lda mn_it
         cmp mn_n
         bcc ?it
-        rts
+        ert *<>mn_optlab             ; falls through: OPTIONS' choice beside it
+.endp
+.proc mn_optlab                      ; 2026-10-06: "SOUND" or "MUSIC" (mus_mode),
+        lda mus_mode                 ;   hu_font, right of the OPTIONS row
+        clc
+        adc #MI_OPTSND
+        ldx #OPT_LX
+        ldy #OPT_LY
+        jmp mn_draw
 .endp
 
 ;--------------------------------------------------------------
@@ -1517,15 +1563,17 @@ mn_box  = mn_sbox_t
         ldx #MENU_DOOMX
         ldy #MENU_DOOMY
         jsr mn_wbox
-        lda #MENU_X/2-1              ; (160 units)
-        sta mb_x
-        lda #MENU_Y
-        sta mb_y
-                                      ; 2026-09-22 (drac030 RELOAD): A = MENU_Y = 64, the width the
-        ert MENU_Y<>64               ;   widest MainMenu[] line (125 px) needs
-        sta mb_w
-        lda #MENU_NITEMS*MENU_LINEH-1
-        sta mb_h
+        rep #$20                     ; mb_x/mb_y and mb_w/mb_h are two adjacent pairs
+        .LONGA ON                    ;   (mn_optflip's ert): two word stores, one
+        lda #[MENU_X/2-1]|[MENU_Y<<8]           ;   block (65816-windows, 2026-10-20)
+        sta mb_x                     ; x in 160 units, y = MENU_Y
+        lda #[[OPT_LX+OPT_LW+1]/2-[MENU_X/2-1]]|[[MENU_NITEMS*MENU_LINEH-1]<<8]
+        sta mb_w                     ; the width: MainMenu[]'s widest line is 125 px,
+        .LONGA OFF                   ;   but OPTIONS' choice (mn_optlab, hu_font at
+        sep #$20                     ;   OPT_LX..+OPT_LW) reaches past it -- 2026-10-20,
+                                     ;   drac030: LOAD/SAVE GAME with no saves kept the
+                                     ;   "ND" of "SOUND" (the old 64-unit box ended at
+                                     ;   px 223, the word at 248). The height: the rows
         jmp mn_box
 .endp
 
@@ -1566,9 +1614,8 @@ mn_box  = mn_sbox_t
         ora #$F0                     ; stick 1 is not ours
         inc @                        ; $FF = centred -> 0: inc IS the cmp #$FF
         bne ?yes
-        lda TRIG0
-        lsr                          ; bit0 = 0 while fire is held
-        bcc ?yes
+        jsr mn_trig                  ; 2026-10-20: fire = TRIG0 held at four lines
+        bcc ?yes                     ;   of the frame, not at one read (mn_trig)
         lda SKSTAT
         and #4                       ; bit2 = 0 while a key is held
         beq ?yes
@@ -1576,6 +1623,29 @@ mn_box  = mn_sbox_t
         rts
 ?yes    sec
         rts
+.endp
+
+;--------------------------------------------------------------
+; mn_trig -- C = 0 while fire is held at ALL of four lines of the frame (VCOUNT
+;   24, 56, 88, 120: lines 48..240, ~4 ms apart, none in the VBLANK); the first
+;   "up" sample returns C = 1 at once. 2026-10-20: the FX core 1.27 (a VBXE 2.x
+;   answers TRIG0 itself) gives 0 in bursts with nothing pressed, and one read
+;   after the VBI took the title, NEW GAME and the episode by itself on the real
+;   machine (tools/tests/_probe_nomenu.py --glitch). A press lasts frames; a
+;   burst does not reach all four samples. Clobbers A and Y (no caller keeps Y).
+;--------------------------------------------------------------
+.proc mn_trig
+        ldy #4
+?s      lda ?vct-1,y                 ; the sample's line, in time order
+?w      cmp VCOUNT
+        bne ?w
+        lda TRIG0
+        lsr @                        ; C = bit 0: 1 = up at this line -> out
+        bcs ?out
+        dey                          ; (dey/bne keep C: 0 after the fourth sample)
+        bne ?s
+?out    rts
+?vct    dta 24, 56, 88, 120
 .endp
 
 ;--------------------------------------------------------------
@@ -1604,7 +1674,8 @@ mn_box  = mn_sbox_t
         bcc ?done
         jsr mn_vsync
         bra ?w
-?done   jmp snd_stop
+?done   jsr mus_stop_t               ; 2026-10-06: the song with it -- BEFORE snd_stop,
+        jmp snd_stop                 ;   which zeroes AUDCs the player sends only once
 .endp                                ;   snd_stop zeroes all four AUDCn, so no
                                      ;   note is left hanging over the load
                                      ;   (SIO owns POKEY from here).
@@ -1619,7 +1690,7 @@ mn_box  = mn_sbox_t
         lda RTCLOK3
 ?w      cmp RTCLOK3
         beq ?w
-        rts
+        rts                          ; (D_INTRO's frame a VBLANK is rom_nmi's)
 .endp
 
 mn_x    dta 0

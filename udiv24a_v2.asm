@@ -2,8 +2,9 @@
 ;
 ; !!! THIS FILE MUST NEVER BE CHANGED. It is drac030's code, icl'd verbatim by
 ; !!! math.asm (udiv24, .ifdef ANTONIA2). Any adaptation goes in math.asm.
-; !!! ONE change, by drac030's own request (2026-09-30): ?q_hi/?q_lo moved out
-; !!! of the code bank ($01) to bank 0 (memory_map.inc UDQ_VARS).
+; !!! Changes only by drac030's own request: ?q_hi/?q_lo moved out of the code
+; !!! bank ($01) to bank 0 (2026-09-30), then to zero page $70 (2026-10-02,
+; !!! memory_map.inc UDQ_VARS).
 ;
 ; m_quot:m_rem = m_prod / m_den
 ;

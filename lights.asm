@@ -29,7 +29,7 @@ LT_DTMAX    equ 32                   ; frame-delta clamp: a level-load hitch mus
 ;   colormap is one 8 KB block at a fixed SRAM address, so the row index is a
 ;   single add on the HIGH byte (lt_seg).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc lt_init
         lda #<CMAP_EXT
         sta zp_cm
@@ -65,7 +65,7 @@ LT_ROW  :33 dta LT_PAGE+31           ; i = 0..32: darker than row 31 is row 31
 ; lt_seg_flash -- lt_seg while the muzzle flash lights: r_segs.c adds
 ;   extralight to lightnum, EXTRALIGHT holds it in light units (WS_LIGHT).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc lt_seg_flash
         ldy #4
         lda (zp_ptr),y
@@ -132,7 +132,7 @@ lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
 ; lt_segv -- lt_seg while the light-amp visor lights (p_user.c:371): every
 ;   surface full bright, colormap row 0 = the base page.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc lt_segv
         lda #64                      ; (2026-09-28: LT_ROW[64 + pc_dim] is row 0 too)
         sta rs_wlit
@@ -147,7 +147,7 @@ lts_add sta zp_cm+1                  ; (lt_segv joins here with row 0)
 ;   pw_tic calls it when vis_lit changes, wp_flight when EXTRALIGHT does.
 ;   Clobbers A/X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc lt_pick
         rep #$20
         .LONGA ON
@@ -257,7 +257,7 @@ gm_page :PAL_COUNT dta [[PALRAW_EXT>>8]&$FF]+3*#  ; the slot's R plane: a page a
 ;   tic counters read as VBLANKs. Writes sector->lightlevel in the map slot;
 ;   nothing else in the engine touches that byte.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc update_lights
                                       ; 2026-09-22 (skills pass): zp_ptr points AT the
         ldx MAP_HNLIGHT              ;   lightlevel (+4), so every access is (zp_ptr)
@@ -390,7 +390,7 @@ ltsf_resume = *
 ;   call at the right variant. Runs 2-4 times per SHOT, never per frame; the
 ;   win2 table read is as cold as the transition itself.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc wp_flight
         ldy wp_fstate
                                       ; 2026-09-22: the target is lt_pick's call now

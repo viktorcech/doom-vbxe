@@ -8,7 +8,7 @@
 ;   dist >= bombdamage is out of range, and the damage is bombdamage - dist.
 ;   en_k2 = the exploding thing. Clobbers A/Y, m_a, m_b, m_prod, sp_ptr.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_boom
         lda en_k2                    ; en_tick/en_adv own these -- the sweep below
         pha                          ;   calls en_kill, which reuses them
@@ -60,7 +60,7 @@
 ; en_dist -- PIT_RadiusAttack's test, verbatim. IN m_a/m_b = signed dx/dy.
 ;   OUT C=1 and A = bombdamage - dist, or C=0 = out of range.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_dist
         jsr en_los
         bcs ?see
@@ -109,7 +109,7 @@
 ;     OUT C=1 and A = the damage, or C=0. sp_ptr, m_a and m_b survive, which is
 ;         what en_bthings' loop needs.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_dray
         jsr en_dist                  ; range (and a barrel's grid) first
         bcc ?out
@@ -151,7 +151,7 @@
 .endp
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 en_bx   dta 0,0                      ; where the blast went off
 en_by   dta 0,0
 en_bi   dta 0                        ; the sweep's thing index
@@ -168,7 +168,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   OUT C=1 = the target is visible (or this thing has no grid, so nothing is
 ;   Clobbers A/X/Y, en_lt/en_lt2 and zp_ptr (zp_ptr+2 is already MAP_EXT_BANK --
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_los
         lda en_lp
         ora en_lp+1
@@ -223,7 +223,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   blasts through walls like the whole game used to. Once per explosion.
 ;   Clobbers A/X/Y and zp_ptr.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_lfind
         lda #<LOS_EXT
         sta zp_ptr
@@ -260,7 +260,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   en_dist's sight test (en_los) is what keeps the chain from jumping a wall
 ;   into the next room.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_bthings
         lda en_k2
         sta en_bself                 ; en_kind_of below reuses en_k2 as scratch
@@ -322,7 +322,7 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ;   blast killed it, else its voice + painchance roll and ai_hurt (reactiontime
 ;   0, MF_JUSTHIT, aif_retal against en_bsrc). en_bhit already set en_last.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_bpain
         ldy en_bi
         jsr aif_live                 ; dying or dead: en_bkill has it
@@ -341,14 +341,14 @@ en_lt2  dta 0                        ; en_los: the byte offset inside the row
 ?out    rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 en_bsrc dta 0                        ; the blast's bombsource +1, 0 = the player
         .endseg
 
 ;--------------------------------------------------------------
 ; en_bhit -- A = damage, en_bi = the thing. P_DamageMobj's arithmetic only.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_bhit
         sta m_prod
         ldy en_bi
@@ -389,7 +389,7 @@ en_bsrc dta 0                        ; the blast's bombsource +1, 0 = the player
 ; en_bkill -- the blast finished off thing en_bi: give it its voice and its
 ;   death chain, the same two steps a bullet kill takes.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_bkill
         lda en_bi
         jsr en_thing.en_th2
@@ -410,7 +410,7 @@ en_bsrc dta 0                        ; the blast's bombsource +1, 0 = the player
 ;   and then the clamp to 0 both sites used to do inline.
 ;   Clobbers A.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_ovkill
                                       ; 2026-09-23: the test, the negate and the clear
         rep #$20                     ;   as one word window (N/Z of the word = the
@@ -435,7 +435,7 @@ en_bsrc dta 0                        ; the blast's bombsource +1, 0 = the player
 ;   with en_kind already resolved; idempotent, so both kill paths may call it.
 ;   Clobbers A/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_gibq
         stz en_gib
         ldy en_kind                  ; Y survives to the chain lookup below
@@ -472,7 +472,7 @@ en_bsrc dta 0                        ; the blast's bombsource +1, 0 = the player
 ;   The armour itself is pl_armsub's (movers.asm, next to update_damage -- this
 ;   block has no room for it). Death restarts the level.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_plr_hurt
         tay                          ; the damage, across the two tests below
         lda pl_dead                  ; P_DamageMobj's second line: "if

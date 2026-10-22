@@ -7,8 +7,7 @@ gb_resume = *
 ;   halving grew it 12 B and the $0600 hole it shared with calc_u had none. Its
 ;   TABLES stay here -- they are absolute-indexed, so where the code sits does
 ;   not matter to them.
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ; bonus id -> (counter index | 8 = bit set, amount | bit, cap). Index 0 is unused.
 ;        --  1 stim  2 medi  3 hbon  4 soul  5 abon  6 grn   7 blue
 BN_STAT dta 0, PS_HEALTH, PS_HEALTH, PS_HEALTH, PS_HEALTH, PS_ARMOR, PS_ARMOR, PS_ARMOR
@@ -38,7 +37,6 @@ BN_MAX  dta 0, 100, 100, 200, 200, 200, 100, 200
         dta 0,0,0,0,0,0,0            ; ...and no cap either
         dta 0,0,0                    ; 32..34 skulls: bits, no cap
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org gb_resume
 
 ;--------------------------------------------------------------
@@ -56,7 +54,7 @@ ta_resume = *
 ;   never stuck. Keeps X; clobbers Y (= X >> 3). Two 256-byte tables instead
 ;   of txa/and/tay/txa/lsr x3/tax: 16 cycles for 24 (long,x has no page cost).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc thing_alive_bit
         lda.l B1CODE_BASE+ta_shr3,x  ; X >> 3: the bitmap byte
         tay
@@ -82,8 +80,7 @@ ta_bit8 :256 dta 1<<[#&7]
         ert 'thing_alive_bit outgrew the $0E78 hole -- see memory_map.inc'
     .endif
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc thing_kill                     ; X = thing index -> clear its ALIVE bit
         txa
         and #7
@@ -100,34 +97,33 @@ ta_bit8 :256 dta 1<<[#&7]
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org ta_resume
 
 ;--------------------------------------------------------------
 sr_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+    .if [CLIP_BASE & $FF] != 0       ;    <CLIP_BASE = 0 (ptc_frame's inline reset)
+        ert 'CLIP_BASE is not page-aligned -- put the lda #< back (bsp_main_video.asm ptc_frame)'
+    .endif
+    .if !TEX_RUNS                    ; (TEX_RUNS: ptc_frame has the reset inline since
+        .segment B1                  ;  2026-09-22; the dead proc went 2026-10-05)
 .proc spr_reset                      ;   spr_add's two chase hooks pushed that
 	stz sp_n
         stz sp_clip                  ;   (once per frame, one absolute jsr;
-    .if [CLIP_BASE & $FF] != 0       ;    <CLIP_BASE = 0)
-        ert 'CLIP_BASE is not page-aligned -- put the lda #< back (sprites.asm)'
-    .endif
         lda #>CLIP_BASE
         sta sp_clip+1
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+    .endif
         org sr_resume
 
 ;--------------------------------------------------------------
 ; spr_add -- collect the things of subsector (zp_nid & $7FFF). Called by
-;   render_subsector BEFORE its segs, mirroring DOOM's R_Subsector order
+;   render_node's leaf BEFORE its segs, mirroring DOOM's R_Subsector order
 ;   (R_AddSprites first, then R_AddLine). Things are sorted by subsector, so the
 ;   prefix table gives the range [prefix[s], prefix[s+1]).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_add
         jsr spr_chased               ; a CHASING monster is drawn from the
                                      ;   subsector it walked to, not the one it ...
@@ -205,7 +201,7 @@ sr_resume = *
 ; the scale are 16-bit quantities. `lda (sp_ptr),y` reads a whole coordinate in
 ; one go, so the `iny` between the halves goes with them; transform/scale_z are
 ; 8-bit code. M only -- X/Y stay 8-bit (sound.asm:316).
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_proj
         rep #$20                     ; ---- 16-bit A
         .LONGA ON
@@ -280,6 +276,23 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         sec
         sbc #$0080
         sta m_b
+  .ifdef ANTONIA2                    ; 2026-10-15: hs*left signed on the card (math.asm
+        ASMUL m_a, m_b               ;   ASMUL), bytes 1-2 rebuilt in m_prod; then
+        sta m_prod+2                 ;   w*hs on the card, read straight into the
+        lda.l ANT_MUL                ;   add below (6502-idioms: compute in A)
+        sta m_prod
+        sec
+        lda m_xs
+        sbc m_prod+1
+        sta sp_x1
+	lda sp_w
+	and #$00ff
+	sta.l ANT_MUL
+        lda sp_hs
+	sta.l ANT_MUL+2
+	clc
+	lda.l ANT_MUL+1
+  .else
         jsr smul32.sm_w16            ; (16-bit in and out)
         .LONGA ON
         sec
@@ -300,6 +313,7 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
 	rep #$21		;absorb CLC
 	.LONGA ON
         lda m_prod+1
+  .endif
 	bne ?w1ok
 	inc
 ?w1ok	adc sp_x1                    ; (the width stayed in A: no m_a round trip,
@@ -331,6 +345,20 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         cmp sp_xa
         bcc ?skip2
 
+  .ifdef ANTONIA2                    ; 2026-10-15: h*scale on the card, sp_rows = its
+        rep #$20                     ;   bytes 1-2 as one word (the lda's Z is the
+        .LONGA ON                    ;   zero test; sep and sta keep it)
+        lda sp_h
+        and #$00FF
+        sta.l ANT_MUL
+        lda sp_scale
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL+1
+        sta sp_rows
+        .LONGA OFF
+        sep #$20
+        beq ?skip2
+  .else
         lda sp_h                     ; on-screen height = (h*scale)>>8
         sta m_a
         stz m_a+1
@@ -349,6 +377,7 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
         sta sp_rows+1
         ora sp_rows
         beq ?skip2
+  .endif
 	rep #$21		;absorb CLC
 	.LONGA ON
         ldy #4                       ; world height of the sprite's top row
@@ -533,7 +562,7 @@ spj_w16                              ; (2026-09-22: 16-bit callers enter here)
 ;--------------------------------------------------------------
 pk_resume = *
         org PICKUP_BASE              ; moved out of the $B000 segment -- see the
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc spr_pickup                     ;   PICKUP_BASE note in memory_map.inc
         lda pk_valid                 ; the level's PICKUP LIST (PK_*, memory_map
         bne ?walk                    ;   .inc): en_init cleared the flag, so the
@@ -619,8 +648,7 @@ pk_loop                              ;   270 things (_bench_subsys 2026-08-31)
 ;   those corpses live as they happen. Cost = one old-style full scan, once.
 ;--------------------------------------------------------------
 pkb_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pk_build
         ;lda #0
         stz pk_n
@@ -647,7 +675,7 @@ pkb_resume = *
 ;   Also en_dropmark's live append (a corpse that just got its F_DROP).
 ;   Never overflows: at most one row per thing, and the count is a byte.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pk_append
         ldx pk_n
         sta.l PK_IDX,x
@@ -659,24 +687,14 @@ pkb_resume = *
         rts
 .endp
         .endseg
-;--------------------------------------------------------------
-; pk_dropadd -- en_dropmark's tail (its block is full to the byte): append
-;   the corpse whose F_DROP it just set, put its caller's Y back, return.
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc pk_dropadd
-        lda ai_t2                    ; the thing index en_dropmark parked
-        jsr pk_append
-        ldy ai_t2
-        rts
-.endp
-        .endseg
+; (pk_dropadd -- en_dropmark's tail -- is inline there since 2026-09-22; the
+;  dead proc went 2026-10-05.)
 ;--------------------------------------------------------------
 ; pk_rm -- spr_pickup's spent slot (taken item, or a corpse whose drop was
 ;   collected -- bit0 is static and F_DROP is set once, so neither can ever
 ;   match again): copy the LAST row over slot pk_j, shrink, rescan the slot.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pk_rm
         dec pk_n
         ldx pk_n
@@ -694,13 +712,12 @@ pkb_resume = *
         jmp spr_pickup.pk_loop
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 pk_valid dta 0                       ; 0 = rebuild (en_init clears it per level)
 pk_n     dta 0                       ; rows in the list
 pk_j     dta 0                       ; spr_pickup's cursor
 pk_i     dta 0                       ; pk_build's thing counter
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org pkb_resume
 
         icl 'spr_draw.asm'           ; billboard drawing: spr_draw / spr_one / spr_blit
@@ -723,7 +740,7 @@ an_resume = *
 ; an_tick -- ONE DOOM tic of every idle ring. Chained off en_tick, which is in
 ;   the same tic loop: one clock, one rate.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc an_tick
         ldx #ITAB_MAX-1
 ?lp     lda an_t,x
@@ -742,7 +759,7 @@ an_resume = *
 ;   frame into the sprite table. Clobbers A/Y, zp_ptr, sp_ptr, en_k2+1.
 ;   Safe here: this runs in the GAME loop, like ai_wake, not the draw path.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc an_step
         lda #<ITAB_SID               ; the three ITAB arrays share one page, so
         sta zp_ptr                   ;   one pointer serves all three
@@ -804,7 +821,7 @@ an_resume = *
 ; an_init -- per level: park every ring one row BEFORE frame A with a single tic
 ;   left, so the first DOOM tic wraps it to A and copies the row.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc an_init
         lda #<ITAB_SID
         sta zp_ptr

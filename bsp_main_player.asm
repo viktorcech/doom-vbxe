@@ -8,7 +8,7 @@ STICK0   equ $D300            ; PIA PORTA (joystick 0 in low nibble)
 ; swap_buffers -- wait VBLANK, display the just-rendered buffer, flip back.
 ;   (OS VBI ticks RTCLOK3; main enables NMIEN=$40 before the loop.)
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc swap_buffers
         jsr blitw_hard               ; async blitter: ensure the frame's LAST blit
                                      ; finished before we publish the buffer
@@ -33,7 +33,7 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
 ;--------------------------------------------------------------
 ; read_input -- snapshot STICK0; apply rotation to zp_ang.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc read_input
         lda pl_rt                    ; P_PlayerThink: `if (reactiontime)
         bne ?frz                     ;   reactiontime-- else P_MovePlayer`
@@ -75,7 +75,7 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
 ;   so the player slides along a wall instead of passing through it.
 ;   coll_cx/coll_cy (= zp_rx/zp_ry) carry the tested point into collide_blocked.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc move_player
         lda pl_dead                  ; a corpse does not walk (P_DeathThink runs
         bne ?dead                    ;   instead of P_MovePlayer)
@@ -86,11 +86,6 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
         cmp #$03
         bne ?go
 ?dead   jmp pl_idle                  ; a shove may still be running
-?feet   rep #$20                     ; in the air P_TryMove measures the step up
-        .LONGA ON                    ;   from the FEET (tmfloorz - mo->z)
-        lda pl_z
-        bra ?cf
-        .LONGA OFF
 ?go     rep #$20                     ; ---- 16-bit A
         .LONGA ON
         lda pl_step                  ; this call's distance, Q8, negative walking
@@ -129,13 +124,7 @@ znext   dta $01, $07, 0, 0, 0, 0, 0, $00     ; zback_hi: $00 -> $01 -> $07 -> $0
         sta mv_dy
         sep #$20
         .LONGA OFF
-        lda pl_air
-        bne ?feet
-        jsr locate_floor             ; cur_floor = floor under the player NOW, in
-        .LONGA ON                    ;   a 16-bit A
-?cf     sta cur_floor
-        sep #$20
-        .LONGA OFF
+        jsr pl_zref                  ; cur_floor = thing->z: feet, or floorz
         ; PSTEP_MAX (24) > PLAYER_R (16): test the HALFWAY point first, which
         ; caps the largest untested gap at 12 < R
 mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
@@ -179,9 +168,11 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         .LONGA ON
         lda coll_cx
         sta zp_px
+        lda coll_fz                  ; P_TryMove: thing->floorz = tmfloorz
+        sta pl_fz
         sep #$20
         .LONGA OFF
-?skipx  jsr skipx_ref                ; refresh cur_floor from the new stand point
+?skipx  jsr pl_zref                  ; the Y step measured from where he stands now
         rep #$20                     ; --- Y axis: halfway point first (see above)
         .LONGA ON
         lda mv_dy
@@ -214,6 +205,8 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         .LONGA ON
         lda coll_cy
         sta zp_py
+        lda coll_fz                  ; thing->floorz = tmfloorz
+        sta pl_fz
         sep #$20
         .LONGA OFF
                                       ; 2026-09-22 (drac030 inline): mp_clamp
@@ -239,8 +232,7 @@ pl_n    dta 0                        ; plr_steps: the calls still to make
         .endseg
 
 pkc_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ;--------------------------------------------------------------
 ; mp_clamp / mp_pkhere -- move_player's tail. mp_pkhere: pk = where he stands.
 ;   mp_clamp: the same, but only when coll_seg saw a SHUT DOOR this move; else pk
@@ -248,17 +240,12 @@ pkc_resume = *
 ;   behind a window or up on a ledge reachable (spr_pickup's header: 118 of them
 ;   in episode 1). Both clear the flag -- one move, one answer.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 5: no 8-bit window
+                                      ; no 8-bit window
 coll_solid dta 0,0                   ; (coll_seg incs it 16-bit; readers use the low byte)
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc mp_clamp
-        lda coll_solid
-        bne mp_pkhere
-        rts
-.endp
-        .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+; (mp_clamp -- `lda coll_solid / bne mp_pkhere / rts` -- is inline in
+;  move_player since 2026-09-22; the dead proc went 2026-10-05.)
+        .segment B1
 .proc mp_pkhere
         stz coll_solid
         rep #$20                     ; pk = where he stands: two word moves
@@ -272,7 +259,6 @@ coll_solid dta 0,0                   ; (coll_seg incs it 16-bit; readers use the
         rts
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org pkc_resume
 
 ;==============================================================
@@ -280,8 +266,7 @@ coll_solid dta 0,0                   ; (coll_seg incs it 16-bit; readers use the
 ; rules in P_XYMovement / P_MovePlayer that turn a drop into an ARC.
 ;==============================================================
 fall_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 pl_z    dta a(0)                     ; the player's FEET, world units (signed 16)
 pl_mz   dta 0                        ; momz, units per frame (signed 8: walks
@@ -291,20 +276,40 @@ pl_air  dta 0                        ; 1 = off the ground -- P_MovePlayer's
                                      ;   `onground`, inverted
 pl_snap dta 1                        ; 1 = put the feet ON the floor this frame
                                      ;   and do not fall: a level start or a ...
+pl_fz   dta a($8000)                 ; floorz: the highest floor under his radius
+                                     ;   (P_CheckPosition's tmfloorz); $8000 = not
+                                     ;   known yet (pl_zref)
+pl_offs dta 0                        ; 1 = his z is not the centre sector's floor:
+                                     ;   no nukage, no secret (p_spec.c:1016)
 
 ;--------------------------------------------------------------
-; pl_zfloor -- update_pz's whole head, moved here because that block is 32 B
-;   and not the 48 its END claims (USE_PT starts at $E740). locate_floor, then
-;   P_ZMovement, then the eye. locate_floor's zp_ptr is left alone: update_pz
-;   reads the player's sector out of it for the nukage damage.
+; pl_zfloor -- update_pz's head: floorz where he stands (coll_floorz, the
+;   highest floor under his radius -- so he does not drop off a stair while
+;   his body still overhangs it), P_ZMovement toward it, the eye. zp_ptr is
+;   left on the centre's sector: update_pz's nukage/secret tail reads it, and
+;   pl_offs says whether he stands ON that floor (p_spec.c:1016).
 ;--------------------------------------------------------------
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_zfloor
-        jsr locate_floor
-                                    ; 2026-09-22 (65816-windows): locate_floor returns 16-bit
+        jsr coll_floorz              ; (16-bit out: A = floorz, loc_floor = the
+        .LONGA ON                    ;   centre's floor)
+        pei (loc_floor)              ; the centre's floor, across pl_zmove
+        sta pl_fz
+        sta loc_floor                ; pl_zmove falls toward floorz
         sep #$20
+        .LONGA OFF
         jsr pl_zmove
+        ldx #0                       ; pl_offs: z != the centre sector's floor --
+        rep #$20                     ;   P_PlayerInSpecialSector returns then
+        .LONGA ON
+        pla
+        cmp pl_z
+        sep #$20
+        .LONGA OFF
+        beq ?on
+        inx
+?on     stx pl_offs
         clc
         lda pl_vh                    ; EYE_H normally; while dead P_DeathThink
         adc pl_z                     ;   walks it down to DEAD_EYE_H, which is
@@ -325,7 +330,7 @@ pl_snap dta 1                        ; 1 = put the feet ON the floor this frame
 ;   IN: zp_px/zp_py = the destination (trig_walk just put him there).
 ;--------------------------------------------------------------
 PL_RTVB equ 26                       ; 18 tics = 25.7 VBLANKs (PAL 50 Hz)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_tele
         lda #SFX_TELEPT              ; DOOM plays it at BOTH ends -- the player
         sta snd_pending              ;   is at one of them, so never remote
@@ -372,7 +377,7 @@ pl_rt   dta 0                        ; reactiontime, VBLANKs left (pl_tele)
 ; pl_zmove -- P_ZMovement for the player. IN: loc_floor = the floor under him.
 ;   Clobbers A/X and m_a.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 OOF_MZ  equ 28                       ; P_ZMovement's "momz < -GRAVITY*8": 8 units
                                      ;   a TIC is 28 a FRAME on FALL_G's 3.5 tics
 .proc pl_zmove
@@ -434,6 +439,5 @@ OOF_MZ  equ 28                       ; P_ZMovement's "momz < -GRAVITY*8": 8 unit
 .endp
         .endseg
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org fall_resume
 

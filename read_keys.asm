@@ -7,7 +7,7 @@
 ;--------------------------------------------------------------
 rk_resume = *
         org READKEYS_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc read_keys
                                       ; cht_scan's first instruction is `lda kb_new`:
         jsr cht_scan                  ; both cheats, off kb_scan's press edges
@@ -100,7 +100,7 @@ WK_LAST equ 2 + * - wk_tab           ; = the LAST slot ('7' -> 9)
 ;   A = KBCODE on a frame where a key IS down. Clobbers A/X.
 ;--------------------------------------------------------------
         org CHTKEY_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cht_key
         cmp cht_prev
         beq ?out                      ; still the same key held down
@@ -131,8 +131,7 @@ CHT_LEN equ * - cht_tab
 ;       plyr->armorpoints = 200;  plyr->armortype = 2;
 ;       weaponowned[i] = true;  ammo[i] = maxammo[i];  cards[i] = true;
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cht_give
         jsr cht_arm                   ; armorpoints = 200, armortype = 2
         lda #WP_ART
@@ -153,7 +152,6 @@ CHT_LEN equ * - cht_tab
                                       ;   sound is not what m_cheat.c does.
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; cht_arm -- IDKFA's "armorpoints = 200; armortype = 2" (st_stuff.c), parked in
@@ -161,7 +159,7 @@ CHT_LEN equ * - cht_tab
 ;   the type is pl_armset's job, and the blue-armour bonus id is what says 2.
 ;--------------------------------------------------------------
         org CHTARM_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cht_arm
         lda #200
         sta PSTATE+PS_ARMOR

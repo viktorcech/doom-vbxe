@@ -1,12 +1,16 @@
 ;--------------------------------------------------------------
-; checkbbox.asm -- part of renderer.asm (icl in place): R_CheckBBox subtree culling.
+; checkbbox.asm -- R_CheckBBox subtree culling, the BODY: icl'd INSIDE
+;   render_node (renderer.asm ?have) since 2026-10-05 -- 6502-cycles-layout
+;   "inline what is smaller than its 12-cycle call": one caller, 43-53 calls
+;   a frame, and the 0/1 answer + rep + bne it handed back are the exits'
+;   own jumps now (-16 a call). Until then the proc check_bbox, parked at
+;   CHECKBBOX_BASE.
 ;--------------------------------------------------------------
-; check_bbox -- R_CheckBBox. IN: cb_off = byte offset of a child's bbox within
-;   the node at (zp_nodeptr). OUT: A=1 if the subtree is WHOLLY invisible (skip),
-;   A=0 if it must be walked. CONSERVATIVE: only culls provably-invisible boxes
+; IN: cb_off = byte offset of a child's bbox within the node at (zp_nodeptr),
+;   8-bit M. OUT: ?push (16-bit: the far child is walked) or ?skipfar (16-bit:
+;   the subtree is WHOLLY invisible). CONSERVATIVE: only culls provably-
+;   invisible boxes. Every label here is render_node's.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc check_bbox
         ; NOTE the LONG indirect [zp_nodeptr],y: NODES live in the Rapidus EXT
         ; bank (bank $01), not in bank 0 (2026-07-29, rozblite.png: the plain
         ; form read garbage bboxes and culled whole visible subtrees).
@@ -37,9 +41,144 @@
         sta cb_right
         sep #$20
         .LONGA OFF
-        jsr cb_corners               ; -> cb_X/cb_Z for the four corners, and
-                                     ;    cb_cnt = how many are behind the near ...
-        .LONGA ON                    ; ---- 16-bit A: cb_corners returns that way
+        ; ---- cb_corners, INLINE (2026-10-05): the four bbox corners in view
+        ; space, cb_X[i]/cb_Z[i], and cb_cnt = how many sit behind the near
+        ; plane. Skills applied: 6502-idioms "jsr X / rts" -> the one caller
+        ; falls into the body (-12); 6502-cycles-layout "inline a routine
+        ; smaller than its 12-cycle call" -- the two emit subroutines are
+        ; written out per corner, the corner's offset in the operand (no ldx,
+        ; abs for abs,x: 65816-style), and "rare case out of line" -- the
+        ; behind-the-near count sits beside each pair with a not-taken branch
+        ; on the common path. Same stores, same tests, same count: bit-identical.
+        ; 2026-09-09 (drac030 style): the four coordinates arrive PLAYER-
+        ; relative; every FMUL reads its cb_* word in place (2026-09-26).
+        ; --- top: cos, then sin ---
+        .local cbf5
+        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_top, fmn_cb5, fmp_cb5
+        .endl
+        .LONGA ON                    ; FMUL leaves the product IN A, 16-bit (math.asm)
+        sta m_prod
+ .ifndef ANTONIA2                    ; (2026-10-15: ANTONIA2's FMUL takes either
+        .LONGA OFF                   ;   width -- no sep before it, 65816-windows)
+        sep #$20
+ .endif
+        .local cbf1
+        FMUL16 TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_top, fmn_cb1, fmp_cb1
+        .endl
+        .LONGA ON
+        sta m_prod+2
+ .ifndef ANTONIA2
+        .LONGA OFF                   ; --- bottom: cos, then sin ---
+        sep #$20
+ .endif
+        .local cbf6
+        FMUL16 TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_bottom, fmn_cb6, fmp_cb6
+        .endl
+        .LONGA ON
+        sta m_ma
+ .ifndef ANTONIA2
+        .LONGA OFF
+        sep #$20
+ .endif
+        .local cbf2
+        FMUL16 TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_bottom, fmn_cb2, fmp_cb2
+        .endl
+        .LONGA ON
+        sta m_ma+2
+        .LONGA OFF                   ; --- left: sin, then cos -> corners 0, 2 ---
+        sep #$20
+        stz cb_cnt
+        .local cbf3
+        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_left, fmn_cb3, fmp_cb3
+        .endl
+        .LONGA ON
+        sta cb_lo
+ .ifndef ANTONIA2
+        .LONGA OFF
+        sep #$20
+ .endif
+        .local cbf7
+        FMUL16 TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_left, fmn_cb7, fmp_cb7
+        .endl
+        .LONGA ON                    ; ---- 16-bit A from here to the sweeps
+        sta cb_hi
+        ; corner 0 = (left, top): X = sx - cos(y), Z = cx + sin(y)
+        sec
+        lda cb_lo
+        sbc m_prod
+        sta cb_X
+        clc
+        lda cb_hi
+        adc m_prod+2
+        sta cb_Z
+        bmi ?bh0                     ; Z < 0, or 0 <= Z < ZNEAR (unsigned is
+        cmp #ZNEAR                   ;   right here) -> behind the near plane
+        bcc ?bh0
+?ok0    ; corner 2 = (left, bottom)
+        sec
+        lda cb_lo
+        sbc m_ma
+        sta cb_X+4
+        clc
+        lda cb_hi
+        adc m_ma+2
+        sta cb_Z+4
+        bmi ?bh2
+        cmp #ZNEAR
+        bcs ?ok2
+?bh2    inc cb_cnt                   ; a word inc: cb_cnt <= 3 here, so cb_cnt+1
+        bra ?ok2                     ;   (cb_xa) is written back unchanged
+?bh0    inc cb_cnt
+        bra ?ok0
+ .ifdef ANTONIA2
+?ok2                                 ; --- right: sin, then cos -> corners 1, 3 ---
+ .else
+?ok2    .LONGA OFF                   ; --- right: sin, then cos -> corners 1, 3 ---
+        sep #$20
+ .endif
+        .local cbf4
+        FMUL16 TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_right, fmn_cb4, fmp_cb4
+        .endl
+        .LONGA ON
+        sta cb_lo
+ .ifndef ANTONIA2
+        .LONGA OFF
+        sep #$20
+ .endif
+        .local cbf8
+        FMUL16 TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_right, fmn_cb8, fmp_cb8
+        .endl
+        .LONGA ON
+        sta cb_hi
+        ; corner 1 = (right, top)
+        sec
+        lda cb_lo
+        sbc m_prod
+        sta cb_X+2
+        clc
+        lda cb_hi
+        adc m_prod+2
+        sta cb_Z+2
+        bmi ?bh1
+        cmp #ZNEAR
+        bcc ?bh1
+?ok1    ; corner 3 = (right, bottom)
+        sec
+        lda cb_lo
+        sbc m_ma
+        sta cb_X+6
+        clc
+        lda cb_hi
+        adc m_ma+2
+        sta cb_Z+6
+        bmi ?bh3
+        cmp #ZNEAR
+        bcs ?sweep
+?bh3    inc cb_cnt
+        bra ?sweep
+?bh1    inc cb_cnt
+        bra ?ok1
+?sweep                               ; ---- 16-bit A: the corners are in
         ; (2026-09-15: running these sweeps corner 3 -> 0 with dex/dex/bpl was
         ;  MEASURED +7.8k cyc/frame -- same verdicts, but the order decides how
         ;  soon the early exits fire.
@@ -54,7 +193,7 @@
         inx                          ;   so the left plane cannot cull
         inx
         bne ?sdl
-        bra ?cull16                  ; all four corners outside the left wall
+        jmp ?skipfar                 ; all four corners outside the left wall: cull
 ?sdr    ldx #$F8
 ?sdr1   sec                          ; X - Z
         lda cb_X+8-256,x
@@ -67,22 +206,18 @@
         inx
         inx
         bne ?sdr1                    ; (X wraps to 0 after corner 3)
-?cull16 sep #$20                     ; all four outside the right wall
-        .LONGA OFF
-        lda #1
-        rts
-?count16 sep #$20
-        .LONGA OFF
-        lda cb_cnt                   ; 0 behind -> all in front: the screen span;
-        beq ?allfront                ;   4 behind -> wholly behind the near
-        cmp #4                       ;   plane -> cull; some -> straddles -> keep:
-        lda #0                       ;   1..4 here, so C = (cnt == 4) IS the
-        rol @                        ;   answer (A = 0/1, Z from it: what the
-        rts                          ;   caller's bne reads)
+        jmp ?skipfar                 ; all four outside the right wall: cull
+?count16 lda cb_cnt                  ; 0 behind -> all in front: the screen span;
+        and #$00FF                   ;   (a byte: cb_xa behind it) 2026-10-16,
+        beq ?allfront                ;   drac030 -- no sep/rep round the byte
+        cmp #4                       ;   4 behind -> wholly behind the near
+        bcc ?cnt_k                   ;   plane -> cull; 1..3 -> straddles -> keep
+        jmp ?skipfar
+?cnt_k  jmp ?push
 ?allfront
         ; --- all corners in front: screen-X span ---
-        rep #$20                     ; ---- 16-bit A, in and out around each
-        .LONGA ON                    ;   screenx_signed (8-bit code)
+                                     ; ---- 16-bit A, in and out around each
+                                     ;   screenx_signed (8-bit code)
         lda #$7FFF                   ; cb_lo = +32767, cb_hi = -32768
         sta cb_lo
         lda #$8000
@@ -100,12 +235,9 @@
         cmp #SCREEN_WIDTH            ; EARLY KEEP: an ON-screen corner column that is
         bcs ?slm                     ;   still open means KEEP (see below); off-screen:
         tax                          ;   A = m_xs, 16-bit and C = 1 already -> ?slm
-        sep #$20
-        .LONGA OFF
         lda solid_arr,x
+        and #$00FF                   ; (a byte array; 2026-10-16: no sep/rep)
         beq ?keep
-?sl16   rep #$20
-        .LONGA ON
         lda m_xs                     ; cb_lo = min(cb_lo, m_xs)  (signed16)
         sec
 ?slm    sbc cb_lo
@@ -155,132 +287,17 @@
         bcc ?sc
         ldx cb_xb                    ; all solid (x may have been xb): X = xb+1
         inx
-?sccl   sep #$20
-        .LONGA OFF
-        lda #1                       ; = ?cull
-        rts
-        .LONGA ON
+?sccl   bra ?skipfar                 ; = cull (16-bit)
 ?sc1    bit #$00FF
-        beq ?sck                     ; x open -> keep, X = x
+        beq ?push                    ; x open -> keep, X = x (16-bit)
         cpx cb_xb                    ; x closed, x+1 open: inside only if x < xb
         inx
         bcs ?sccl                    ;   (x = xb: X = xb+1, cull)
-?sck    sep #$20
+        bra ?push                    ; = keep
         .LONGA OFF
-        lda #0                       ; = ?keep
-        rts
-?cull   lda #1
-        rts
-?keep   lda #0
-        rts
-.endp
-        .endseg
-
-;--------------------------------------------------------------
-; cb_corners -- the four bbox corners in view space: cb_X[i]/cb_Z[i], plus
-;   cb_cnt = how many sit behind the near plane.
-;--------------------------------------------------------------
-        ; (was PINNED at CBCORN_BASE; since 2026-09-26 it rides the B1 segment
-        ;  flow -- bank $01 is full speed everywhere, and the 8 FMULs inlined
-        ;  below outgrew the 320-byte block: -12 cycles x 424 calls a frame)
-; 16-BIT (2026-08-29): four (bbox edge - player) subtractions and four 16-bit
-; results, all of them halves before. fmul_cos/fmul_sin are 8-bit code, so the
-; mode goes back for each call and comes straight out again into the next
-; argument. M only; X/Y stay 8-bit (sound.asm:316).
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc cb_corners
-        ; 2026-09-09 (drac030 style): the four coordinates arrive PLAYER- ...
-                                      ; --- top: cos, then sin --- (2026-09-26: every
-                                      ;   FMUL reads its cb_* word in place: no m_a copies)
-        .local cbf5
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_top, fmn_cb5, fmp_cb5
-        .endl
-        .LONGA ON                    ; FMUL leaves the product IN A, 16-bit (math.asm)
-        sta m_prod
+?cull   rep #$20                     ; (8-bit exits -> the 16-bit walk)
+        .LONGA ON
+        bra ?skipfar
         .LONGA OFF
-        sep #$20
-        .local cbf1
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_top, fmn_cb1, fmp_cb1
-        .endl
         .LONGA ON
-        sta m_prod+2
-        .LONGA OFF                   ; --- bottom: cos, then sin ---
-        sep #$20
-        .local cbf6
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_bottom, fmn_cb6, fmp_cb6
-        .endl
-        .LONGA ON
-        sta m_ma
-        .LONGA OFF
-        sep #$20
-        .local cbf2
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_bottom, fmn_cb2, fmp_cb2
-        .endl
-        .LONGA ON
-        sta m_ma+2
-        .LONGA OFF                   ; --- left: sin, then cos -> corners 0, 2 ---
-        sep #$20
-        stz cb_cnt
-        .local cbf3
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_left, fmn_cb3, fmp_cb3
-        .endl
-        .LONGA ON
-        sta cb_lo
-        .LONGA OFF
-        sep #$20
-        .local cbf7
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_left, fmn_cb7, fmp_cb7
-        .endl
-        .LONGA ON                    ; (?emitT16 skips its rep: 16-bit here)
-        sta cb_hi
-        ldx #0                       ; corner 0 = (left, top)
-        jsr ?emitT16                 ; (the emits return 16-bit on both exits)
-        ldx #4                       ; corner 2 = (left, bottom)
-        jsr ?emitB
-        .LONGA OFF                   ; --- right: sin, then cos -> corners 1, 3 ---
-        sep #$20
-        .local cbf4
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, cb_right, fmn_cb4, fmp_cb4
-        .endl
-        .LONGA ON
-        sta cb_lo
-        .LONGA OFF
-        sep #$20
-        .local cbf8
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, cb_right, fmn_cb8, fmp_cb8
-        .endl
-        .LONGA ON
-        sta cb_hi
-        ldx #2                       ; corner 1 = (right, top)
-        jsr ?emitT16
-        ldx #6                       ; corner 3 = (right, bottom)
-        ; falls into ?emitB
-?emitB                               ; ---- 16-bit A (every way in): X = sx - cos(y),
-                                     ;   Z = cx + sin(y), y = bottom
-        sec
-        lda cb_lo
-        sbc m_ma
-        sta cb_X,x
-        clc
-        lda cb_hi
-        adc m_ma+2
-        sta cb_Z,x
-        bra ?zt                      ; (a branch keeps the adc's N)
-?emitT16                             ; ... same with the TOP row's pair (16-bit)
-        sec
-        lda cb_lo
-        sbc m_prod
-        sta cb_X,x
-        clc
-        lda cb_hi
-        adc m_prod+2
-        sta cb_Z,x
-?zt     bmi ?behind                  ; Z < 0, or
-        cmp #ZNEAR                   ;   0 <= Z < ZNEAR (unsigned is right here)
-        bcc ?behind                  ;   -> behind the near plane
-        rts                          ; 16-bit out: the next emit / check_bbox go on
-?behind inc cb_cnt                   ;   16-bit. A word inc: cb_cnt <= 3 here, so
-        rts                          ;   cb_cnt+1 (cb_xa) is written back unchanged
-        .LONGA OFF
-.endp
-        .endseg
+?keep                                ; (16-bit A) ... and falls into ?push

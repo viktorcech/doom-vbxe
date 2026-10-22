@@ -2,8 +2,7 @@
 ; pl_thrust.asm -- P_DamageMobj's thrust for the PLAYER (p_inter.c:804-831):
 ;   damage/8 units away from the inflictor.
 ;--------------------------------------------------------------
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ;--------------------------------------------------------------
 ; pl_thrust -- no arguments: bl_dmg is the damage, (bl_x, bl_y) the ball,
 ;   i.e. the inflictor. The vector is (player - ball): away from it,
@@ -25,7 +24,6 @@
         jmp pl_thr2                  ; ...carry rides the jmp into the high half
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
         org PLTHR2_BASE
 .proc pl_thr2
@@ -70,8 +68,7 @@
         ert 'pl_thrust piece 4 outgrew PLTHR4_BASE..PLTHR4_END (memory_map.inc)'
     .endif
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 .proc pl_thr5                        ; ...and spend it through move_player's own
         lda ai_sx                    ;   collision path: the halfway probe, the
         sta mv_dx                    ;   step-up rule, coll_plr and en_solid, so
@@ -80,16 +77,14 @@
         jmp pl_thr6
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 .proc pl_thr6
         lda ai_sy                    ; ...the other axis, then P_TryMove itself
         sta mv_dy
         lda ai_sy+1
         sta mv_dy+1
-        jsr skipx_ref                ; cur_floor FIRST -- coll_step_ok measures the
+        jsr pl_zref                  ; cur_floor FIRST -- coll_step_ok measures the
                                      ;   step against it, and move_player only ...
         jsr move_player.mp_slide     ; the KICK, spent (p_inter.c:830)
         lda bl_dmg                   ; ...and ONLY THEN the damage. Swallowing
@@ -99,4 +94,3 @@
                                      ;   and ball_frame was full to the byte.
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)

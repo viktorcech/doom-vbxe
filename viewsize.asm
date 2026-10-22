@@ -3,14 +3,13 @@
 ;   projection scales with the window, so the FOV stays 90 degrees.
 ;--------------------------------------------------------------
 vs_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; vw_apply -- vw_size -> the eight window bytes + a border repaint.
 ;   Called from init_level (boot AND every level, so the size survives an exit)
 ;   and from read_keys on '-' / '='.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc vw_apply
         lda vw_size
         asl                          ; *8 = vw_tab record
@@ -63,13 +62,12 @@ vs_resume = *
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;  vw_frame lives in OVLCLR_BASE now -- see the block at the end of this file.
 
 vwf_resume = *
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 ;--------------------------------------------------------------
 ; ovl_frame -- erase the overlay band, but only when someone has to.
 ;--------------------------------------------------------------
@@ -80,7 +78,7 @@ vwf_resume = *
 ;   status bar owns the rest).
 ;   OUT OF VIEWSZ (2026-09-10): that block was full to the byte and this now
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc vw_frame
         lda vw_dirty
         beq ovl_frame                ; no resize pending -> the band may still
@@ -90,7 +88,7 @@ vwf_resume = *
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ovl_frame
         lda vw_size
         beq ?ret                     ; FULL view: the render still erases them
@@ -114,16 +112,14 @@ vwf_resume = *
 .endp                                ;   a colour argument would cost
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ovl_dirty dta 0                      ; buffers still owing the clear
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; vw_smaller / vw_bigger -- one step down / up the ladder ('-' / '=').
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc vw_smaller
         lda vw_size
         cmp #VW_NSIZE-1
@@ -134,7 +130,7 @@ ovl_dirty dta 0                      ; buffers still owing the clear
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc vw_bigger
         lda vw_size
         beq ?ret                     ; already full size
@@ -143,7 +139,7 @@ ovl_dirty dta 0                      ; buffers still owing the clear
 ?ret    rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 vw_size dta 0                        ; the ONLY view-size state that has to survive
                                      ;   a level load; it lives here (in the XEX, so ...
@@ -161,13 +157,12 @@ vw_tab
         dta  60, 99,100,  63,104,  40, 2,0    ;  40x42   1/4
 
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
 ;--------------------------------------------------------------
 ; vw_q34x -- m_prod[0..1] *= 3/4, for the sizes that are not a power of two.
 ;--------------------------------------------------------------
         org VWQ34_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc vw_q34x
         lda vw_q34
         beq ?ret

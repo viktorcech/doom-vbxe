@@ -9,7 +9,7 @@
 ;   EPIOVL_BANK, and page 0 already copied down. The rest of the picker follows
 ;   it out of the same bank.
 ;--------------------------------------------------------------
-EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window: the picker's chunk
+EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; 16 KB window: the picker's chunk
 .proc ep_head
                                       ; 2026-09-23: pages EP_PAGES-1..1 downwards (no
         ldx #EP_PAGES-1              ;   overlap between the window and MENU_RUN):
@@ -69,9 +69,8 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         lda ep_arm                   ;   rested: not while held, not in the
         stx ep_arm                   ;   bounce of a contact
         bne ?loop
-        lda TRIG0
-        lsr
-        bcc ?sel                     ; fire = select
+        jsr ep_trig                  ; 2026-10-20: fire held at four lines of the
+        bcc ?sel                     ;   frame, not at one read (ep_trig) = select
         lda STICK0
         lsr
         bcc ?up                      ; bit0 = UP
@@ -110,13 +109,14 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
                                      ;   the same sound and the same "pop ONE
                                      ;   menu" mn_run gives the save/load picker
         jsr ep_wipe                  ; EpiDef.prevMenu is &MainDef: take the
-        lda #BANK_EN | MENU_OBANK    ;   episode screen off the background FIRST
-        ldx mn_ing                   ;   -- mn_ingame freezes what is on screen
-        beq ?bboot                   ;   as its own backdrop, and mn_boot draws
-        ldx #MN_E_INGAME             ;   the menu over it
-        bne ?bopen                   ; (always)
-?bboot  ldx #MN_E_BOOT               ; (the title's "press a key" comes round
-?bopen  jmp mn_open                  ;  once more on the way back at boot)
+        ldx mn_ing                   ;   episode screen off the background FIRST
+        beq ?bboot                   ;   -- mn_ingame freezes what is on screen
+        jsr mus_level_t              ;   as its own backdrop, and mn_boot draws
+        ldx #MN_E_INGAME             ;   the menu over it. (2026-10-06: back in the
+        bne ?bopen                   ;   game its song again -- ?ng's mn_quiet
+?bboot  ldx #MN_E_BOOT               ;   stopped it for this picker.)
+?bopen  lda #BANK_EN | MENU_OBANK    ; (the title's "press a key" comes round
+        jmp mn_open                  ;  once more on the way back at boot)
 ?sel    ldx #SFX_PISTOL              ; KEY_ENTER on an item (m_menu.c:1675)
         jsr snd_play_t
         jsr ep_quiet                 ; ...and the mixer EMPTY before either tail
@@ -256,19 +256,17 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
     .endif
 
 ;--------------------------------------------------------------
-; ep_press / ep_vsync / ep_quiet -- menu.asm's mn_press, mn_vsync and mn_quiet,
-;   one copy each. They are eight, four and three instructions; reaching the
-;   originals would mean keeping the menu overlay resident, which the window
-;   cannot do.
+; ep_press / ep_trig / ep_vsync / ep_quiet -- menu.asm's mn_press, mn_trig,
+;   mn_vsync and mn_quiet, one copy each. Reaching the originals would mean
+;   keeping the menu overlay resident, which the window cannot do.
 ;--------------------------------------------------------------
 .proc ep_press
         lda STICK0
         ora #$F0                     ; stick 1 is not ours
         inc @                        ; $FF = centred -> 0: inc IS the cmp #$FF,
         bne ?yes                     ;   and A is dead past the branch
-        lda TRIG0
-        lsr                          ; bit0 = 0 while fire is held
-        bcc ?yes
+        jsr ep_trig                  ; 2026-10-20: fire = TRIG0 held at four lines
+        bcc ?yes                     ;   of the frame, not at one read (menu.asm mn_trig)
         lda SKSTAT
         and #4                       ; bit2 = 0 while a key is held
         beq ?yes
@@ -276,6 +274,20 @@ EPOVL_WIN       equ MEMW16+[[EPIOVL_BANK&3]<<12]   ; DRAC_PLAN 3b: 16 KB window:
         rts
 ?yes    sec
         rts
+.endp
+
+.proc ep_trig                        ; = menu.asm mn_trig (its header says why)
+        ldy #4
+?s      lda ?vct-1,y
+?w      cmp VCOUNT
+        bne ?w
+        lda TRIG0
+        lsr @
+        bcs ?out
+        dey
+        bne ?s
+?out    rts
+?vct    dta 24, 56, 88, 120
 .endp
 
 .proc ep_vsync

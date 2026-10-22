@@ -38,7 +38,7 @@
 ;   Called from seg_draw once per seg per texture slot, not per column.
 ;   Clobbers A/X/Y.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc tex_setix
     .if TEX_RUNS
         ; PAINTED walls (paint.asm): the index is NOT copied into base RAM at

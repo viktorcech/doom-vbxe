@@ -6,7 +6,7 @@
 ; ai_try_atk -- A_Chase's attack branches. C=1: it attacked (or is in the
 ;   post-attack pause), so A_Chase returns without moving.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_try_atk
         lda #>TH_KIND
         jsr ai_get
@@ -91,7 +91,7 @@
 ;   next P_CheckMissileRange return true regardless of reactiontime OR range.
 ;   instead of finishing its wind-up. Clobbers A/X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_hurt
         sty ai_t
         jsr aif_retal
@@ -116,7 +116,7 @@
 ;--------------------------------------------------------------
 ; ai_isvis -- C=1 if ai_t is in this frame's vissprite list. Clobbers A/X.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_isvis
         ldx sp_n
 ?lp     dex
@@ -136,7 +136,7 @@
 ;   term whole, which is DOOM's own cheap distance (m_fixed.c). The target is
 ;   the player until something else shoots this monster (infight.asm).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_pdist
         jsr aif_tpos                 ; -> ai_tx/ai_ty
                                     ; 2026-09-22 (65816-windows): aif_tpos returns 16-bit
@@ -185,7 +185,7 @@
 ;   dist = ad - 64; kinds with no meleestate get another -128 ("fire more");
 ;   clamp to 200; fire unless P_Random() < dist.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_mrange
                                       ; 2026-09-22 p_enemy.c:216-253: dist = aprox - 64,
     .if MK_COUNT <> MK_WSND+2         ;   -128 without a meleestate, >>1 for the
@@ -236,7 +236,7 @@
 ;--------------------------------------------------------------
 ; ai_atk_enter -- P_SetMobjState(missilestate/meleestate): attack state 0.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_atk_enter
         lda #>TH_MODE
         jsr ai_get
@@ -257,7 +257,7 @@
 ;   to the RUN chain (info.c's last attack state points at S_x_RUN1), otherwise
 ;   step to the next one.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_atk_next
         jsr ai_atk_tics              ; A = this row's tics byte (and ai_awst =
         and #AT_LAST                 ;   the state it came from)
@@ -291,7 +291,7 @@
 ; ai_atk_row -- point TH_WROW at the ATTACK row for the current TH_WST, take
 ;   its tics, and run the action if the row carries AT_FIRE.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_atk_row
         jsr aif_oct                  ; A_FaceTarget: every attack action turns
         ldx #>TH_DIR                 ;   the monster to its target first (the
@@ -319,7 +319,7 @@
 ;   The attack rows share DTAB_ROWS with the death and walk frames (8 B each,
 ;   tics at +7 -- see the DTAB note in memory_map.inc).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_atk_tics
         lda #>TH_WST
         jsr ai_get
@@ -366,7 +366,7 @@
 ;     6 A_CyberAttack the rocket    7 A_SargAttack (P_Random()%10+1)*4
 ;     8 A_SkullAttack the charge (ai_skull, below)
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_fire
         ldx ai_k
         lda mk_atk,x
@@ -521,7 +521,7 @@
 ; uses it for the halved delta, so anything that has to survive a call needs its
 ; own.
 aivar_resume = *
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ai_ad   dta 0,0                      ; P_AproxDistance(player, thing)
 ai_ax   dta 0,0                      ; its two |deltas|
 ai_ay   dta 0,0
@@ -544,7 +544,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   info.c refire chain, which pack_things pack_atk asserts at PACK time.
 ;   C=0: this chain really is over, fall back to the RUN cycle.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_refire
         lda #>TH_FLY                 ; a lost soul still in the air: S_SKULL_ATK4
         jsr ai_get                   ;   -> ATK3, the loop only its flight ends
@@ -568,7 +568,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ; ai_refire2 -- entered with C = (P_Random() >= 10), i.e. C=0 already means
 ;   "keep firing" and only C=1 pays for the sight test.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_refire2
         bcc ?yes
         jsr aif_isvis                ; the port's P_CheckSight -- the same oracle
@@ -592,7 +592,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   X = #>TH_MODE, which is precisely what ai_hurt's own `jmp ai_put` wanted,
 ;   so taking the call over costs that block nothing.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_pain_row
         jsr ai_put                   ; ai_hurt's own store: reactiontime 0,
         lda en_painr                 ;   MF_JUSTHIT if it flinched -- and that
@@ -616,7 +616,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   -- TH_WROW is row+1 and 0 means "not chasing", so $FF+1 would stop the
 ;   monster dead and ai_tick would never look at it again.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_pain2
         lda [zp_ptr],y
         bmi ?out                     ; $FF: no flinch frame for this kind here
@@ -641,7 +641,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;       imp:   damage = (P_Random()%8+1)*3
 ;       baron: damage = (P_Random()%8+1)*10
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_cdmg
         ldy #3                       ; A_TroopAttack's damage byte
         ldx ai_k
@@ -658,7 +658,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 
 ;   A = m_a * Y, for Y >= 1. Max 8*10 = 80, so no carry ever leaves the loop
 ;   and the clc can sit outside it.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_mul
         lda #0
         clc
@@ -685,7 +685,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   |legs| (ai_pdist). Each half step = round(|leg| * SKULLSPEED/2 / dist),
 ;   signed like its leg: the aim of P_AproxDistance, within ~6 % of the speed.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_skull
         lda #MK_SKATK                ; S_StartSound (actor, attacksound)
         jsr snd_qp_ai
@@ -737,8 +737,9 @@ ai_amode dta 0                       ; the working copy of TH_MODE
         sta m_prod
         bcc ?nc
         inc m_prod+2                 ; (the word: m_prod+3 is 0 and stays 0)
-?nc     jsr udiv24.ud_w16            ; m_quot = that / dist; 8-bit out
+?nc     jsr udiv24.ud_w16            ; m_quot = that / dist
         .LONGA OFF
+        UD8                          ; (udiv24 hands back 16-bit A)
         plx
         lda m_quot                   ; <= SKULLSPEED/2: one byte
         bit ai_dx+1,x                ; the leg's sign
@@ -757,7 +758,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   thing with MF_SKULLFLY. The sweep RECOUNTS ai_flyn, so a flight that ended
 ;   any way at all (landed, died, a new level) stops the sweep by itself.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_flyall
         stz ai_flyn
         ldx #0
@@ -783,7 +784,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   ((P_Random()%8)+1)*damage and the flight ends at once, p_map.c:275), then
 ;   the rest of P_TryMove (ai_step); a wall zeroes the momentum.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_fly
         jsr ai_ismon                 ; P_KillMobj clears MF_SKULLFLY: dead or
         beq ?off                     ;   dying, the flag just goes
@@ -887,7 +888,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 ;   zeroes its momentum (the next tic lands it) and skips the painstate -- so
 ;   no A_Pain either: en_hurt_snd's roll and the sound it queued are taken back.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc ai_flyhit
         lda #0
         ldx #>TH_FVX
@@ -903,7 +904,7 @@ ai_amode dta 0                       ; the working copy of TH_MODE
 .endp
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 ai_flyn dta 0                        ; things with MF_SKULLFLY at the last sweep
                                      ;   (+ launches since): 0 = ai_tick skips
 ai_fi   dta 0                        ; ai_flyall's sweep index

@@ -7,7 +7,7 @@
 ; pl_die -- health reached 0. X = the cry, chosen by pl_dieq (its one caller;
 ;   the nukage reaches here through en_plr_hurt like everything else).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_die
         lda pl_dead                  ; already dead: monsters keep shooting the
         bne ?out                     ;   corpse and the nukage keeps burning it.
@@ -28,14 +28,14 @@
 ?out    rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; pl_dieq -- the killing blow from en_plr_hurt, the only path that can GIB.
 ;--------------------------------------------------------------
 pldq_resume = *
         .endseg
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_dieq
         beq ?plain                   ; A = 0: the blow landed on EXACTLY zero,
         cmp #$9C                     ;   so there is no overkill at all.
@@ -53,7 +53,7 @@ pldq_resume = *
 ; pl_dthink -- one DOOM tic of P_DeathThink, from wp_think's tic loop so it
 ;   runs at DOOM's rate however many frames the Atari manages.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_dthink
         lda pl_dead
         beq ?out
@@ -73,7 +73,7 @@ pldq_resume = *
 ;   ANG5 is 3.6 BAM bytes: 4 a tic, then k = round(delta) bytes and done.
 ;   fwd/side = the attacker in view space (Q14 sin/cos, the high word = v/4).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_dturn
         lda pl_atk
         bne ?go
@@ -210,7 +210,7 @@ pldq_resume = *
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 pl_src  dta 0                        ; the NEXT en_plr_hurt's source, thing+1 (0 = none)
 pl_atk  dta 0                        ; player->attacker, thing+1 (0 = none)
 pd_p    dta a(0),a(0)                ; pl_dturn: a 32-bit product...
@@ -226,7 +226,7 @@ pd_k    dta 0                        ; the BAM step, 0..4
 ; pl_deadkey -- from the frame loop, BEFORE read_keys so the key that restarts
 ;   cannot also be read as USE. Waits for the fall to finish first.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_deadkey
         lda pl_dead
         beq ?out
@@ -249,13 +249,13 @@ pd_k    dta 0                        ; the BAM step, 0..4
 ;   it reloads the level outright, and clears ps_started so load_things runs its
 ;   BOOT-time PSTATE init again: 100 health, 50 bullets, fist + pistol, no keys.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_restart
         stz pl_dead
         stz ps_started
         lda #EYE_H
         sta pl_vh
-                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a)
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts
         jmp exit_level.pl_reload     ; reload current_level, then init_level
 .endp
         .endseg
@@ -266,7 +266,7 @@ pd_k    dta 0                        ; the BAM step, 0..4
 ;   bullet. Parked in the death block's slack -- ROCKW holds sh_trace itself and
 ;   has no room, and this runs once per sample, i.e. cold.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sh_leaf
         jsr leaf_segs                ; zp_sptr / zp_segcnt = this leaf's segs
         lda zp_segcnt
@@ -297,10 +297,83 @@ pd_k    dta 0                        ; the BAM step, 0..4
         .endseg
 
 ;--------------------------------------------------------------
+; sh_gap -- sh_trace's leaf test, with the leaves its 32-unit sampling skipped
+;   (2026-10-20: a wall in a 9-unit leaf between two samples let the rocket
+;   through). A ray is in a convex leaf for ONE stretch, so between the previous
+;   sample (leaf USE_SS) and this one (leaf zp_nid at sh_d) every change of leaf
+;   is found by halving the distance to a unit, and each leaf so found gets
+;   sh_leaf, in order. IN: 8-bit M. OUT: C = 1 blocked (zp_sptr on the seg, for
+;   sh_refine); USE_SS = this sample's leaf, sh_d back at the sample. Clobbers
+;   A/X/Y, m_*, zp_px/py, zp_nid.
+;--------------------------------------------------------------
+        .segment B1
+.proc sh_gap
+        rep #$21                     ; 16-bit A, C = 0 (the sbc below rides on it)
+        .LONGA ON
+        lda zp_nid
+        sta gp_new                   ; this sample's leaf ...
+        lda sh_d
+        sta gp_hi                    ; ... and distance: the stretch's end
+        beq ?last                    ; sample 0: nothing before it
+        sbc #SH_STEP-1               ; (C = 0: the -1 is the rep's clear carry)
+        sta gp_lo                    ; the previous sample: leaf USE_SS at gp_lo
+        lda USE_SS
+        sta gp_cur
+?next   lda gp_hi                    ; the bracket [gp_lo, gp_h]: leaf gp_cur at
+        sta gp_h                     ;   the low end, another one at the high end
+?bis    sec                          ; (A = gp_h on every way in)
+        sbc gp_lo
+        cmp #2
+        bcc ?found                   ; a unit apart: gp_h is the next leaf's first
+        lsr @                        ; mid = lo + (h - lo) / 2, rounded up by the
+        adc gp_lo                    ;   halving's C: still inside (lo, h), h - lo >= 2
+        sta sh_d
+        jsr sh_dist                  ; (both take either width, return 16-bit)
+        jsr use_locate               ; A = the leaf at mid
+        cmp gp_cur
+        bne ?up
+        lda sh_d                     ; still gp_cur: the change lies above mid
+        sta gp_lo
+        lda gp_h
+        bra ?bis
+?up     lda sh_d                     ; another leaf: the change lies at or below mid
+        sta gp_h
+        bra ?bis
+?found  lda gp_h
+        cmp gp_hi
+        beq ?last                    ; the change is into this sample's own leaf
+        sta sh_d
+        jsr sh_dist
+        jsr use_locate               ; A = the leaf that starts at gp_h
+        cmp gp_new
+        beq ?last                    ;   (this sample's: once, below)
+        sta gp_cur
+        sep #$20
+        .LONGA OFF
+        jsr sh_leaf                  ; a skipped leaf: its segs against the ray
+        bcs ?out
+        rep #$20
+        .LONGA ON
+        lda gp_h
+        sta gp_lo                    ; the stretch goes on from its first unit
+        bra ?next
+?last   lda gp_new                   ; this sample's leaf, as sh_trace had it
+        sta USE_SS
+        sta zp_nid
+        lda gp_hi
+        sta sh_d
+        sep #$20
+        .LONGA OFF
+        jmp sh_leaf                  ; C = its verdict
+?out    rts
+.endp
+        .endseg
+
+;--------------------------------------------------------------
 ; sh_setb -- USE_PT_B = the ray end at length sh_d. The crossing test reads the
 ;   ray out of USE_PT_A/USE_PT_B, so shortening THAT is the binary search.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sh_setb
         jsr sh_dist
                                     ; 2026-09-22 (65816-windows): sh_dist returns 16-bit
@@ -320,7 +393,7 @@ pd_k    dta 0                        ; the BAM step, 0..4
 ;   point in zp_px/zp_py to en_bx/en_by and put the player back. Out of the
 ;   ROCKW block, which sh_trace fills to within a dozen bytes.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sh_end
                                       ; 2026-09-23: rep/lda/sta/sep leave C alone, and
         rep #$20                     ; ---- 16-bit A: four word moves
@@ -338,7 +411,7 @@ pd_k    dta 0                        ; the BAM step, 0..4
         rts
 .endp
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 sh_sa   dta 0                        ; sh_refine: which side of the blocking seg
                                      ;   the ray START is on (it never moves)
@@ -346,6 +419,11 @@ sh_n    dta 0                        ; sh_trace: samples left in the leaf walk
 sh_d    dta a(0)                     ; the ray length sh_dist is evaluating
 sh_lo   dta a(0)                     ; binary search: the longest CLEAR ray...
 sh_hi   dta a(0)                     ;   ...and the shortest BLOCKED one
+gp_new  dta a(0)                     ; sh_gap: this sample's leaf and distance,
+gp_hi   dta a(0)                     ;   the stretch's start (leaf gp_cur) and
+gp_lo   dta a(0)                     ;   the bracket's high end
+gp_cur  dta a(0)
+gp_h    dta a(0)
 
         .endseg
 

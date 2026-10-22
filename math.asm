@@ -193,12 +193,24 @@
 ;   UMUL16I is the BODY, a macro since 2026-09-26: the hottest callers
 ;   (smul32 272/frame, screenx_signed 189, calc_u 136) expand it in place
 ;   and drop the 12-cycle jsr/rts per call; the rest `jsr umul16`. Clobbers
-;   A/X/Y (umul16 no longer saves X -- 2026-09-23, drac_xlive). ANTONIA2
-;   keeps the call: the hardware multiplier lives in umul16a.asm.
+;   A/X/Y (umul16 no longer saves X -- 2026-09-23, drac_xlive). ANTONIA2:
+;   umul16a.asm's body in place, the factors in its order (2026-10-15,
+;   6502-idioms: an inline smaller than its 12-cycle call). X/Y are kept.
 ;--------------------------------------------------------------
 .macro UMUL16I
  .ifdef ANTONIA2
-        jsr umul16
+        rep #$20
+        .LONGA ON
+        lda m_a
+        sta.l ANT_MUL
+        lda m_b
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL
+        sta m_prod
+        lda.l ANT_MUL+2
+        sta m_prod+2
+        sep #$20
+        .LONGA OFF
  .else
   .if :0 = 2                       ; (2026-09-26) UMUL16I 0, 1: A holds m_a's low
    .if :2 = 1                      ;   byte on entry; UMUL16I 0, 2: m_b's. The
@@ -277,23 +289,130 @@
         lda m_quot
  .endif
 .endm
+; UD16 / UD16C / UD8 -- right after a jsr udiv24: the width the caller goes on
+;   with. udiv24 hands back 16-bit A (2026-10-16, drac030: few rep/sep pairs);
+;   ANTONIA2's udiv24a_v2.asm (drac030's, never changed) hands back 8-bit A.
+.macro UD16
+ .ifdef ANTONIA2
+        rep #$20
+ .endif
+.endm
+.macro UD16C                         ; ... and C = 0
+ .ifdef ANTONIA2
+        rep #$21
+ .else
+        clc
+ .endif
+.endm
+.macro UD8
+ .ifndef ANTONIA2
+        sep #$20
+ .endif
+.endm
 
 ;--------------------------------------------------------------
 ; umul16w (2026-09-29) -- umul16 for a 16-bit caller, its own copy of the body:
 ;   UNSIGNED m_a * m_b -> m_prod(4). IN: 16-bit M, A = m_b (the caller's
 ;   last store). OUT: 16-bit M. m_a / m_b are only read. Clobbers A/X/Y.
 ;--------------------------------------------------------------
+;   UMUL16WI -- the call at a 16-bit site; ANTONIA2 expands the card's multiply
+;   in place, 16-bit throughout (2026-10-15, 6502-idioms: an inline smaller
+;   than its call; 65816-windows: no sep/rep around 16-bit work). Clobbers A.
+.macro UMUL16WI
+ .ifdef ANTONIA2
+        lda m_a
+        sta.l ANT_MUL
+        lda m_b
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL
+        sta m_prod
+        lda.l ANT_MUL+2
+        sta m_prod+2
+ .else
+        jsr umul16w
+ .endif
+.endm
+
+;   MULBW -- 16-bit, A = the factor for m_b, m_a the other: m_b = A and the
+;   call; ANTONIA2 sends A to the card first (the product commutes) and m_b is
+;   not written. PRSBC / PRADC n -- sbc / adc of the product's word at byte n:
+;   m_prod, or straight off the card (2026-10-15, 6502-idioms: compute in A --
+;   no m_prod round trip).
+.macro MULBW
+ .ifdef ANTONIA2
+        sta.l ANT_MUL
+        lda m_a
+        sta.l ANT_MUL+2
+ .else
+        sta m_b
+        jsr umul16w
+ .endif
+.endm
+;   ASMUL a, b (ANTONIA2 only; 16-bit, signed words in memory) -- the card
+;   multiplies the raw words, A = the SIGNED product's high word (minus b if
+;   a < 0, minus a if b < 0, as smul32), its low word stays readable at
+;   ANT_MUL. Clobbers A, Y (2026-10-15, 6502-idioms: compute in A).
+.macro ASMUL
+        lda :1
+        sta.l ANT_MUL
+        lda :2
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL+2
+        ldy :1+1
+        bpl ?a
+        sec
+        sbc :2
+?a      ldy :2+1
+        bpl ?b
+        sec
+        sbc :1
+?b
+.endm
+;   CSQ (ANTONIA2 only; 16-bit, A = a signed word, N its sign) -- |A|^2 on the
+;   card, read back at ANT_MUL / ANT_MUL+2 (coll_sq inline: no jsr, no m_a /
+;   m_prod copies -- 2026-10-15, 6502-idioms: compute in A). A = |A|.
+.macro CSQ
+        bpl ?p
+        eor #$FFFF
+        inc @
+?p      sta.l ANT_MUL
+        sta.l ANT_MUL+2
+.endm
+.macro PRSBC
+ .ifdef ANTONIA2
+        sbc.l ANT_MUL+:1
+ .else
+        sbc m_prod+:1
+ .endif
+.endm
+.macro PRADC
+ .ifdef ANTONIA2
+        adc.l ANT_MUL+:1
+ .else
+        adc m_prod+:1
+ .endif
+.endm
+
         .segment B1
 .proc umul16w
+ .ifdef ANTONIA2
+        .LONGA ON
+        UMUL16WI
+        rts
+        .LONGA OFF
+ .else
         .LONGA OFF
         sep #$20
         UMUL16I 0, 2
         rep #$20
         rts
+ .endif
 .endp
         .endseg
+;   (2026-10-05: inlining it at plane_setup's four sites was tried -- ~170 B a
+;   copy broke the proc's branch reach and bank $01 has no 680 B to spare.)
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc umul16
  .ifdef ANTONIA2
         ; ---- ANTONIA II HARDWARE MULTIPLIER (drac030, 2026-09-10) ----------- ...
@@ -313,8 +432,7 @@
 ;   in the $2000 engine segment, and step_recip below needed the bytes.
 ;--------------------------------------------------------------
 sm14_resume = *
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc smul_14
         lda m_a+1
 	eor m_b+1
@@ -373,7 +491,6 @@ sm14_resume = *
 
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
         org sm14_resume
 
 ;--------------------------------------------------------------
@@ -390,7 +507,7 @@ sm14_resume = *
 ;   Nearly every call site is `lda m_a+1 / bpl skip / jsr m_neg` -- abs() -- and
 ;   that test stays with the caller: some of them want the sign afterwards.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc m_neg
         sec
         lda #0
@@ -403,21 +520,11 @@ sm14_resume = *
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc m_negb
-        sec
-        lda #0
-        sbc m_b
-        sta m_b
-        lda #0
-        sbc m_b+1
-        sta m_b+1
-        rts
-.endp
-        .endseg
+; (m_negb -- the same for m_b -- had no caller left: every site negates in the
+;  16-bit accumulator now. Removed 2026-10-05.)
 
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 ; 2026-09-29 entries: smul32 (8-bit M in), sm_m16 (16-bit), sm_w16 (16-bit,
 ;   A = m_b and N its sign), sm_bp (16-bit, m_b >= 0). All return 16-bit M;
 ;   m_a / m_b come back as |a| / |b|.
@@ -439,45 +546,30 @@ sm_aneg eor #$FFFF
  .ifdef ANTONIA2
 sm_m16
 sm_bp
-sm_w16  sep #$20                     ; (either width in: the card's code is 8-bit)
-        .LONGA OFF
-        ; ANTONIA II: |a| * |b| on the multiplier, the sign put back after -- ...
-        lda m_a+1
-        eor m_b+1
-        sta m_sign                   ; bit 7 = the product's sign
-        rep #$20
+sm_w16  rep #$20                     ; (either width in)
         .LONGA ON
+        ; ANTONIA II (2026-10-15, 6502-idioms: compute in A): the UNSIGNED
+        ; product of the raw words, then mod 2^32 a*b = ua*ub - (a<0 ? ub<<16)
+        ; - (b<0 ? ua<<16): the sign fix is two subtracts on the high word.
+        ; m_a / m_b are only read (no caller wants |a| / |b| back).
         lda m_a
-        bpl ?ap
-        eor #$FFFF
-        inc @
-?ap     sta.l ANT_MUL
+        sta.l ANT_MUL
         lda m_b
-        bpl ?bp
-        eor #$FFFF
-        inc @
-?bp     sta.l ANT_MUL+2
+        sta.l ANT_MUL+2
         lda.l ANT_MUL
         sta m_prod
         lda.l ANT_MUL+2
-        sta m_prod+2
-        sep #$20
-        .LONGA OFF
-        lda m_sign
-        bpl ?pos
-        rep #$20                     ; -m_prod, 32 bits in two word subtracts
-        .LONGA ON
+        ldy m_a+1
+        bpl ?ap
         sec
-        lda #0
-        sbc m_prod
-        sta m_prod
-        lda #0
-        sbc m_prod+2
-        sta m_prod+2
+        sbc m_b
+?ap     ldy m_b+1
+        bpl ?bp
+        sec
+        sbc m_a
+?bp     sta m_prod+2
         rts                          ; (16-bit out)
         .LONGA OFF
-?pos    rep #$20
-        rts
  .else
         rep #$20
         .LONGA ON
@@ -513,11 +605,54 @@ sm_ap   sty m_sign
 ;--------------------------------------------------------------
 ; cross_pos -- A = 1 if (cx_a*cx_b - cx_c*cx_d) > 0, else 0  (all signed16).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc cross_pos
 	rep #$20
 	.LONGA ON
 cp_w16                               ; (16-bit callers enter here: seg_draw, use_side)
+ .ifdef ANTONIA2
+        ; 2026-10-15 (6502-idioms: compute in A): both products on the card from
+        ; cx_* in place, signed as smul32's (the high word minus b if a < 0,
+        ; minus a if b < 0); c*d's high word waits in m_prod+2 so the low
+        ; subtract's borrow runs straight into it. m_a/m_b/m_prod not kept.
+        lda cx_a
+        sta.l ANT_MUL
+        lda cx_b
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL
+        sta cx_p1
+        lda.l ANT_MUL+2
+        ldy cx_a+1
+        bpl ?a1
+        sec
+        sbc cx_b
+?a1     ldy cx_b+1
+        bpl ?b1
+        sec
+        sbc cx_a
+?b1     sta cx_p1+2
+        lda cx_c
+        sta.l ANT_MUL
+        lda cx_d
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL+2
+        ldy cx_c+1
+        bpl ?c1
+        sec
+        sbc cx_d
+?c1     ldy cx_d+1
+        bpl ?d1
+        sec
+        sbc cx_c
+?d1     sta m_prod+2
+        sec
+        lda cx_p1
+        sbc.l ANT_MUL
+        sta cx_p1
+        lda cx_p1+2
+        sbc m_prod+2
+        sta cx_p1+2
+ .else
         lda cx_a
         sta m_a
         lda cx_b
@@ -542,11 +677,12 @@ cp_w16                               ; (16-bit callers enter here: seg_draw, use
         lda cx_p1+2
         sbc m_prod+2
         sta cx_p1+2
+ .endif
 	bmi ?zero
 	ora cx_p1
 	beq ?zero
-	
-	sep #$20
+
+?one	sep #$20
 	.LONGA OFF
 	lda #1
 	rts
@@ -555,6 +691,34 @@ cp_w16                               ; (16-bit callers enter here: seg_draw, use
 	.LONGA OFF
 	lda #0
 	rts
+        ; ---- cp_sign (2026-10-05) -- the SIGN alone, for the callers that read
+        ; only A (the BSP side tests, backface, use_side, mv_side_pt): r_main.c
+        ; R_PointOnSide's shortcut. When a*b and c*d have opposite signs (all
+        ; four factors nonzero) the sign of a*b - c*d is the sign of a*b -- no
+        ; multiply. Same signs, or a zero factor: the full product above
+        ; decides, as before. Exact: a strictly positive minus a strictly
+        ; negative is positive, and the reverse negative. 16-bit entry, 8-bit
+        ; out (A = 0/1, Z), cx_p1 is scratch here (only ai_sight/infight read
+        ; it, and they stay on cp_w16). ~64 cycles instead of ~425 on the hit.
+	.LONGA ON
+cp_sign lda cx_a
+        eor cx_b                     ; bit 15: sign(a) ^ sign(b)
+        sta cx_p1
+        eor cx_c
+        eor cx_d
+        bpl cp_w16                   ; the sign bits agree: the full product
+        lda cx_a                     ; opposite -- unless a factor is 0
+        beq cp_w16
+        lda cx_b
+        beq cp_w16
+        lda cx_c
+        beq cp_w16
+        lda cx_d
+        jeq cp_w16                   ; (ANTONIA2's cp_w16 is longer: 6502-mads)
+        lda cx_p1                    ; a*b > 0 (and c*d < 0) -> 1
+        bmi ?zero
+        bra ?one
+	.LONGA OFF
 .endp
         .endseg
 
@@ -619,7 +783,22 @@ ANT_CONF1 equ $FFF001                ; CONF1: b0 VBENA, b1 VBADR (early_init set
 ;   carry). Assembled: the sign-0 form. :6/:7 name the two slots (global
 ;   labels: a macro's own labels are local to it), :8 = the negated form.
 ;   Entered 8-bit, LEAVES 16-bit. Clobbers A/X/Y, qs_p (and m_a if var < 0).
+;   ANTONIA2 (2026-10-15, 6502-idioms: compute in A): no tables -- the card
+;   multiplies 2|var| by 2|const| (fm_k2s / fm_k2c, set per frame), and the
+;   high word IS |var|*|const| >> 14 = the tables' sum >> 16: bit-identical.
+;   2|var| carries out only for var = -32768, whose product is 2|const|
+;   itself (out of line). C = 0 at both slots as above. Either width in,
+;   A only (X/Y and m_a are left alone).
 .macro FMUL
+ .ifdef ANTONIA2
+        .LONGA OFF
+        rep #$20
+  .if :0 > 7
+        FMUL16 :1, :2, :3, :4, :5, :6, :7, :8
+  .else
+        FMUL16 :1, :2, :3, :4, :5, :6, :7
+  .endif
+ .else
         .LONGA OFF
         ldx :5+1                   ; the hi byte is phase 1's index, N = the sign
         bpl ?pos
@@ -657,6 +836,72 @@ ANT_CONF1 equ $FFF001                ; CONF1: b0 VBENA, b1 VBADR (early_init set
         eor #$FFFF
         inc
 ?done
+ .endif
+.endm
+
+; FMUL16: FMUL entered with A already 16-bit -- a chain of products drops the
+;   rep #$20 at each one but the first (2026-10-15, 65816-windows: "callee
+;   opens with rep: give it a label past the rep"). ANTONIA2 only; stock = FMUL.
+.macro FMUL16
+ .ifdef ANTONIA2
+        .LONGA ON
+        lda :5
+        bpl ?pos
+        eor #$FFFF
+        inc @
+        asl @
+        bcs ?big
+        sta.l ANT_MUL
+   .if :4 = sin_sgn
+        lda fm_k2s
+   .else
+        lda fm_k2c
+   .endif
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL+2
+?nslot
+        .def :%%6 = *
+  .if :0 > 7
+        bra ?done
+  .else
+        bcs ?done
+  .endif
+        eor #$FFFF
+        inc @
+        bra ?done
+?big
+   .if :4 = sin_sgn
+        lda fm_k2s
+   .else
+        lda fm_k2c
+   .endif
+        clc
+        bra ?nslot
+?pos    asl @
+        sta.l ANT_MUL
+   .if :4 = sin_sgn
+        lda fm_k2s
+   .else
+        lda fm_k2c
+   .endif
+        sta.l ANT_MUL+2
+        lda.l ANT_MUL+2
+        .def :%%7 = *
+  .if :0 > 7
+        bcs ?done
+  .else
+        bra ?done
+  .endif
+        eor #$FFFF
+        inc @
+?done
+ .else
+  .if :0 > 7
+        FMUL :1, :2, :3, :4, :5, :6, :7, :8
+  .else
+        FMUL :1, :2, :3, :4, :5, :6, :7
+  .endif
+ .endif
 .endm
 
 ;--------------------------------------------------------------
@@ -672,24 +917,30 @@ ANT_CONF1 equ $FFF001                ; CONF1: b0 VBENA, b1 VBADR (early_init set
         FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, :1, fmn_%%3a, fmp_%%3a
         .endl
         sta zp_X
+ .ifndef ANTONIA2                    ; (ANTONIA2's FMUL takes either width: no sep)
         .LONGA OFF
         sep #$20
+ .endif
         .local tf2
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, :2, fmn_%%3b, fmp_%%3b, neg
+        FMUL16 TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, :2, fmn_%%3b, fmp_%%3b, neg
         .endl
         clc
         adc zp_X
         sta zp_X
+ .ifndef ANTONIA2
         .LONGA OFF                   ; Z = rx*cos + ry*sin
         sep #$20
+ .endif
         .local tf3
-        FMUL TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, :1, fmn_%%3c, fmp_%%3c
+        FMUL16 TCOS_LO, TCOS_MI, TCOS_HI, cos_sgn, :1, fmn_%%3c, fmp_%%3c
         .endl
         sta zp_Z
+ .ifndef ANTONIA2
         .LONGA OFF
         sep #$20
+ .endif
         .local tf4
-        FMUL TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, :2, fmn_%%3d, fmp_%%3d
+        FMUL16 TSIN_LO, TSIN_MI, TSIN_HI, sin_sgn, :2, fmn_%%3d, fmp_%%3d
         .endl
         clc
         adc zp_Z
@@ -704,9 +955,36 @@ ANT_CONF1 equ $FFF001                ; CONF1: b0 VBENA, b1 VBADR (early_init set
 ;--------------------------------------------------------------
 bft_resume = *
         org FRACTAB_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc build_frac_tables
+ .ifdef ANTONIA2
+        ; (2026-10-15) no tables: FMUL's factors 2|sin|, 2|cos| (<= 32768)
+        ; and the signs, as b1_build_frac sets them (1 = negative)
+        rep #$20
+        .LONGA ON
+        ldy #0
+        lda zp_sin
+        bpl ?sp
+        iny
+        eor #$FFFF
+        inc @
+?sp     asl @
+        sta fm_k2s
+        sty sin_sgn
+        ldy #0
+        lda zp_cos
+        bpl ?cp
+        iny
+        eor #$FFFF
+        inc @
+?cp     asl @
+        sta fm_k2c
+        sty cos_sgn
+        sep #$20
+        .LONGA OFF
+ .else
         jsl B1CODE_BASE+b1_build_frac
+ .endif
                                       ; --- fm_patch (2026-09-27): the FMUL tails' sign
         ldx #$80                     ;   branches follow sin_sgn/cos_sgn (see FMUL).
         ldy #$B0                     ;   X = the plain tail's opcode (fmp of a var >= 0,
@@ -774,7 +1052,7 @@ bft_resume = *
 ;   is out for the whole init chain, so the restore's stores land in RAM.
 ;   Skip this and every wall is garbage from frame one (paint.asm pt_dy).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc sq2_lt_init                    ; (name kept: mv_reset's tail jmp points
                                      ;   here; the SQ2 restore it was born for
                                      ;   died with the $C900 home, 2026-08-31)
@@ -797,7 +1075,7 @@ bft_resume = *
 ; go. The engine is in 65816 NATIVE mode already (underrom.asm), so a block
 ; costs rep/sep = 6 cycles and no clc/xce; M only, X/Y stay 8-bit because the
 ; digi IRQ inherits them (sound.asm:316). fmul_sin/fmul_cos are 8-bit code.
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc transform
         XFORM zp_rx, zp_ry, t       ; (FMUL inlined x4 since 2026-09-14)
         rts                          ; 16-bit out
@@ -805,17 +1083,8 @@ bft_resume = *
 .endp
         .endseg
 
-;--------------------------------------------------------------
-; transform2 -- transform for process_seg's v2: reads zp_rx2/zp_ry2 in place
-;   (2026-09-26; v1 lives in zp_rx/zp_ry, so neither needs a copy).
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc transform2
-        XFORM zp_rx2, zp_ry2, u
-        rts                          ; 16-bit out
-        .LONGA OFF
-.endp
-        .endseg
+; (transform2 -- the same for process_seg's v2, zp_rx2/zp_ry2 in place -- is
+;  INLINE in process_seg since 2026-10-05: one caller, the jsr/rts went.)
 
 ;--------------------------------------------------------------
 ; udiv24 -- UNSIGNED (m_num: 24-bit in m_prod[0..2]) / (m_den 16) ->
@@ -827,7 +1096,7 @@ bft_resume = *
 udiv_resume = *
         org FASTDIV_BASE
  .endif
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc udiv24
  .ifdef ANTONIA2
         ; ---- ANTONIA II HARDWARE DIVIDER (drac030, 2026-09-10) --------------
@@ -835,7 +1104,7 @@ udiv_resume = *
         ; hand back quotient and remainder.
 ud_w16  sep #$20                     ; (the 16-bit entry: the card's code is 8-bit)
         .LONGA OFF                   ; falls into udiv24_antonia2. DBR stays 0: its
-        icl 'udiv24a_v2.asm'         ;   ?q_hi/?q_lo are bank-0 RAM (UDQ_VARS)
+        icl 'udiv24a_v2.asm'         ;   ?q_hi/?q_lo are zero page (UDQ_VARS)
  .else
                                       ; 2026-09-23: the 16- and 8-step loops had the same
 	rep #$20                     ;   body and the same tail: ONE unrolled chain, the
@@ -875,9 +1144,8 @@ udiv24_q8                            ; ENTRY for calc_u: 16-bit A = the dividend
 	sta m_rem
 	lda m_prod
 	sta m_quot
-	sep #$20
-	.LONGA OFF
-	rts
+	.LONGA OFF                   ; OUT 16-bit A (2026-10-16): the callers say
+	rts                          ;   their width (UD16 / UD8)
 	.LONGA ON
 ?full	lda m_prod+1
 	sta m_prod+2
@@ -901,8 +1169,7 @@ udiv24_q8                            ; ENTRY for calc_u: 16-bit A = the dividend
 	sta m_rem
 	lda m_prod
 	sta m_quot
-	sep #$20
-	.LONGA OFF
+	.LONGA OFF                   ; (OUT 16-bit A)
 	rts
  .endif
 .endp
@@ -921,7 +1188,7 @@ udiv24_q8                            ; ENTRY for calc_u: 16-bit A = the dividend
 ;   the IDENTICAL quotient (verified vs udiv24 over the full Z range, 0 diffs).
 ;   Caller guarantees m_prod[0..1] holds the dividend (m_prod+2 ignored).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc udiv16
  .ifdef ANTONIA2
         ; ANTONIA II: one hardware divide. m_den = 0 never reaches the divider
@@ -974,72 +1241,15 @@ udiv24_q8                            ; ENTRY for calc_u: 16-bit A = the dividend
 ; (recip_norm -- the 9-bit mantissa + exponent normalize -- is the RECIP_NORM
 ;  macro at the top of this file since 2026-09-26, inlined at its callers.)
 
-;--------------------------------------------------------------
-; shr_prod32 -- shift m_prod (32-bit) right by X bits (X in 0..31). Drops whole
-;   low bytes first (X>>3), then the residual X&7 bit-shifts. Applies the
-;   reciprocal shift (RECIP_SCALE_K / RECIP_SX_K + e).
-;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc shr_prod32
-                                      ; 2026-09-22 idiom: A already holds the count --
-                                     ;   both callers (scale_z, screenx_signed) do
-                                     ;   `tax / jsr shr_prod32`. IN: A = X = count.
-        lsr
-        lsr
-        lsr                        ; whole bytes to drop (X>>3)
-        beq ?bits
-	dec                        ; 1, 2 or 3 whole bytes (X <= 31): three
-	beq ?b1                    ;   straight-line word moves instead of the
-	dec                        ;   loop's 24 cycles a byte (2026-09-15)
-	beq ?b2
-	rep #$20                   ; 3: byte 3 -> byte 0, the rest 0
-	.LONGA ON
-	lda m_prod+3
-	and #$00ff
-	sta m_prod
-	stz m_prod+2
-	bra ?bdone
-	.LONGA OFF
-?b2	rep #$20                   ; 2: the high word down, the top word 0
-	.LONGA ON
-	lda m_prod+2
-	sta m_prod
-	stz m_prod+2
-	bra ?bdone
-	.LONGA OFF
-?b1	rep #$20                   ; 1: bytes 1-2 -> 0-1, byte 3 -> 2, 0 -> 3
-	.LONGA ON
-	lda m_prod+1
-	sta m_prod
-	lda m_prod+3
-	and #$00ff
-	sta m_prod+2
-?bdone	sep #$20
-	.LONGA OFF
-?bits   txa
-        and #7
-        beq ?done
-        tax
-	rep #$20                   ; the high word rides in A: lsr A is 2 cycles
-	.LONGA ON                  ;   against the 8 of a 16-bit `lsr m_prod+2`
-	lda m_prod+2               ;   RMW, on every one of the 1..7 bit steps
-?bit	lsr                        ;   (2026-09-14; same bits, same order)
-	ror m_prod
-	dex
-	bne ?bit
-	sta m_prod+2
-	sep #$20
-	.LONGA OFF
-?done   rts
-.endp
-        .endseg
+; (shr_prod32 -- m_prod >> X -- went 2026-10-16: scale_z and screenx_signed
+;  shift the word in A since 2026-09-23, nothing called it.)
 
 ;--------------------------------------------------------------
 ; step_recip (2026-09-29) -- step = sign * min(32767, |R-L| * rs_invm >>
 ;   rs_invsh), rs_invsh = 15..30. IN: 8-bit M, m_a = (R-L)'s low word, A =
 ;   its top byte with N/Z. OUT: 16-bit M, A = the step, m_a = |step|.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
         .LONGA OFF
 sr_neg  sta rs_mag+2                 ; R-L < 0 (ahead of the entry, in its reach):
         rep #$20                     ;   |R-L| = 0 - (R-L), low word then top byte
@@ -1073,6 +1283,18 @@ sr_bigp sta rs_mag+2                 ; |R-L| >= 65536, positive (A = the top byt
         rep #$20
         .LONGA ON
 sr_mb   lda rs_invm
+ .ifdef ANTONIA2                     ; 2026-10-15 (6502-idioms: compute in A): invm
+        sta.l ANT_MUL                ;   to the card from A, |R-L| second; the
+        lda m_a                      ;   jump index is formed while it works, the
+        sta.l ANT_MUL+2              ;   product read last (m_b is not written)
+        lda rs_invsh                 ; the jump index in 16-bit A (2026-10-16,
+        asl @                        ;   drac030: no sep/rep round three
+        tax                          ;   instructions): X is 8-bit, it takes the
+        lda.l ANT_MUL                ;   low byte = invsh*2 as before
+        sta m_prod
+        lda.l ANT_MUL+2
+        sta m_prod+2                 ; W = V >> 16; N = W >= $8000 for ?j0
+ .else
         sta m_b
         .LONGA OFF
         sep #$20
@@ -1083,6 +1305,7 @@ sr_mb   lda rs_invm
         rep #$20
         .LONGA ON
         lda m_prod+2                 ; W = V >> 16; N = W >= $8000 for ?j0
+ .endif
         jmp (sr_tab-30,x)
 sr_tab  dta a(?s15, ?j0, ?j1, ?j2, ?j3, ?j4, ?j5, ?j6, ?j7)
         dta a(?j8, ?j9, ?j10, ?j11, ?j12, ?j13, ?j14)
@@ -1229,7 +1452,7 @@ sr_big  rep #$20
 ;   division -- the per-seg bottleneck). zp_Z must be > 0 (post near-clip).
 ;   scale = SCALE_TAB[m] >> (RECIP_SCALE_K + e). Bit-identical to gui.scale_recip.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc scale_z
                                       ; Z as one word straight into recip_norm's 16-bit
         rep #$20                     ;   entry: no byte copies into rc_m, no reload
@@ -1287,8 +1510,26 @@ sz_k    adc #RECIP_SCALE_K           ;   e + (K + vw_sh), the sum baked in by vw
 ;   m_xs(2,signed) = SCREEN_HALF + (FOCAL*X)/Z. Used as the interpolation
 ;   anchors (the clamped 0..W-1 column range is derived separately).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc screenx_signed
+	.LONGA ON
+                                      ; 2026-09-23: 16-bit entry sx_w16, the sign via Y
+sx_w16                               ;   (no 8-bit stz before the window)
+        ldy #0
+        lda zp_X
+	bpl ?xp
+        iny                          ; m_sign = 1: X was negative
+	eor #$ffff
+	inc
+?xp     sty m_sign
+	sta m_a
+        lda zp_Z
+        RECIP_NORM                   ; (inlined 2026-09-26) (returns 8-bit; X = mantissa idx, rc_e = e)
+	.LONGA OFF
+        bra sx_tab                   ; 2026-10-05 (6502-cycles-layout): the hotter entry
+                                     ;   sx_a (131 vs 58 a frame) falls into sx_tab now
+                                     ;   and this one takes the branch (was the other
+                                     ;   way round; the dead rep that stood here went)
 	.LONGA ON
 sx_a                                 ; 16-bit ENTRY right after scale_z of the SAME
                                      ;   Z: its RECIP_NORM left X = the mantissa
@@ -1305,28 +1546,24 @@ sx_a                                 ; 16-bit ENTRY right after scale_z of the S
 	sta m_a
 	sep #$20
 	.LONGA OFF
-	bra sx_tab
-                                      ; 2026-09-23: 16-bit entry sx_w16, the sign via Y
-	rep #$20                     ;   (no 8-bit stz before the window)
-	.LONGA ON
-sx_w16
-        ldy #0
-        lda zp_X
-	bpl ?xp
-        iny                          ; m_sign = 1: X was negative
-	eor #$ffff
-	inc
-?xp     sty m_sign
-	sta m_a
-        lda zp_Z
-        RECIP_NORM                   ; (inlined 2026-09-26) (returns 8-bit; X = mantissa idx, rc_e = e)
-	.LONGA OFF
-
+ .ifdef ANTONIA2
+sx_tab  lda.l RCX_SX_HI,x          ; SX_TAB[m] built in A (65816-idioms: pair the
+        xba                        ;   bytes with xba) and sent to the card as the
+        lda.l RCX_SX_LO,x          ;   FIRST factor -- the product commutes, m_b
+        rep #$20                   ;   is not written (2026-10-15); the product
+        .LONGA ON                  ;   stays ON THE CARD -- the shifts below read
+        sta.l ANT_MUL              ;   the words they need from it, m_prod is not
+        lda m_a                    ;   written (6502-idioms: no round trip)
+        sta.l ANT_MUL+2
+        sep #$20
+        .LONGA OFF
+ .else
 sx_tab  lda.l RCX_SX_HI,x          ; m_b = SX_TAB[m] (FOCAL baked in), bank $01.
         sta m_b+1                  ;   2026-09-29: the high byte first, so A is
         lda.l RCX_SX_LO,x          ;   m_b's low byte for the multiply (no reload)
         sta m_b
         UMUL16I 0, 2               ; (inlined 2026-09-26) m_prod(4) = |X| * SX_TAB[m]
+ .endif
 
                                       ; 2026-09-23: >> c and the clamp in 16-bit A, no
         lda rc_e                     ;   shr_prod32. c = 17 + e + vw_sh = 9..26 (e is
@@ -1339,7 +1576,11 @@ sx_k    adc #RECIP_SX_K              ;   K + vw_sh is baked in by vw_apply
         tay
         rep #$20
         .LONGA ON
+ .ifdef ANTONIA2
+        lda.l ANT_MUL+2
+ .else
         lda m_prod+2
+ .endif
 ?l2     lsr @
         dey
         bne ?l2
@@ -1381,8 +1622,14 @@ sx_q0   ldy m_sign                   ; returns 16-BIT with A = m_xs; C = 0 here
         tay
         rep #$20
         .LONGA ON
+ .ifdef ANTONIA2
+        lda.l ANT_MUL+1              ; bytes 2:1 off the card for the ror below
+        sta m_prod+1
+        lda.l ANT_MUL+2
+ .else
         lda m_prod+2                 ; A = bytes 3:2, the word at +1 takes the bits
-?l1     lsr @                        ;   (its byte 2 goes stale: rewritten below)
+ .endif
+?l1     lsr @                       ;   (its byte 2 goes stale: rewritten below)
         ror m_prod+1
         dey
         bne ?l1
@@ -1397,7 +1644,11 @@ sx_q0   ldy m_sign                   ; returns 16-BIT with A = m_xs; C = 0 here
         .LONGA OFF
 ?w2z    rep #$20
         .LONGA ON
+ .ifdef ANTONIA2
+        lda.l ANT_MUL+2
+ .else
         lda m_prod+2
+ .endif
         bra ?w2d
         .LONGA OFF
 .endp
@@ -1408,7 +1659,7 @@ sx_q0   ldy m_sign                   ; returns 16-BIT with A = m_xs; C = 0 here
 ;   m_a = world height (signed16), m_b = scale (signed16). HH<<SF = 50*256
 ;   = 12800 = $3200. This is the DOOM screen-Y for one height plane (Q8).
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc track_calc                   ; 2026-09-29 IN: 16-bit M, A = m_b, N (sm_w16)
         .LONGA ON
         jsr smul32.sm_w16          ; m_prod(4) = world*scale (signed), 16-bit out

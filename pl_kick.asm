@@ -13,7 +13,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ; pl_kick -- move_player's ?slide: what is left of a shove joins mv_dx/mv_dy.
 ;==============================================================
         org PLKICK1_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_kick
         lda pl_kd
         beq ?out
@@ -33,7 +33,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLKICK2_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_kick2
         sec                          ; ...and take it off the remainder
         lda pl_kd
@@ -49,7 +49,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLKICK3_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_kick3                       ; the octant -> a signed 16-bit component
         ldy #0                       ;   per axis: en_thrust's own decomposition
         lda thr_sx,x                 ;   (1 = all of it, 2 = three quarters on
@@ -66,7 +66,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLKICK4_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_kick4                       ; mv_dx += the X component. The shove joins
         rep #$21                     ; mv_dx += the X component, one word add
         .LONGA ON                    ;   (drac030 idiom)
@@ -83,7 +83,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLKICK5_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_kick5
                                       ; 2026-09-23: entered 16-bit from pl_kick4
         .LONGA ON
@@ -104,7 +104,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ; pl_idle -- move_player's ?dead jumps HERE instead of straight to ?nomove.
 ;==============================================================
         org PLIDLE1_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_idle
         lda pl_dead                  ; a corpse is still a corpse: P_DeathThink
         bne ?no                      ;   runs instead of P_MovePlayer
@@ -119,13 +119,13 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLIDLE2_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_idle2
         stz mv_dx                    ; no walk this frame -- pl_kick puts the
         stz mv_dx+1                  ;   shove on top of a zero step
         stz mv_dy
         stz mv_dy+1
-        jsr skipx_ref                ; cur_floor, the step-up reference ?go
+        jsr pl_zref                  ; cur_floor, the step-up reference ?go
                                      ;   would have set (doors.asm)
         jmp move_player.mp_slide
 .endp
@@ -139,8 +139,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
 ;   en_plr_hurt` and it makes that call itself at the end: p_inter.c:806 kicks
 ;   BEFORE the health test, so a killing shot still shoves the corpse.
 ;==============================================================
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_thrust
         lda bl_dmg
         asl
@@ -149,10 +148,9 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         ert *<>pl_thr2              ;   next byte of this segment -- fall through
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
         org PLTHR2_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_thr2                        ; swr_vx = zp_px - bl_x: AWAY from the ball,
                                       ; 2026-09-23 (65816-windows): both deltas as words
         rep #$20                     ;   in ONE window -- the four byte halves pl_thr2..5
@@ -176,7 +174,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLTHR3_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_thr3
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>pl_thr4              ;   next byte of this segment -- fall through
@@ -187,7 +185,7 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
     .endif
 
         org PLTHR4_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_thr4
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>pl_thr5              ;   next byte of this segment -- fall through
@@ -197,17 +195,14 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         ert 'pl_thrust piece 4 outgrew PLTHR4_BASE..END (memory_map.inc)'
     .endif
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_thr5
                                       ; 2026-09-21 drac_bra: the target is the very
         ert *<>pl_thr6              ;   next byte of this segment -- fall through
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
 
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pl_thr6
                                       ; 2026-09-23: 16-bit from pl_thr2 (no sep there):
         jsl B1CODE_BASE+b1_oct_of.oo_w16 ;   past oct_of's rep; returns 8-bit
@@ -216,4 +211,3 @@ pl_ko   dta 0                        ; ...along this octant (oct_of's eight)
         jmp en_plr_hurt
 .endp
         .endseg
-                                      ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)

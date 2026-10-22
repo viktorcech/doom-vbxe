@@ -8,12 +8,12 @@
 ;   shipped flight code ticks it exactly as it did when there was one, and
 ;   pj_save puts it back.
 ;--------------------------------------------------------------
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_slot                        ; X = slot -> zp_ptr = its bank $01 block
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_load                        ; X = slot -> the context. Preserves X.
                                       ; 2026-09-23: pj_slot inlined INTO the copy's window:
         txa                          ;   slot*64 + PJSLOT_EXT as one word (slot <= 7:
@@ -40,7 +40,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_save                        ; X = slot <- the context. Preserves X.
                                       ; 2026-09-23: pj_slot inlined, as pj_load
         txa
@@ -67,7 +67,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_mirr                        ; X = slot: what spr_chasec reads per
         lda pj_on                    ;   SUBSECTOR, kept in fast base RAM so the
         sta pj_ons,x                 ;   walk never unpacks a slot to find out
@@ -79,7 +79,7 @@
 .endp                                ;   pj_cur, which is what X holds here)
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_frameN                      ; the frame hook: every bolt, in turn
         lda current_level            ; the level check is HERE and not in
         cmp pj_lvl                   ;   pj_frame any more: pj_relvl has to run
@@ -90,7 +90,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_frameN2
         lda pj_any                   ; nothing flying (the usual frame): the scan
         bne ?scan                    ;   below would find every slot idle and only
@@ -113,7 +113,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_draw1                       ; X = slot, and its leaf is the one the walk
         stx pj_cur                   ;   is in: unpack it and project it
         jsr pj_load
@@ -131,7 +131,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_pick                        ; the slot a NEW shot gets, context loaded.
         ldx #PJ_NSLOT-1              ;   Z=1 = it is somebody's LIVE bolt (every
 ?lp     lda pj_ons,x                 ;   slot was busy), so the caller has to
@@ -147,7 +147,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc en_rocket2
         pha                          ; the roll, while pj_pick eats A
         jsr pj_pick
@@ -162,7 +162,7 @@
 .endp
         .endseg
 
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
+        .segment B1
 .proc pj_clr                         ; a new level: forget every bolt
         stz pj_on
         stz pj_any                   ; ...and the walk's "anything flying" flag
@@ -175,52 +175,23 @@
 .endp
         .endseg
 
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 pj_ons  dta 0,0,0,0,0,0,0,0          ; per slot: pj_on, and the leaf it is in --
 pj_ssl  dta 0,0,0,0,0,0,0,0          ;   the only projectile state the render
 pj_ssh  dta 0,0,0,0,0,0,0,0          ;   walk ever reads (PJ_NSLOT of each)
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
-
-;--------------------------------------------------------------
-; spr_chasec -- spr_add's chase hook, retargeted a second time (sprites.asm
-;   calls it instead of spr_chaseb): the ball's chain first, then every bolt
-;   whose leaf is the one the walk is in.
-;--------------------------------------------------------------
+        .segment D0
+; (spr_chasec -- the bolts' chase hook -- is inline in spr_chased (puff.asm)
+;  since 2026-09-15; the dead copy went 2026-10-05.)
         .endseg
         org SPRCHC_BASE
-        .segment B1                  ; DRAC_PLAN 2b: bank $01 (b1_mark.py)
-.proc spr_chasec
-        jsr spr_chaseb
-        lda pj_any                   ; nothing flying anywhere (the usual
-        beq ?out                     ;   frame): one load instead of an 8-slot
-        ldx #PJ_NSLOT-1              ;   scan on EVERY subsector of the walk
-?lp     lda pj_ons,x
-        beq ?nx
-        lda zp_nid
-        cmp pj_ssl,x
-        bne ?nx
-        lda zp_nid+1
-        and #$7F
-        cmp pj_ssh,x
-        bne ?nx
-        lda sp_n
-        cmp #VIS_MAX
-        bcs ?nx
-        jsr pj_draw1
-        ldx pj_cur                   ; (pj_draw1 goes through spr_proj)
-?nx     dex
-        bpl ?lp
-?out    rts
-.endp
-        .endseg
 pj_any  dta 0                        ; OR of the eight pj_ons (pj_orup): 0 = no
                                      ;   bolt flying anywhere. Lives with its
                                      ;   only per-frame reader now.
     .if * > SPRCHC_END+1
         ert 'spr_chasec + pj_any outgrew SPRCHC_BASE..END (memory_map.inc)'
     .endif
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; THE PER-BOLT CONTEXT (2026-08-09). One shot's whole flight, 31 bytes, and
@@ -313,7 +284,7 @@ pj_ctab dta PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB,PJ_MAXSUB
 pj_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
                                      ;   sprite id, flags 0
         .endseg
-        .segment D0                  ; DRAC_PLAN 3a: out of $8000-$BFFF (d0_mark.py)
+        .segment D0
 
 ;--------------------------------------------------------------
 ; pj_aim -- A_FireMissile's fire half (A = the damage roll). Runs the crosshair

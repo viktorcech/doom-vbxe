@@ -16,7 +16,6 @@ sg_amb = *                           ; the ambient PC (the map-slot staging bloc
 ;--------------------------------------------------------------
 .proc sg_head
         ldy #0
-                                      ; DRAC_PLAN 3b: 16 KB window
 SGOVL_WIN       equ MEMW16+[[SGOVL_BANK&3]<<12]
 ?p      lda SGOVL_WIN+$100,y
         sta MENU_RUN+$100,y
@@ -140,7 +139,7 @@ sg_cnt  dta 0
         sta DAUX1
         lda ll_sec+1
         sta DAUX2
-        jsr siov_r                   ; DRAC_PLAN 4a: SIOV with the ROM banked in
+        jsr siov_r                   ; SIOV with the ROM banked in
         sty sio_status
         cpy #1
         bne ?err
@@ -179,26 +178,21 @@ sg_cnt  dta 0
 ;   is past sector 27000, so both halves matter).
 ;--------------------------------------------------------------
 .proc sg_slot_sec
-        stz ll_sec
-        stz ll_sec+1
+        lda #<SAVE_SEC1              ; start at SAVE_SEC1, the high byte in A;
+        sta ll_sec                   ;   8-bit: this runs with the ROM in too
+        lda #>SAVE_SEC1
         ldx sg_slot
         beq ?done
-?add    clc                          ; six slots -- an add loop is smaller than
-        lda ll_sec                   ;   a multiply and runs once per menu pick
+?add    pha                          ; six slots -- an add loop is smaller than
+        clc                          ;   a multiply and runs once per menu pick
+        lda ll_sec
         adc #<SAVE_SECTORS
         sta ll_sec
-        lda ll_sec+1
+        pla
         adc #>SAVE_SECTORS
-        sta ll_sec+1
         dex
         bne ?add
-?done   clc
-        lda ll_sec
-        adc #<SAVE_SEC1
-        sta ll_sec
-        lda ll_sec+1
-        adc #>SAVE_SEC1
-        sta ll_sec+1
+?done   sta ll_sec+1
         rts
 .endp
 
@@ -467,10 +461,14 @@ sg_kind dta 0
 ;   masked. Same bracket exit_level puts round its loaders.
 ;--------------------------------------------------------------
 .proc sg_begin
-                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts (DRAC_PLAN 4a): so is rom_in_t
+                                      ; 2026-09-22 (drac030 inline): rom_in is only an rts: so is rom_in_t
         lda #$40
         sta NMIEN
         cli
+        jsr mus_stop_t               ; 2026-10-06: a song plays from the VBLANK now
+                                     ;   and writes AUDF3/4, SIO's baud clock --
+                                     ;   off (sg_end's snd_pokey: mus_again starts
+                                     ;   the level's again)
         jmp snd_stop                 ; SIO takes POKEY over whole -- no voice may
                                      ;   be left running across the transfer
 .endp
@@ -617,6 +615,8 @@ sg_si   dta 0
         jsr blk_fill_t                 ; the things moved: rebuild the blockmap
         lda #2
         sta hud_dirty                ; ... and repaint the bar in both buffers
+        sta D30_ON                   ; ...and one close30 scan: a save from before
+                                     ;   D30_ON may hold an armed timer
         lda #0
         rts
 ?err    jsr sg_end
