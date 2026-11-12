@@ -32,7 +32,7 @@ You need [MADS](https://github.com/tebe6502/Mad-Assembler) (`mads.exe` in the pr
 2. Get id's DOOM C source. The packers read `info.c` and others from it:
    `git clone https://github.com/id-Software/DOOM.git`, then copy the files of
    `DOOM/linuxdoom-1.10` into `_doomsrc` in the project root.
-3. Build the build program: `tools	cc	cc.exe -o build_atr.exe build\cuild_atr.c`.
+3. Build the build program: `tools\tcc\tcc.exe -o build_atr.exe build\c\build_atr.c`.
    The other C tools in `build/c` are compiled by it on their own; copy the
    `zx02.exe` it makes from `build/exe` to `tools/`.
 4. Run `build_atr.exe -Full`. It writes `build/doom.atr` (Rapidus) and
