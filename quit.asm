@@ -1,9 +1,3 @@
-;--------------------------------------------------------------
-; quit.asm -- QUIT DOOM: the menu's answer (M_QuitResponse); quit_boot.asm is
-;   its last step. Assembled INTO the save overlay, which has the room
-;   (savegame.asm icl's both).
-;--------------------------------------------------------------
-
 quit_snd dta SFX_PLDETH, SFX_DMPAIN, SFX_POPAIN, SFX_SLOP
         dta SFX_TELEPT, SFX_POSIT1, SFX_POSIT3, SFX_SGTATK
 

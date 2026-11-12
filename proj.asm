@@ -1,8 +1,3 @@
-;--------------------------------------------------------------
-; proj.asm -- the player's visible missiles, MT_ROCKET and MT_PLASMA: flight,
-;   impact, and the damage spent at the hit.
-;--------------------------------------------------------------
-
         .segment B1
 .proc en_plasma2
         pha                          ; the roll, while pj_pick eats A

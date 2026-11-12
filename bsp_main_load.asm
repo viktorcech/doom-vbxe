@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; Part of bsp_main.asm (icl in place): the BCB templates, load_sprites,
-;   arena_init/arena_prefetch and load_things.
-;--------------------------------------------------------------
 bcbt_resume = *
         org BCBT_STAGE
 ; vline: 1 px wide, height patched, colour via XOR (AND=0)
@@ -75,7 +71,7 @@ bcb_spr_tmpl
                                       ; nothing lives here any more (the
 
 ;--------------------------------------------------------------
-; load_sprites -- B1: the .spr never lands in VRAM.
+; load_sprites -- the .spr never lands in VRAM.
 ;--------------------------------------------------------------
 sprld2_resume = *
         .segment B1
@@ -86,7 +82,7 @@ sprld2_resume = *
                                      ;   drain streams it with the textures, ...
 
 ;--------------------------------------------------------------
-; arena_init -- the per-level B1 reset, chained off load_sprcol: FARENA
+; arena_init -- the per-level reset, chained off load_sprcol: FARENA
 ;   cleared, the arena bounds set from the level's texture chunks, the SDRAM
 ;   base of its .spr from LVL_SPRSD. zp_ptr+2 is still MAP_EXT_BANK here
 ;   (read_ext parked it).

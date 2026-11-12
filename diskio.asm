@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; diskio.asm -- ATR/SIO streaming (no DOS): load_level, read_sectors, the SDRAM
-;   level cache and the one-shot asset loaders.
-;--------------------------------------------------------------
 SIOV    equ $E459
 DDEVIC  equ $0300
 DUNIT   equ $0301
@@ -400,7 +396,7 @@ dio2_resume = *
         lda ll_left
         sbc ll_pass
         sta ll_left
-        jmp ?pass
+        bra ?pass
 .endp
         .endseg
 
@@ -886,7 +882,7 @@ scld_resume = *
         jsr sprcol_read              ;   block being 47 B with no room for it.
                                      ; MORE THAN 255 SECTORS -- ll_left is a
                                      ;   byte, so the read is passes of 128
-        jsr arena_init               ; B1: FARENA clear + arena bounds + the
+        jsr arena_init               ; FARENA clear + arena bounds + the
                                      ;   .spr's SDRAM base for spr_fget
                                       ; 2026-09-22 (drac030 inline): lvl_mark
         ldx current_level            ; the WHOLE per-level chain is in now:
@@ -1132,7 +1128,7 @@ lvl_res :32 dta 0                    ; 1 = level n's whole chain (map, tex, spr,
         .LONGA ON                    ;   words in one window
         lda lvp_par,x                ; the region's directory column: zp_tmp
         sta zp_tmp                   ;   -> lvp_<r>_lo, +NUM_LEVELS = _hi
-        lda lvp_par+2,x              ;   (B1 code cannot patch its own
+        lda lvp_par+2,x              ;   (bank-$01 code cannot patch its own
         sta inf_out                  ;   operands: sta abs writes DBR 0)
         lda lvp_par+5,x              ; the region's slot-0 home (low word) and
         sta m_a                      ;   the slot stride, bytes (24-bit: m_a, m_b)

@@ -1,6 +1,3 @@
-;--------------------------------------------------------------
-; renderer.asm -- the BSP front-to-back walk with per-column occlusion.
-;--------------------------------------------------------------
 ZNEAR     equ 4
 
 ;--------------------------------------------------------------
@@ -513,9 +510,8 @@ cb_resume = *
 ;--------------------------------------------------------------
 .macro UDIV_RATIO
   .ifdef ANTONIA2
-	sep #$20
+	jsr udiv24.ud_w16            ; (its own sep #$20: 16-bit callers enter here)
 	.LONGA OFF
-	jsr udiv24
 	rep #$20
 	.LONGA ON
 	lda m_quot
@@ -560,9 +556,9 @@ cu_resume = *
         pla                          ; (the parked word goes; m_b holds the ratio)
         lda rs_seglen
         sta m_a
-        sep #$20
+        sep #$21
         .LONGA OFF
-        UMUL16I 0, 1 ; (inlined 2026-09-26; A = m_a lo already: no reload)
+        UMUL16I 0, 1, c; (inlined 2026-09-26; A = m_a lo already: no reload)
         rep #$21                     ; u = seg_offset + L*ratio. rs_segoff is
         .LONGA ON                    ;   DOOM's seg->offset: how far along the
                                      ;   LINEDEF this seg starts, so a wall the

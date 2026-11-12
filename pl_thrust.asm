@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; pl_thrust.asm -- P_DamageMobj's thrust for the PLAYER (p_inter.c:804-831):
-;   damage/8 units away from the inflictor.
-;--------------------------------------------------------------
         .segment D0
 ;--------------------------------------------------------------
 ; pl_thrust -- no arguments: bl_dmg is the damage, (bl_x, bl_y) the ball,

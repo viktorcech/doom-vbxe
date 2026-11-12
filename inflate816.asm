@@ -1,25 +1,3 @@
-;--------------------------------------------------------------
-; inflate816.asm -- DEFLATE depacker for the packed streams of the ATR.
-;   Call: ll_sec = the stream's first sector, inf_out(3) = destination,
-;   jsr inflate (native, 8-bit A/X/Y). Returns Y = 0, inf_out behind the
-;   last byte. Clobbers A/X, the DCB, TEX_STAGE and the cells below. The
-;   stream ends itself (BFINAL); one sector of the next region may be
-;   prefetched -- every loader re-seeds ll_sec. The sectors come straight
-;   off the drive: no stream sits in the SDRAM cache's ranges (pre_map),
-;   make_atr_doom.py keeps them below LVL_SEC1.
-;
-;   A symbol is ONE table read: the stream's next 8 bits index INF_LT/LV
-;   (literal/length), the next 7 INF_DT/DS (distance). The bit offset k
-;   inside the input byte is not a variable: the decoders exist once per
-;   k (sym, dis, ext, lgx 0-7) and a table entry picks the code that
-;   stores, steps the input and enters the next decoder. A literal/length
-;   code of 9 or 10 bits takes a second read (INF_T2/V2); longer ones
-;   walk the canonical counts bit by bit (?walk).
-;   Distance symbols 30 and 31 are FAR matches (tools/deflate_far.py):
-;   32769 + 16 extra bits, 98305 + 21 -- back through the whole output.
-;--------------------------------------------------------------
-
-; --- zero page: the renderer's per-seg working set, rebuilt every frame
 inf_zp  equ zp_rx
 inf_k2  equ inf_zp                   ; 1 B: bit offset x 2 (generic code only)
 inf_j   equ inf_zp+1                 ; 1 B: a count
@@ -652,7 +630,7 @@ cpb:1   inc inf_out+2
         inc inf_src+2
         jmp sym:1
 cpc:1   jsr ?inpage
-        jmp cpy:1
+        bra cpy:1
         .endr
 
 ; two input bytes done behind a distance (17..20 bits on)
@@ -842,7 +820,7 @@ fin:1   inc inf_in
 eob:1   ldx #:2
         jmp ?eob
 lg2:1   ldx #:2
-        jmp ?lng2
+        bra ?lng2
 dlg:1   ldx #:2
         jmp ?dlong
         .endr
@@ -916,7 +894,7 @@ dlg:1   ldx #:2
 ;   state behind them, bit 7 set = a far symbol's code of 7 bits or less)
 ?dlong  stx inf_k2
 ?dl0    lda INF_DS,y
-        jmi ?dfs
+        bmi ?dfs
         sta inf_ws
         stz inf_ws+1
         lda #7
@@ -930,7 +908,7 @@ dlg:1   ldx #:2
         .LONGA OFF
 ?dl1    beq ?dl7                     ; distance 1
         cpx #2*30
-        jcs ?dfw
+        bcs ?dfw
         stz inf_r
         stz inf_r+1
         lda INF_KDX2,x

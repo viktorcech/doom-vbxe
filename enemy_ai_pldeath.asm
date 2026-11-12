@@ -1,12 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): the player's death (P_DeathThink) and the
-;   hitscan leaf walk.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; pl_die -- health reached 0. X = the cry, chosen by pl_dieq (its one caller;
-;   the nukage reaches here through en_plr_hurt like everything else).
-;--------------------------------------------------------------
         .segment B1
 .proc pl_die
         lda pl_dead                  ; already dead: monsters keep shooting the
@@ -62,7 +53,7 @@ pldq_resume = *
                                       ; 2026-09-22: then P_DeathThink's turn to the
         bcc ?turn                    ;   attacker (pl_dturn), every tic
         dec pl_vh
-?turn   jmp pl_dturn
+?turn   bra pl_dturn
 ?out    rts                          ;   and SPACE fell through to try_use.
 .endp
         .endseg
@@ -235,7 +226,7 @@ pd_k    dta 0                        ; the BAM step, 0..4
         bne ?rel                     ; nothing down -> arm the edge
         lda pl_keyw                  ; a key held from BEFORE the death must not
         bne ?out                     ;   count: wait for a release first, then the
-        jmp pl_restart               ;   next press restarts. (DOOM takes BT_USE
+        bra pl_restart               ;   next press restarts. (DOOM takes BT_USE
                                      ;   2026-09-22 idiom: jsr X / rts -> jmp X; both
                                      ;   procs are bank $01 code (.lab), rts type
 ?rel    stz pl_keyw                  ;   the instant P_DeathThink runs; any key is

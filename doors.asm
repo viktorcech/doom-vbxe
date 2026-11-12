@@ -1,16 +1,3 @@
-;--------------------------------------------------------------
-; doors.asm -- part of renderer.asm (icl in place): DR doors, USE and switches.
-;   MAP_DOORS = 4 B {u8 sector, u8 deny, i16 open_ceil}; MAP_DSND, MAP_DOORLOCK parallel.
-;--------------------------------------------------------------
-
-; The tables are sized by MAP_NDOORS (the CAP over the levels in this build); the
-; runtime arrays are DOORS_NMAX entries wide in Rapidus bank $01 at DOOR_EXT --
-; see memory_map.inc. Nothing reports an overrun at runtime, so assert both here:
-; the cap has to fit the arrays, and the arrays have to fit the kilobyte DOOR_EXT
-; reserves below TH_HPL.
-; NOTE the loops below all run to the LEVEL's own door count (MAP_HNDOOR, from the
-; map header), not to the cap: the padding records are zeroes, and walking them
-; would register phantom doors on sector 0 and flatten it.
         .if MAP_NDOORS > DOORS_NMAX
                 ert 'MAP_NDOORS > DOORS_NMAX -- widen the DOOR_EXT block (memory_map.inc)'
         .endif
@@ -574,7 +561,7 @@ plrs_resume = *
         jsr crush_pre                ; a crusher's speed class: halves DOOR_DELTA
                                      ;   or runs it at CEILSPEED/8 (Y = the state)
 ?st     dey
-        jeq ?opening
+        beq ?opening
         ; --- closing: new = cur - delta; what stands under it decides
         ;     (p_floor.c T_MovePlane -> p_map.c P_ChangeSector), the landing
         ;     step included
@@ -1161,10 +1148,10 @@ sw_hit  dta 0
                                      ;   already moving: drop this fire and do
                                      ;   NOT spend the once-bit (try again later)
 ?go     jsr mv_start                 ; stays-down floors mark the bitmap there
-        jmp ?once
+        bra ?once
 
 ?door   lda (zp_ptr),y               ; (Y is still 13) b15 WITH b13 is not a door
-	jmi trig_light
+	bmi trig_light
         ldy #12                      ; door index from the tagged sector id
         lda (zp_ptr),y
         sta m_a
@@ -1225,7 +1212,7 @@ tl_resume = *
         lda (zp_ptr),y               ;   height
         ldy #4                       ; sector->lightlevel
         sta (zp_mvsec),y
-tl_back jmp trig_fire.tl_once        ; and spend the W1 bit
+tl_back bra trig_fire.tl_once        ; and spend the W1 bit
 ?w	sep #$20
 	bra tl_back
 .endp

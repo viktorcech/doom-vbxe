@@ -1,8 +1,3 @@
-; wi.asm -- the INTERMISSION (wi_stuff.c) and the melt (f_wipe.c), episode 1.
-;   Stage 1 runs at MENU_RUN, stage 2 in the map slot; the melt is stage 1's
-;   because the second one runs after exit_level has reloaded the map.
-;   Stats are derived from THING_ALIVE / TH_STATE / MAP_SECTORS, not counted.
-
 WI_TICRATE  equ 35
 WI_TICQ8    equ 179                  ;   numbers mean. 35/50 in Q8 = 179
 WI_SNLDELAY equ 4                    ; SHOWNEXTLOCDELAY, seconds
@@ -723,7 +718,7 @@ wi_put  = wi_putx.?put
         lda #WI_I_PAR
         ldx #WI_PARX
         ldy #WI_TIMEY
-        jmp wi_putx
+        bra wi_putx
 .endp
 
 ;--------------------------------------------------------------
@@ -770,7 +765,7 @@ wi_put  = wi_putx.?put
         sta wi_px+1
         ldx #2                       ; cnt_par (wi_ctime+2)
         ldy #WI_TIMEY
-        jmp wi_dotime
+        bra wi_dotime
 ?out    rts
 .endp
     .if wi_cpar <> wi_ctime+2

@@ -1,8 +1,3 @@
-;--------------------------------------------------------------
-; Part of bsp_main.asm (icl in place): VBXE + framebuffer bring-up.
-;==============================================================
-; setup_memac -- MEMAC-A 4K window at MEMW, CPU access, bank $0A
-;==============================================================
 .proc setup_memac
         lda #MEMW_HI | MC_CPU | MC_16K
         sta VBXE_MEMAC_CTL

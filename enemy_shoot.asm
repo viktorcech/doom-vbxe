@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy.asm (icl in place): the player's weapons -- en_gunshot, en_shoot (hitscan), sh_trace, en_rocket, en_boomat, en_plasma.
-;--------------------------------------------------------------
-;--------------------------------------------------------------
-; en_gunshot -- roll the READY WEAPON's damage (p_pspr.c) and fire it into
-;   en_shoot. Called once per shot from wp_fire_a. Cold, so it lives in the
-;   ENINIT block: the hot $FEDD one is full. Clobbers A/X/Y.
-;--------------------------------------------------------------
         .segment B1
 .proc en_gunshot
         stz en_hit                   ; en_shoot raises it when the shot CONNECTS

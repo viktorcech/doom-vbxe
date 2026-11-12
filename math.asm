@@ -1,10 +1,3 @@
-;--------------------------------------------------------------
-; math.asm -- fixed-point helpers for the renderer (signed 16-bit unless noted).
-;--------------------------------------------------------------
-; qsmul -- INLINED 8x8 -> 16 quarter-square.  :3(2) = (:1) * (:2)
-;   a*b = QSqr[a+b] - QSqr[|a-b|], QSqr[x]=floor(x^2/4) (qs_tables.inc).
-;   tips2 #3: a macro inlined 4x into umul16 -> no jsr/rts, reads the
-;--------------------------------------------------------------
 .macro qsmul
  .ifdef ANTONIA2
         ; ANTONIA II (drac030: "wykorzystujac na szersza skale sprzetowe ...
@@ -212,7 +205,13 @@
         sep #$20
         .LONGA OFF
  .else
-  .if :0 = 2                       ; (2026-09-26) UMUL16I 0, 1: A holds m_a's low
+  .if :0 = 3                       ; UMUL16I 0, n, c: as below, C = 1 ALREADY
+   .if :2 = 1                      ;   (the caller's sep #$21)
+        qsmulx m_a, m_b, m_prod, ld, c
+   .else
+        qsmulx m_b, m_a, m_prod, ld, c
+   .endif
+  .elseif :0 = 2                   ; (2026-09-26) UMUL16I 0, 1: A holds m_a's low
    .if :2 = 1                      ;   byte on entry; UMUL16I 0, 2: m_b's. The
         qsmulx m_a, m_b, m_prod, ld ;  product is symmetric (|x-y|, x+y), so the
    .else                           ;   held one goes first and is not reloaded
@@ -233,7 +232,7 @@
 ?nz1                               ;   JMPRTS, 2026-09-26)
   .endif
         lda m_b+1
-	jeq ?p10
+	beq ?p10
                                       ; p01 = aL*bH IN A:B (qsmulxa) -> add at byte 1
         qsmulxa m_a, m_b+1
 	rep #$21		;absorb CLC
@@ -244,7 +243,7 @@
 	.LONGA OFF                   ;   the bcc/inc was always taken)
         lda m_a+1
   .if :0 <> 1
-        jeq ?end                   ; aH = 0 -> p10 = p11 = 0 (another 32 %)
+        beq ?end                   ; aH = 0 -> p10 = p11 = 0 (another 32 %)
   .else
         bne ?nz2
         rts
@@ -402,8 +401,8 @@
         .LONGA OFF
  .else
         .LONGA OFF
-        sep #$20
-        UMUL16I 0, 2
+        sep #$21                     ; (C = 1 for the qsmulx)
+        UMUL16I 0, 2, c
         rep #$20
         rts
  .endif
@@ -580,8 +579,8 @@ sm_a    lda m_a                      ;   sign(a) xor sign(b)
         bmi sm_aneg
 sm_ap   sty m_sign
         .LONGA OFF
-        sep #$20
-        UMUL16I 0, 1                 ; A = |m_a| lo: no reload. (No phx/plx: NO
+        sep #$21
+        UMUL16I 0, 1, c                ; A = |m_a| lo: no reload. (No phx/plx: NO
                                      ;   caller keeps X across smul32, 2026-09-23)
         ldy m_sign
         bmi ?neg
@@ -1103,8 +1102,9 @@ udiv_resume = *
         ; $FFF008/$FFF00A take a 16-bit dividend and divisor, $FFF008/$FFF00A
         ; hand back quotient and remainder.
 ud_w16  sep #$20                     ; (the 16-bit entry: the card's code is 8-bit)
-        .LONGA OFF                   ; falls into udiv24_antonia2. DBR stays 0: its
-        icl 'udiv24a_v2.asm'         ;   ?q_hi/?q_lo are zero page (UDQ_VARS)
+        .LONGA OFF                   ; v3 opens with _ud24fa (16-bit), so jump over
+        bra udiv24_antonia2          ;   it. DBR stays 0: its
+        icl 'udiv24a_v3.asm'         ;   ?q_hi/?q_lo are zero page (UDQ_VARS)
  .else
                                       ; 2026-09-23: the 16- and 8-step loops had the same
 	rep #$20                     ;   body and the same tail: ONE unrolled chain, the
@@ -1297,8 +1297,8 @@ sr_mb   lda rs_invm
  .else
         sta m_b
         .LONGA OFF
-        sep #$20
-        UMUL16I 0, 2                 ; (inlined 2026-09-26; A = m_b lo)
+        sep #$21
+        UMUL16I 0, 2, c                ; (inlined 2026-09-26; A = m_b lo)
         lda rs_invsh
         asl @
         tax

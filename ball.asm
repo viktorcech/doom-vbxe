@@ -1,6 +1,3 @@
-;--------------------------------------------------------------
-; ball.asm -- the imp's fireball (MT_TROOPSHOT, reduced): spawn, flight, impact.
-;--------------------------------------------------------------
         org BALL_BASE
 
 bl_on   dta 0                        ; 0 = idle, 1 = in flight, 2/3/4 = the
@@ -113,7 +110,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         asl                          ;   indexes k7, so the cheap test does:
         lda bl_dz+1                  ;   hi + (lo>>7) is 0 exactly when dz is
         adc #0                       ;   its own sign extension, i.e. -128..127.
-	jeq ?aim
+	beq ?aim
 ?shr
 	rep #$20
 	.LONGA ON
@@ -245,7 +242,7 @@ bl_rec  dta a(0), a(0), a(0), 0, 0   ; pseudo thing record: x, y, z(anchor),
         .segment B1
 .proc mv_frameb
         jsr mv_frame
-        jmp ball_frame               ; (its own block -- BALLF)
+        bra ball_frame               ; (its own block -- BALLF)
 .endp
         .endseg
 

@@ -1,15 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): P_DamageMobj's kick -- en_thrust and the
-;   corpse slide.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; en_thrust -- A = damage, Y = the victim, (thr_x, thr_y) = the inflictor's
-;   position. The direction is the OCTANT of (victim - inflictor), the same
-;   eight A_Chase walks in: 22 degrees of error on a 13-unit slide is a unit
-;   and a half, and it costs a table read where DOOM's angle costs a divide.
-;   Clobbers A/X/Y, the AI's step scratch and m_a/m_b/m_prod.
-;--------------------------------------------------------------
         .segment B1
 .proc en_thrust
         sty ai_t

@@ -1,10 +1,3 @@
-;--------------------------------------------------------------
-; Part of proj.asm (icl in place): bullet puffs + blood -- sh_refine, pf_shot, pf_gore, pf_leaf, pf_frameb, spr_chased.
-;--------------------------------------------------------------
-
-;==============================================================
-; PUFF (2026-08-05) -- P_SpawnPuff, "ked strelim do steny, nic nevidno".
-;==============================================================
 PF_TICS  equ 40                      ; 2026-09-30: one PUFF image = DOOM's 4 tics, in
                                      ;   TENTHS of a 35 Hz tic (a 50 Hz VBLANK is 7)
                                      ;   so the images change exactly on DOOM's time

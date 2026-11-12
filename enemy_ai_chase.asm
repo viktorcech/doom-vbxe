@@ -1,10 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): A_Chase -- ai_tick, ai_state, ai_chase, P_Move (ai_move), P_NewChaseDir (ai_newdir), P_TryWalk.
-;--------------------------------------------------------------
-;--------------------------------------------------------------
-; ai_tick -- ONE DOOM tic, from wp_think next to en_tick. Sweeps the same 256
-;   things en_tick does; only the ones with a TH_WROW cost more than a branch.
-;--------------------------------------------------------------
         .segment B1
 .proc ai_tick
         ; 2026-09-09 (drac030 style): the sweep reads TH_WROW as WORDS -- two

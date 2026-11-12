@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; f_finale.asm -- the end-of-episode finale (f_finale.c): story text, then the
-;   picture / bunny scroll. MAP_HFINEP in the level header selects it.
-;--------------------------------------------------------------
 FIN_TICQ8   equ 179                  ; 35/50 in Q8 -- the same 50 Hz -> DOOM tic
                                      ;   accumulator wi_tic runs on
 FIN_TROWS   equ 4                    ; flat tiles down a 200-row screen
@@ -27,7 +23,7 @@ fin_resume = *
         lda #BANK_EN | FINOVL_BANK
         jsl mn_open_w0 ; ...which lands in fin_head below
         rts
-?wi     jmp wi_exit                  ; (same bank; the B1 segment moved it out
+?wi     jmp wi_exit                  ; (same bank; the bank-$01 segment moved it out
 .endp                                ;   of a branch's reach)
         .endseg
 
@@ -654,7 +650,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
 ;--------------------------------------------------------------
 .proc fin_bunny
         jsr fin_scroll
-        jmp fin_ends
+        bra fin_ends
 .endp
 
 ;--------------------------------------------------------------
@@ -845,7 +841,7 @@ fin_rd  lda $FFFF                    ; patched by fin_setup
         lda #[FIN_ENDA>>16]
         adc #0
         sta fb_src+2
-        jmp fin_blit
+        bra fin_blit
 .endp
 
 ;--------------------------------------------------------------

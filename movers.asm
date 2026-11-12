@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; movers.asm -- floor movers: lifts, lowering/raising floors, perpetual plats,
-;   teleports. Triggers are 16 B records packed by tools/pack_things.py.
-;--------------------------------------------------------------
-; mv_ptr -- zp_ptr = trigger record mv_i (16 bytes each).
-;   Parked at MVPTR_BASE: the movers block ($A0AE..$A301, up to spr_blit) is full,
-;   and this runs a handful of times per crossing test.
-;--------------------------------------------------------------
 mvp_resume = *
         .segment B1
 .proc mv_ptr

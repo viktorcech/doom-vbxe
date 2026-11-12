@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; textures.asm -- part of bsp_main.asm (icl in place): the textured wall blit --
-;   bcb_twall/bcb_tex8, tw_expand, tw_blit, draw_twall_col.
-;--------------------------------------------------------------
         org TEXBLIT_BASE             ; per-column code in the Rapidus-fast window
                                      ; (2026-07-28: swapped homes with the TCOS
                                      ; pages -- see TWSETUP_BASE in memory_map).

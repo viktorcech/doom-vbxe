@@ -1,13 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): P_KillMobj's dropped item -- marked
-;   (en_dropmark), drawn (spr_ditem), handed over (spr_drop) -- give_bonus,
-;   spr_take.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; en_dropmark -- Y = the thing that just died, en_kind = its kind. Flags the
-;   corpse as carrying a dropped item, for spr_pickup to hand over.
-;--------------------------------------------------------------
         .segment B1
 .proc en_dropmark
         lda en_kind

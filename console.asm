@@ -1,17 +1,3 @@
-;--------------------------------------------------------------
-; console.asm -- the PC DOOM text-mode startup, 1:1 (2026-09-26).
-;   An 80x25 VBXE TEXT overlay (XDLC_TMON: 2 B a cell -- char + attribute,
-;   font at CHBASE<<11, 8x8 cells) shows D_DoomMain's own startup lines
-;   while the boot streams load, with R_Init's dots fed by the depacker
-;   (one dot per 32 KB pulled through inflate's ?rdsec). The title screen
-;   takes the display over at the end exactly as before -- everything here
-;   lives in VRAM $004000-$005FFF, which the first frame clear reuses.
-;
-;   Cells: attr bit 7 = opaque cell, low 7 bits = overlay-palette colour.
-;   CON_COL = 7 -> light grey out of the hand-set boot palette first, and
-;   PLAYPAL's own near-white 7 once load_palette lands -- both look DOS.
-;--------------------------------------------------------------
-
 CON_MAP   equ $004000                ; 25 rows x 160 B (char,attr per cell)
 CON_BLANK equ $004FA0                ; one blank row: the 40 PAL pad lines
 CON_XDL   equ $005100                ; the console's display list (page-
@@ -307,7 +293,7 @@ CON_XDLN equ * - con_xdlt
 ?n0     txa
         asl @
         tax
-        lda con_stab,x               ; the string sits in the B1 bank: walk
+        lda con_stab,x               ; the string sits in bank $01: walk
         sta zp_ptr                   ;   it [zp_ptr] long (no loader runs
         lda con_stab+1,x             ;   mid-print, the cell is free)
         sta zp_ptr+1
@@ -413,7 +399,7 @@ CON_XDLN equ * - con_xdlt
 ;--------------------------------------------------------------
 .proc con_fld
         cmp #CF_VBX
-        jcc con_fmhz
+        bcc con_fmhz
         jeq con_fvbx
         cmp #CF_POK
         jcc con_fvba
@@ -527,7 +513,7 @@ CON_MHZN equ 76                      ; 16,688 us
         pla
         and #$0F
         ora #'0'
-        jmp con_putc
+        bra con_putc
 .endp
 .proc con_fvba
         lda #'D'
@@ -539,7 +525,7 @@ CON_MHZN equ 76                      ; 16,688 us
         lda #'4'
         jsr con_putc
         lda #'0'
-        jmp con_putc
+        bra con_putc
 .endp
 
 ; con_fpok -- "stereo" / "mono": what con_msg's test found before the dots
@@ -550,7 +536,7 @@ CON_MHZN equ 76                      ; 16,688 us
         lda mus_mono
         beq ?say
         ldx #CON_T_MO
-?say    jmp con_str
+?say    bra con_str
 .endp
 
 ;--------------------------------------------------------------
@@ -621,7 +607,7 @@ dotsec  lda #CON_DOTSEC              ; (16-bit here, from the beq; CON_DOTSEC_M 
         sep #$20
         dec con_nd
         lda #'.'
-        jmp con_putc
+        bra con_putc
 .endp
 
 ;--------------------------------------------------------------

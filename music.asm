@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; music.asm -- the intermission song as a stream of POKEY register writes,
-;   rendered at build time by tools/pack_musstream.py.
-;--------------------------------------------------------------
         icl 'music_syms.inc'         ; MUS_BANK0/COUNT/BYTES + one equ per song
 ; The songs must sit ABOVE the SDRAM level cache: read_sectors' tee parks every
 ; cached ATR sector at PREn_BASE + (sec - PREn_SEC)*128 on its first drive

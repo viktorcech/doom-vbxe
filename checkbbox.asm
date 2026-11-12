@@ -1,19 +1,3 @@
-;--------------------------------------------------------------
-; checkbbox.asm -- R_CheckBBox subtree culling, the BODY: icl'd INSIDE
-;   render_node (renderer.asm ?have) since 2026-10-05 -- 6502-cycles-layout
-;   "inline what is smaller than its 12-cycle call": one caller, 43-53 calls
-;   a frame, and the 0/1 answer + rep + bne it handed back are the exits'
-;   own jumps now (-16 a call). Until then the proc check_bbox, parked at
-;   CHECKBBOX_BASE.
-;--------------------------------------------------------------
-; IN: cb_off = byte offset of a child's bbox within the node at (zp_nodeptr),
-;   8-bit M. OUT: ?push (16-bit: the far child is walked) or ?skipfar (16-bit:
-;   the subtree is WHOLLY invisible). CONSERVATIVE: only culls provably-
-;   invisible boxes. Every label here is render_node's.
-;--------------------------------------------------------------
-        ; NOTE the LONG indirect [zp_nodeptr],y: NODES live in the Rapidus EXT
-        ; bank (bank $01), not in bank 0 (2026-07-29, rozblite.png: the plain
-        ; form read garbage bboxes and culled whole visible subtrees).
         ldy cb_off
         rep #$20                     ; ---- 16-bit A
         .LONGA ON

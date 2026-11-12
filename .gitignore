@@ -10,10 +10,12 @@ build/py/DOOM.WAD
 
 # build tool (download MADS separately)
 mads.exe
+/build_atr.exe
 
 # build outputs (build/py holds the packers and stays tracked)
 /build/*
 !/build/py/
+!/build/c/
 *.xex
 *.atr
 *.lst

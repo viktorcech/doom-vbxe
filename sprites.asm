@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; sprites.asm -- DOOM things (items, decorations, monsters) as billboards:
-;   collection and projection. Data comes from tools/pack_things.py.
-;--------------------------------------------------------------
 gb_resume = *
 ;   give_bonus MOVED to the DROP block (enemy_ai.asm) 2026-07-31: the MF_DROPPED
 ;   halving grew it 12 B and the $0600 hole it shared with calc_u had none. Its
@@ -150,7 +146,7 @@ sr_resume = *
 
 ?loop   ldx sp_i                     ; already picked up -> do not draw it
         TALIVE                                ; (inlined 2026-09-26)
-	jeq ?skip
+	beq ?skip
 	lda sp_i                     ; spr_chase already drew it, from where it
         jsr ai_ischase               ;   actually stands
         bne ?skip

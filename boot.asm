@@ -1,10 +1,3 @@
-;--------------------------------------------------------------
-; boot.asm -- custom ATR boot loader: the OS loads it to $0700, it checks the
-;   machine on a screen of its own (65C816, linear RAM, VBXE; the ANTONIA II
-;   image: + the card's multiplier/divider), then reads
-;   doom_bsp.xex from raw sectors via SIO and runs its INIT/RUN vectors.
-;   Runs in EMULATION mode, the OS ROM in: 8-bit code, no rep/sep.
-;--------------------------------------------------------------
         opt h+
         opt o+
 

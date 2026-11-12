@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; xdl.asm -- the VBXE display list: DOOM's 200 rows over the PAL screen's 240
-;   scanlines.
-;--------------------------------------------------------------
 XDL_C1  equ XDLC_GMON | XDLC_MAPOFF | XDLC_RPTL | XDLC_OVADR
 XDL_C2  equ XDLC_LR                  ; VIEW: 160 bytes = 320 hw pixels, 256 col.
 XDL_C2S equ 0                        ; BAR: neither HR nor LR = SR -- 320 bytes,

@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; underrom.asm -- the 16 KB of RAM under the OS ROM ($C000-$FFFF): ROM in/out,
-;   the RAM vectors, and SIOV with the ROM banked in.
-;--------------------------------------------------------------
 NMIRES  equ $D40F                    ; write: reset the NMI status latch
 
         org UROM_STUB_BASE

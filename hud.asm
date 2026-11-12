@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; hud.asm -- the DOOM status bar, 1:1 from the WAD (tools/pack_hud.py): glyphs in
-;   VRAM, HUD_TAB gives address/size/offsets, the layout is st_stuff.c.
-;--------------------------------------------------------------
         .segment B1
 .proc draw_hud
         jsr bar_bg                   ; background first -- 320x32, its own BCB
@@ -24,7 +20,7 @@
         lda face_cur                 ; the face (hud_face_upd animates it)
         ldx #ST_FACEX
         jsr hud_top
-        jmp hud_keys                 ; STKEYS icons for the PS_KEYS bits
+        bra hud_keys                 ; STKEYS icons for the PS_KEYS bits
 .endp
         .endseg
 
@@ -551,7 +547,7 @@ hb_ctrl dta BLT_BSTENCIL             ; COPY for the bar, stencil for the glyphs
     .if HUDV_BARH != 200-HUD_BAR_Y
         ert 'STBAR is not ST_HEIGHT rows -- the XDL scans exactly 32 (xdl.asm)'
     .endif
-;   NO org and NO ert -- this is bank-$01 code, and the B1
+;   NO org and NO ert -- this is bank-$01 code, and the
 ;   segment has no fixed block addresses. MADS fails the build itself when it
 ;   outgrows B1SEG_LEN (memory_map.inc).
 ;--------------------------------------------------------------

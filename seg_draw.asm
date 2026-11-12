@@ -1,9 +1,3 @@
-;--------------------------------------------------------------
-; seg_draw.asm -- part of renderer.asm (icl in place): draws ONE seg --
-;   load_vertex, plane_setup, draw_span, draw_clip, process_seg.
-;--------------------------------------------------------------
-; load_vertex -- zp_vidx -> zp_rx,zp_ry = vertex - player.
-;--------------------------------------------------------------
         .segment B1
 .proc load_vertex
         ; ONE 16-bit accumulator, whole proc (2026-08-31, _an_drac030): the old ...

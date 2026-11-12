@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; bank01.asm -- cold engine code that runs in Rapidus SRAM bank $01 (jsl/rtl; the
-;   SRAM layer is fast bus, so it executes at full speed).
-;--------------------------------------------------------------
 b1_resume = *
         .segment B1
 b1_code_start = *
@@ -192,17 +188,15 @@ b1_code2_start = *
 	sty sin_sgn
 	sep #$20
 	.LONGA OFF
-	lda #0
-	rol
-	sta m_ma+2
-
-        lda #0                     ;   pay eight shifts for, folded into the
+	lda #0                       ; (lda/sta/tay keep C = bit 16 for the rol)
         sta.l FRAC_EXT+TSIN_LO
         sta.l FRAC_EXT+TSIN_MI
         sta.l FRAC_EXT+TSIN_HI
+        tay                        ; A = 0: the sum's LOW byte rides in Y from here
+	rol                          ; A = bit 16, C = 0 (A was 0)
+	sta m_ma+2
         ldx #1                     ; NO clc in the loop: the running sum tops
                                    ;   out at 4*16384*255 < 2^24, so the third ...
-        tay                        ; A = 0: the sum's LOW byte rides in Y from here
 ?sl     tya                        ;   (tya/tay leave C alone; m_prod's low byte is
         adc m_ma                   ;   scratch nobody reads after the build) -- -2
         tay                        ;   a step, 510 steps a rotation frame
@@ -216,30 +210,28 @@ b1_code2_start = *
         inx
         bne ?sl
         ; --- |cos| + sign -> TCOS ---
-                                      ; (as TSIN: ?step4 inlined in the window)
-	ldy #$00
-	rep #$20
+                                      ; (as TSIN: ?step4 inlined in the window;
+	rep #$20                     ;   the sign rides in X, 0 from ?sl's bne)
 	.LONGA ON
 	lda zp_cos
 	bpl ?cp2
-	iny
+	inx
 	eor #$ffff
 	inc
 ?cp2	asl
 	asl
 	sta m_ma
-	sty cos_sgn
+	stx cos_sgn
 	sep #$20
 	.LONGA OFF
-	lda #0
-	rol
-	sta m_ma+2
-        lda #0
+	lda #0                       ; (as TSIN: the rol after the stores)
         sta.l FRAC_EXT+TCOS_LO
         sta.l FRAC_EXT+TCOS_MI
         sta.l FRAC_EXT+TCOS_HI
-        ldx #1                     ; (same no-clc argument as ?sl above)
         tay                        ; (Y carries the low byte, as ?sl above)
+	rol
+	sta m_ma+2
+        ldx #1                     ; (same no-clc argument as ?sl above)
 ?cl     tya
         adc m_ma
         tay

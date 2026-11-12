@@ -1,10 +1,3 @@
-;--------------------------------------------------------------
-; read_keys.asm -- the keyboard: one POKEY sample per frame, one edge test.
-;--------------------------------------------------------------
-; read_keys -- ONE keyboard sample per frame drives every toggle key. The OS IRQ
-;   is masked, so this polls POKEY directly: SKSTAT bit2 = 0 while a key is held,
-;   KBCODE = its hardware code. Only one key can be down at a time, which is why
-;--------------------------------------------------------------
 rk_resume = *
         org READKEYS_BASE
         .segment B1

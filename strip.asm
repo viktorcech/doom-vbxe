@@ -1,21 +1,3 @@
-;--------------------------------------------------------------
-; strip.asm -- the top of the view at DOOM's own 320 (2026-09-24): the message
-;   line (hu_stuff.c HU_Drawer) and the 'F' frame-rate readout.
-;   VBXE shows ONE overlay mode a scan line, so 320 text cannot sit on the 160
-;   view. While either shows, the list of the buffer being drawn shows view
-;   rows 0-19 (its entries 0-7) in SR out of a 320x20 STRIP, which ONE blit
-;   chain fills every frame: the view's own rows zoomed 2x, then the message
-;   and the digits 1:1 over them. A strip, a chain and a list per buffer
-;   (A/B/C): list X is never on screen while buffer X is drawn -- the triple
-;   buffer -- so neither the list rewrite nor the chain can tear.
-;   The chain is rebuilt only when what it shows changes (st_cur, a version):
-;   a frame writes no BCB byte at all, it sets BL_ADR and STARTs
-;   (rapidus-bus-timing: every BCB field is a slow bus write).
-;   The AUTOMAP (automap.asm) is 320 too: while it is up, lists A/B show its
-;   two SR surfaces on every view row -- the same mode switch, on the list of
-;   the buffer being drawn -- and chains 3/4 put HU_Drawer on them: the
-;   level's name, the message, the readout.
-;--------------------------------------------------------------
 ST_ROWS   equ 20                     ; view rows the strip covers: entries 0-7
 ST_NENT   equ 8
 ST_PITCH      equ 320                    ; the strip's pitch
@@ -218,9 +200,9 @@ MSG_DIRX  equ [WIMAP_BANK+MSG_BK]<<16    ; the SDRAM directory (pack_wi.py)
         pla
         beq ?out
 ?top    ldx #ST_NENT
-        jmp st_list
+        bra st_list
 ?all    ldx #XDL_NVIEW+1
-        jmp st_list
+        bra st_list
 ?out    rts
 .endp
 

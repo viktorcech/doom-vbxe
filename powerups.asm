@@ -1,6 +1,3 @@
-;--------------------------------------------------------------
-; powerups.asm -- p_inter.c's powers + the backpack: pickup ids, timers, effects.
-;--------------------------------------------------------------
 pwm_resume = *
 ;--------------------------------------------------------------
 ; pw_map -- P_GivePower(pw_allmap), in front of pw_give. Y = bonus id, and it
@@ -591,7 +588,7 @@ vsl_resume = *
 .proc hud_god_gate
         lda PW_INVUL                 ; hud_god's test INLINE (2026-09-15): a frame
         ora PW_INVUL+1               ;   without the sphere goes straight on to
-        jne hud_god                  ;   hud_face_upd, no jsr/clc/rts/bcs (-16);
+        bne hud_god                  ;   hud_face_upd, no jsr/clc/rts/bcs (-16);
         jmp hud_face_upd             ;   with it, hud_god re-tests and sets C=1,
 .endp
         .endseg

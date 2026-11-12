@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): A_Look itself -- ai_cand, the round-robin ray (ai_look) and P_NoiseAlert's soundtarget (snd_flood, ai_heard).
-;--------------------------------------------------------------
-;--------------------------------------------------------------
-; ai_cand -- C=1 if thing ai_t is a monster that CHASES and is still alive, and
-;   ai_wk = whether it is chasing already (then ai_look's ray only refreshes
-;   the frame's ray on one is the difference between 1k cycles and 100k.
-;--------------------------------------------------------------
         .segment B1
 .proc ai_cand
                                       ; 2026-09-22 idiom: ai_bank inlined (see ai_look)
@@ -93,7 +85,7 @@
         lda ai_wk                    ;   aif_pvis either way (ai_put leaves the
         bne ?out                     ;   value in A); already chasing means the
                                       ; 2026-09-22: seestate's A_Chase runs at once
-        jmp ai_see                   ;   refresh was the whole point
+        bra ai_see                   ;   refresh was the whole point
 ?blind  lda sg_n                     ; nothing seen -- but did it COST anything?
         beq ?skip                    ;   culled on distance: two compares, carry
         rts                          ;   on scanning. A real ray: frame is done

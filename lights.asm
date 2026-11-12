@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; lights.asm -- sector light: DOOM's light thinkers (p_lights.c) and the colormap
-;   shade of flat-painted surfaces. A blitted texture cannot be shaded.
-;--------------------------------------------------------------
 LT_SEC      equ 0                    ; record fields
 LT_KIND     equ 1
 LT_MIN      equ 2
@@ -291,7 +287,7 @@ gm_page :PAL_COUNT dta [[PALRAW_EXT>>8]&$FF]+3*#  ; the slot's R plane: a page a
         tay                          ; Y = the kind byte, for the whole record
         and #$0F
         cmp #LT_GLOW                 ; the glow ramps EVERY frame; the other
-        jeq ?glow                    ;   three are countdown-driven
+        beq ?glow                    ;   three are countdown-driven
         lda.l LT_TAB+LT_CNT,x
         sec
         sbc lt_dt
@@ -313,7 +309,7 @@ gm_page :PAL_COUNT dta [[PALRAW_EXT>>8]&$FF]+3*#  ; the slot's R plane: a page a
 ?dark   sta (zp_ptr)                 ; A = minlight still
         lda.l LT_TAB+LT_DARK,x
 ?setcnt sta.l LT_TAB+LT_CNT,x
-        jmp ?next
+        bra ?next
 ?flash  lda.l LT_TAB+LT_MAX,x        ; --- T_LightFlash: max <-> min, random counts
         cmp (zp_ptr)                 ; at maxlight -> drop to min
         bne ?fbright

@@ -1,14 +1,3 @@
-;--------------------------------------------------------------
-; melt.asm -- f_wipe.c wipe_doMelt at DOOM's own 320 (2026-09-24): 160 columns
-;   two pixels wide, on ONE SR screen (MT_SR, shown through list R). No copy of
-;   the old picture is kept: every tic each running column's old part moves
-;   down IN PLACE, bottom-up (negative steps), and the rows it uncovers come
-;   from the new picture. Three BCBs a column in one chain, built once
-;   (mt_init) and then only their changing words rewritten per tic (mt_step).
-;   MT_SR is outside the pool: the stats screen stays on it through the level
-;   load (mt_keep), and the second melt starts from there. The data is wi.asm
-;   stage 1's (bank 0, $1000): no melt runs without it.
-;--------------------------------------------------------------
 MT_SR     equ WI_MTSR                ; 320x200 + one spare row (pack_wi.py)
 MT_W      equ 320
 MT_BOT    equ [WIPE_H-1]*MT_W        ; row 199: where every shift starts

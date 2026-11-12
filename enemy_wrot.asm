@@ -1,6 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy.asm (icl in place): the MOVING sprite + its rotations -- spr_dyn, spr_wrot, oct_of, en_kind_of, aif_oct, wrot_*, en_kfill.
-;--------------------------------------------------------------
         org SPRDYN_BASE
 
 ;--------------------------------------------------------------

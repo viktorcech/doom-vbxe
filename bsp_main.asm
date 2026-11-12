@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; bsp_main.asm -- DOOM BSP engine for Atari XL/XE + VBXE + Rapidus: main, the frame
-;   loop, zero page and the file includes.  Build: build_atr.ps1
-;--------------------------------------------------------------
         opt h+
         opt o+
         opt c+                       ; 65816: the port is Rapidus-only and VERTS+

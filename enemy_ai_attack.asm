@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): A_Chase's attack half + the damage rolls.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; ai_try_atk -- A_Chase's attack branches. C=1: it attacked (or is in the
-;   post-attack pause), so A_Chase returns without moving.
-;--------------------------------------------------------------
         .segment B1
 .proc ai_try_atk
         lda #>TH_KIND

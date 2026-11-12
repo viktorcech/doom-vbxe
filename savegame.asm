@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; savegame.asm -- SAVE / LOAD GAME: a load reloads the level, then overwrites the
-;   state REGIONS (sg_tab) a fresh level does not reproduce.
-;--------------------------------------------------------------
 sg_amb = *                           ; the ambient PC (the map-slot staging block
                                      ;   savegame.asm is icl'd inside) -- put
                                      ;   back at the bottom of the file

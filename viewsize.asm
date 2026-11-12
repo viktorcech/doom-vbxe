@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; viewsize.asm -- '-' / '=' shrink and grow the 3D view (DOOM's screenblocks): the
-;   projection scales with the window, so the FOV stays 90 degrees.
-;--------------------------------------------------------------
 vs_resume = *
 
 ;--------------------------------------------------------------

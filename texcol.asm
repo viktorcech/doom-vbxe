@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; texcol.asm -- texture column de-duplication: each distinct column is stored
-;   once, one index byte per column says which.
-;--------------------------------------------------------------
         org TEXIX_CODE
 
 ;--------------------------------------------------------------

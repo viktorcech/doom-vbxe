@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; weapon.asm -- the player's weapon: DOOM's psprite state machine (p_pspr.c), same
-;   states, tics and raise/lower/bob arithmetic.
-;--------------------------------------------------------------
 WS_NULL       equ 0                  ; S_NULL: nothing drawn (the idle flash)
 WS_PUNCH      equ 1                  ; fist
 WS_PUNCHDOWN  equ 2
@@ -429,7 +425,7 @@ wpf_resume = *
         ldx wp_cur                   ;   rocket lights it a state BEFORE it fires
         lda wi_flash,x               ;   (and so does the BFG, S_BFG2)
         beq ?out
-        jmp wp_fenter
+        bra wp_fenter
 ?bfg    cmp #WA_BFGSND               ; 8 (A_BFGsound) and 9 (A_FireBFG) are the
         bcc ?out                     ;   only codes above WA_GUNFLASH, so ONE
                                       ; 2026-09-22 idiom: wp_bfgact inlined (the tail jmp
@@ -1361,7 +1357,7 @@ WE_AY   equ 6
         lda vw_x1
                                       ; 2026-09-22 idiom: C = 1 already -- the not-taken
         sbc wp_x
-        jcc wp_no
+        bcc wp_no
         inc @
         sta wp_w
         ; ---- Y: hang the gun from the window's bottom row -------------------
@@ -1385,8 +1381,8 @@ WE_AY   equ 6
         sec                          ;   the constant folded in, no m_a round
         sbc wp_sy                    ;   trip. Same value, same borrow: sy is in
     .endif                           ;   [TOP, BOTTOM] and ay in [33, 145] here
-        jcc wp_no                    ; slid out of sight
-        jeq wp_no
+        bcc wp_no                    ; slid out of sight
+        beq wp_no
         ldx vw_sh
         beq ?nsh
         jsr wp_shr.shrx
@@ -1394,7 +1390,7 @@ WE_AY   equ 6
         eor #$FF                     ; y = vw_y1 - that, in A: vw_y1 + ~A + 1,
         sec                          ;   and C = "no borrow" exactly as the sbc's
         adc vw_y1
-        jcc wp_no
+        bcc wp_no
         inc @                        ; ... + 1
         sta wp_y
         lda wp_ent+WE_H
@@ -1408,7 +1404,7 @@ WE_AY   equ 6
         bcc ?yb
         beq ?yb
         cmp wp_h
-        jcs wp_no                    ; entirely above the window
+        bcs wp_no                    ; entirely above the window
         sta m_a                      ; the skipped rows (wp_rowskip's multiplier)
         eor #$FF                     ; h -= skipped
         sec
@@ -1428,7 +1424,7 @@ WE_AY   equ 6
 ?cut    lda vw_y1
         sec
         sbc wp_y
-        jcc wp_no
+        bcc wp_no
         inc @
         sta wp_h
 ?go     bra wp_blit
@@ -1455,7 +1451,7 @@ WE_AY   equ 6
                                       ; THE BLUR SPHERE (2026-09-15): R_DrawPSprite
         lda PW_INVIS                 ;   draws both psprites as SHADOW while
         ora PW_INVIS+1               ;   powers[pw_invisibility] runs. wp_shadow
-        jne wp_shadow                ;   decides the blink and comes back to
+        bne wp_shadow                ;   decides the blink and comes back to
 plain
                                      ; 2026-09-22 (rapidus-bus-timing): DST mid+bank and
         ldx wp_y                     ;   WIDTH join the SRC/STEPY words in the one
@@ -1532,7 +1528,7 @@ WFZ_SCR equ WIPE_START                  ; the mask (SHTGD's 57x115 = 6,555 B top
         cmp #4*32+1
         bcs ?fz                      ; ...or more than 4*32
         and #8                       ; below that bit 3 IS the blink, 8 on 8 off
-        jeq wp_blit.plain            ; the off half: the gun as it always was
+        beq wp_blit.plain            ; the off half: the gun as it always was
 ?fz     jsr blitw_hard               ; the running chain fetches as it goes
                                       ; 2026-09-22 (rapidus-bus-timing): the 84 template
         rep #$20                     ;   bytes as 42 bus WORDS (the second byte of each

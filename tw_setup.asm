@@ -1,9 +1,3 @@
-; AUTO-SPLIT from textures.asm 2026-07-24 -- assembled in place via icl (verified
-; byte-identical). Everything the textured wall blit needs BEFORE the blit, and
-; all of it relocated out of the cramped $A800 segment:
-;   TWCLIP_BASE  seg_len, tw_texmask, wall_src, low_src, draw_twall_clip
-;   TWSETUP_BASE tw_setup (per-column texture pixel rate: tpr, oversampling S, SRC_STEPY,
-;                ZOOMY), plus the long commentary on why the rate ladder exists.
 twclip_resume = *
         ; PINNED FAST (2026-08-11): the hottest former win2 block (~21% of the
         ; frame in x11.2 fetches) -- never move it back to $8000-$BFFF.

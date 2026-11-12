@@ -1,12 +1,3 @@
-;--------------------------------------------------------------
-; infight.asm -- monsters fighting each other (P_DamageMobj's tail +
-;   actor->target): who a monster is angry at.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; aif_reset -- ai_reset's tail: a fresh level starts with everything after the
-;   player, no threshold anywhere, and NOTHING IN SIGHT.
-;--------------------------------------------------------------
         .segment B1
 .proc aif_reset
         lda #<TH_TARG                ; 0 -- every per-thing page is 256 B aligned

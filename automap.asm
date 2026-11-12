@@ -1,17 +1,3 @@
-;--------------------------------------------------------------
-; automap.asm -- DOOM's automap (am_map.c) on TAB. The drawing code is an overlay in
-;   the MENU_RUN window; the per-level tables ride at the end of the SEG region.
-;
-; 16-BIT (drac030, 2026-10-16): "switch all registers to 16-bit at the beginning
-;   and go". A/X/Y run 16-bit (rep #$30); 8-bit only for hardware (POKEY, VBXE
-;   registers, a VRAM pixel byte). BRIDGE = a rep/sep at the edge to code not yet
-;   converted; it goes when that file is converted.
-;--------------------------------------------------------------
-; am_mark -- r_segs.c:398, `linedef->flags |= ML_MAPPED`: the seg about to be
-;   drawn belongs to a line the player has now SEEN, so the automap may draw it.
-;   INLINED in process_seg since 2026-09-15 (seg_draw.asm, beside the seg's
-;   length); the proc itself had no caller and went on 2026-09-28 with seg_len.
-;--------------------------------------------------------------
 am_resume = *
         org AMMARK_BASE
 
@@ -637,7 +623,7 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         bra ?seen
 ?none
                                      ; never seen and no map -> nothing
-        jmp ?next
+        bra ?next
 ?seen   lda.l AMFLG_EXT_D,x          ; ... and its flags, same X, fixed delta
         sta am_flg                   ;   (the word: every test below is an and
         and #AMF_DONTDRAW            ;   with a byte mask) LINE_NEVERSEE: never on the automap
@@ -767,7 +753,7 @@ AM_SH0      equ 3                    ;   is square). 8 u/px: near DOOM's start
         .LONGI ON
         ldx #am_x2-am_x1
         jsr am_proj
-        jmp am_line
+        bra am_line
 .endp
 
 ;--------------------------------------------------------------

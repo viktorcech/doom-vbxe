@@ -1,13 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy.asm (icl in place): A_Explode / P_RadiusAttack -- en_boom, en_dist, en_dray, en_los, en_lfind, en_bthings, en_bhit, en_bkill, en_ovkill, en_gibq, en_plr_hurt.
-;--------------------------------------------------------------
-;--------------------------------------------------------------
-; en_boom -- A_Explode: P_RadiusAttack(spot, ..., 128) reduced to the player.
-;   PIT_RadiusAttack verbatim: dx/dy are absolute, dist is the LARGER of the two
-;   (Chebyshev, not Euclidean), thing->radius comes off it, negatives clamp to 0,
-;   dist >= bombdamage is out of range, and the damage is bombdamage - dist.
-;   en_k2 = the exploding thing. Clobbers A/Y, m_a, m_b, m_prod, sp_ptr.
-;--------------------------------------------------------------
         .segment B1
 .proc en_boom
         lda en_k2                    ; en_tick/en_adv own these -- the sweep below

@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; Part of bsp_main.asm (icl in place): swap_buffers, read_input, move_player and
-;   the fall block. The stick is read from PIA PORTA, not the OS shadow.
-;--------------------------------------------------------------
 STICK0   equ $D300            ; PIA PORTA (joystick 0 in low nibble)
 
 ;--------------------------------------------------------------
@@ -149,7 +145,7 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         sep #$20
         .LONGA OFF
         jsr coll_plrs                ; midpoint blocked -> the whole X step is out
-        jne ?skipx
+        bne ?skipx
         rep #$20                     ; --- X axis: candidate = (px+dx, py) -- px+dx
         .LONGA ON                    ;   is pk_x, and coll_cy is still py
         lda pk_x
@@ -186,7 +182,7 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         sep #$20
         .LONGA OFF
         jsr coll_plrs
-        jne ?done
+        bne ?done
         rep #$20                     ; --- Y axis: candidate = (px, py+dy) -- py+dy
         .LONGA ON                    ;   is pk_y, and coll_cx is still px
         lda pk_y
@@ -211,7 +207,7 @@ mp_slide                             ; pl_idle enters HERE (pl_kick.asm)
         .LONGA OFF
                                       ; 2026-09-22 (drac030 inline): mp_clamp
 ?done   lda coll_solid               ; a SHUT DOOR in the way? then pk collapses to
-        jne mp_pkhere
+        bne mp_pkhere
         rts
                                      ;   where he STANDS (the .else side)
 mp_nomove                            ; pl_idle falls back here

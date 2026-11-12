@@ -1,17 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): A_Look's P_CheckSight -- ai_sight, sg_bsp, sg_tgt, sg_set/sg_shut.
-;--------------------------------------------------------------
-;==============================================================
-; A_Look's REAL half (2026-08-05, "nepriatelia ma vidia len ked sa na nich
-; pozeram"). ai_wake above is the port's original stand-in: it walks the
-; PLAYER's vissprite list, so a monster woke exactly when the player's camera
-; was pointing at it. p_enemy.c does nothing of the sort --
-;==============================================================
-;--------------------------------------------------------------
-; ai_sight -- C=1 if thing ai_t can see the player. Builds the ray
-;   (USE_PT_A = the monster, USE_PT_B = the player) and the sample step, then
-;   falls into sg_walk. Clobbers A/X/Y, sp_ptr, zp_px/zp_py (put back).
-;--------------------------------------------------------------
         .segment B1
 .proc ai_sight
         lda #$FF                     ; no leaf tested yet ($FFFF is not a leaf

@@ -1,6 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy.asm (icl in place): PIT_CheckThing -- en_solid, the radius pages (en_radfill, rad_of), en_thing, coll_mon.
-;--------------------------------------------------------------
         org THCOLL_BASE
 ;--------------------------------------------------------------
 ; en_solid -- p_map.c PIT_CheckThing, reduced to the half this port can hit:
@@ -38,7 +35,7 @@
         jsr ?hit16               ;   still 16-bit (this sep and that rep were an empty pair)
         .LONGA OFF
                                       ; 2026-09-23: Jcc pseudo-op, ?things falls through
-        jne ?yes
+        bne ?yes
         ; --- p_maputl.c P_BlockThingsIterator: the 3x3 cells around the target
         ;     and nothing else.
 ?things jsr blk_tgt                  ; which cell is the target in?
@@ -96,7 +93,7 @@
                                       ; 2026-09-22 (65816-windows): ?hit past its rep,
         jsr ?hit16                   ;   still 16-bit (this sep and that rep were an
         .LONGA OFF                   ;   empty pair)
-	jne ?yes
+	bne ?yes
 ?nitem  ldx sol_i                    ; ...next thing in the same cell
         lda.l MAP_EXT_BANK*$10000+TH_BNEXT,x  ; (long,x, 2026-09-26)
         cmp #$FF
@@ -105,7 +102,7 @@
         sta zp_ptr+1
 ?ncell  ldx sol_n
 ?ncx    dex
-        jpl ?cell
+        bpl ?cell
 ?no     lda #0
         rts
 ?yes    lda #1

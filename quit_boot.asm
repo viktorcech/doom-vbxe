@@ -1,8 +1,3 @@
-;--------------------------------------------------------------
-; quit_boot.asm -- I_Quit's last step: the machine back in the OS's hands and
-;   the ATR booted again. In the save overlay above SG_BUF, beside sg_go2.
-;--------------------------------------------------------------
-
 BOOT_RUN equ $0700                   ; the ATR's boot loader (boot.asm): boot_init
                                      ;   at +6, the sectors it takes at +1
 ;--------------------------------------------------------------

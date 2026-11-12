@@ -1,13 +1,3 @@
-;--------------------------------------------------------------
-; A chasing thing is drawn from the subsector it is ACTUALLY in (AI_DMAX side
-;   table), not its packed spawn subsector -- else it gets a far clip window.
-;   The table is a LIVE-chaser budget: when full, ai_evict takes a corpse's slot.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; ai_track -- ai_t = thing, zp_nid = the leaf locate_floor just reached. Insert
-;   or refresh its entry. Called on every committed step and once on waking.
-;--------------------------------------------------------------
         .segment B1
 .proc ai_track
         lda ai_t

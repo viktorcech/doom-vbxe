@@ -1409,7 +1409,7 @@ def build(iwad, pwad, maps, log, prog=None, name=None):
             os.path.abspath(p) for p in as_list(pwad))
     else:
         env.pop('DOOMPWAD', None)
-    script = os.path.join(_PROJ, 'build_atr.ps1')
+    script = os.path.join(_PROJ, 'build_atr.exe')     # build/c/build_atr.c
     # -Time makes build_atr.ps1 print its own `Lap` line per step. Those are
     # the ONLY unambiguous phase markers it has: the pipeline assembles more
     # than once (boot loader, menu overlays, then the engine), so keying the
@@ -1418,8 +1418,7 @@ def build(iwad, pwad, maps, log, prog=None, name=None):
     # (128-row texture tiles, the raycasting blitter) -- the 1.26 configuration
     # no longer fits bank $01 ("Segment B1 error"), so a conversion builds what
     # the game builds.
-    cmd = ['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass',
-           '-File', script, '-Time', '-Fx127'] + list(maps)
+    cmd = [script, '-Time', '-Fx127'] + list(maps)
     log(f'$ DOOMWAD={env["DOOMWAD"]}')
     if pwad:
         log(f'$ DOOMPWAD={env["DOOMPWAD"]}')

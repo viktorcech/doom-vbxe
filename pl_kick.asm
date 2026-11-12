@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; pl_kick.asm -- P_DamageMobj's kick for the PLAYER: momentum added on a hit and
-;   spent under FRICTION a frame at a time.
-;--------------------------------------------------------------
         org PLKDAT_BASE
 pl_kd   dta 0                        ; units of shove still to spend
 pl_ko   dta 0                        ; ...along this octant (oct_of's eight)

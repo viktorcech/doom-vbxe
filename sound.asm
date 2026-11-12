@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; sound.asm -- DOOM digitized SFX on POKEY: SND_NV voices mixed in a Timer-1 IRQ
-;   (~3959 Hz), samples in Rapidus SRAM.
-;--------------------------------------------------------------
 AUDF1_R  equ $D200                   ; Timer-1 divisor (KBCODE/SKSTAT are reads
 AUDC1_R  equ $D201                   ;   of the same block -- see memory_map.inc)
                                      ; AUDC1/2/3/4 = $D201 + 2*channel, which is ...

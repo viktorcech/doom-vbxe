@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; midtex.asm -- see-through walls: the two-sided MIDDLE texture (struts, grilles),
-;   drawn in a masked pass after the solid walls.
-;--------------------------------------------------------------
 mtx_t       = cx_b                   ; snapshot: this column's window top
 mtx_b       = cx_b+1                 ;           ... and bottom (255 = closed)
 mtx_t0      = cx_d                   ; snapshot: the FIRST column's window, for

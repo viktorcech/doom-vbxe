@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; colmerge.asm -- draw a screen column once, then copy it sideways: neighbouring
-;   columns of a magnified wall are bit-identical, so their blits are merged.
-;--------------------------------------------------------------
         org COLMERGE_BASE
 
 ; (cm_reset, cm_test and cm_defer -- the per-seg reset, the "would this column
@@ -158,7 +154,7 @@ cm_go   stx cm_savex                 ; (draw_twall_clip enters HERE with cm_n !=
         tax                          ;   buffer's restore list (0 = A, 1 = B)
         lda cm_rc,x
         cmp #CM_RMAX-1               ; (2026-09-28: a flush may record TWO links)
-        jcc ?link                    ; room: out of line below; full: the old way
+        bcc ?link                    ; room: out of line below; full: the old way
         jsr ptc_fire_wait            ; the source column's spans may still sit in
                                      ;   the OPEN chain: launch it, then wait
     .else

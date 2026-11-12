@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; enemy.asm -- damage + death (P_DamageMobj / P_KillMobj / P_GunShot, reduced).
-;   Hit points live in TH_HPL/TH_HPH in SRAM; 0 = not shootable.
-;--------------------------------------------------------------
         org ENINIT_BASE
 
 ;--------------------------------------------------------------

@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; enemy_ai.asm -- monsters that wake up and chase (p_enemy.c A_Look + A_Chase),
-;   one think per RUN state at info.c's own tics.
-;--------------------------------------------------------------
         org AI_BASE
 
 ;--------------------------------------------------------------

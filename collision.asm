@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; collision.asm -- part of renderer.asm (icl in place): wall collision. A BSP range
-;   query gathers the cells near the player; each blocking seg is distance-tested.
-;--------------------------------------------------------------
 coll_cx   = zp_rx                    ; candidate point (tested position)   [in]
 coll_cy   = zp_ry
 coll_ax   = zp_X1                    ; seg endpoint A  (walk: node dxp/dyp)
@@ -869,7 +865,7 @@ cbsp_resume = *
         adc m_prod+2
         sta coll_dd+2                ; nn >= 2^24 -> r2*nn huge -> always within
         cmp #256
-        jcs ?pushfar
+        bcs ?pushfar
         sep #$20
         .LONGA OFF
         stz coll_t                   ; r2nn = nn << 8 -> coll_t

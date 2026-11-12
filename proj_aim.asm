@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; Part of proj.asm (icl in place): the missile's z aim -- pj_zaim, pj_zaim2, pj_zstep, pj_aim3, pj_aim.
-;--------------------------------------------------------------
-;--------------------------------------------------------------
-; pj_zaim / pj_zaim2 / pj_zstep -- THE VERTICAL AIM (2026-08-19, "ked vystrelim
-;   raketu alebo plazmu na enemies, ktory je vyssie, naboj leti tam.. ale u nas
-;   to tak nie je").
-;--------------------------------------------------------------
         .segment B1
 .proc pj_zaim
         stz pj_zf

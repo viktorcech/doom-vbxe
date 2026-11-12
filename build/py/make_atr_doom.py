@@ -31,11 +31,26 @@ import struct
 import sys
 import zlib
 
-import code_map
 import doomgamma
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PROJ = os.path.dirname(os.path.dirname(_HERE))    # build/py -> the repo root
+
+
+class code_map:
+    """THE IMAGE a build pass makes: '' = the stock one, '_ant2' = ANTONIA II
+    (build_atr.ps1 sets DOOM_IMG). Every file that differs between the two
+    carries it in its name (build/c/code_map.h img(), the same rule)."""
+    IMG = os.environ.get('DOOM_IMG', '')
+
+    @staticmethod
+    def img(*path):
+        """ROOT/path, the image's suffix in front of the extension"""
+        stem, ext = os.path.splitext(os.path.join(_PROJ, *path))
+        return stem + code_map.IMG + ext
+
+
+code_map.XEX = code_map.img('build', 'doom_bsp.xex')
 WADMAPS = os.path.join(_PROJ, 'build', 'assets', 'wadmaps')
 BOOT_BIN = code_map.img('build', 'assets', 'code', 'boot.bin')  # this image's
                                      #   loader (ANTONIA II: + the mul/div check)
@@ -320,19 +335,34 @@ def _pak_cache():
 _PAKC_FAR = b'far1:'                 # + md5(data) -> (stream, md5(stream))
 
 
+_EXE = os.path.join(os.path.dirname(_HERE), 'exe')   # build/exe: the C programs
+_CSRC = os.path.join(os.path.dirname(_HERE), 'c')    # build/c: their sources
+
+
+def _exe(name, args, data):
+    """build/exe/<name>.exe (build/c/<name>.c, built by build_atr.ps1 with
+    tools/tcc): data on stdin -> (exit code, stdout, stderr)."""
+    import subprocess
+    r = subprocess.run([os.path.join(_EXE, name + '.exe')] + args, input=data,
+                       capture_output=True)
+    return r.returncode, r.stdout, r.stderr.decode('latin-1').strip()
+
+
 def _i816(z):
-    """True when inflate816.asm can depack the stream (inflate816_ok.py). The
-    walk is 0.2 s a stream, so it is made once: the cache keeps the md5 of
-    every stream that passed, under the checker's own md5."""
+    """True when inflate816.asm can depack the stream (inflate816_ok.exe). It
+    is asked once a stream: the cache keeps the md5 of every stream that
+    passed, under the checker's own md5 (its C source)."""
     import hashlib
-    from inflate816_ok import problem
     if 'i816' not in _PAKC_STATE:
-        src = open(os.path.join(_HERE, 'inflate816_ok.py'), 'rb').read()
+        src = open(os.path.join(_CSRC, 'inflate816_ok.c'), 'rb').read()
         _PAKC_STATE['i816'] = b'i816:' + hashlib.md5(src).digest()
     seen = _PAKC.setdefault(_PAKC_STATE['i816'], set())
     h = hashlib.md5(z).digest()
     if h not in seen:
-        if problem(z) is not None:
+        rc, out, err = _exe('inflate816_ok', [], z)
+        if rc:
+            sys.exit(f'inflate816_ok.exe failed: {err}')
+        if out:
             return False
         seen.add(h)
         _PAKC_STATE['dirty'] = True
@@ -341,19 +371,28 @@ def _i816(z):
 
 def _deflate(data):
     """What inflate816.asm depacks: the best DEFLATE stream (_deflate_near),
-    with FAR matches in when that saves a sector (tools/deflate_far.py). The
-    far stream is unpacked against the data when it is made; the cache keeps
-    its md5 beside it."""
+    with FAR matches in when that saves a sector (build/exe/deflate_far.exe).
+    The far stream is unpacked against the data when it is made; the cache
+    keeps its md5 beside it."""
     if not data:
         return b''
     import hashlib
-    import deflate_far
     base = _deflate_near(data)
     key = _PAKC_FAR + hashlib.md5(data).digest()
     hit = _PAKC.get(key)
     if hit is not None and hit[1] == hashlib.md5(hit[0]).digest() and hit[2] == len(base):
         return hit[0]
-    far = deflate_far.pack(base, data)
+    if len(data) <= 32768 or len(data) > 2195456:   # no far distance reaches
+        far = base
+    else:
+        rc, far, err = _exe('deflate_far', ['pack'],
+                            struct.pack('<I', len(base)) + base + data)
+        if rc == 2:
+            raise AssertionError(f'deflate_far: {err}')
+        if rc:
+            sys.exit(f'deflate_far.exe failed: {err}')
+        if far == base:
+            far = base
     if _sectors(len(far)) >= _sectors(len(base)):
         far = base
     assert _i816(far), 'inflate816 cannot depack the far stream'
@@ -402,10 +441,7 @@ def _deflate_near(data):
 
 
 B1L_SLOT = 32                        # sectors for the lower late-code stream
-ZX02 = next((p for p in (                # the packer in the mads-src tree: with or
-    os.path.join(_PROJ, 'mads-src', 'examples', 'compression', 'zx2', 'pc', 'zx02.exe'),
-    os.path.join(_PROJ, 'mads-src', 'compression', 'zx2', 'pc', 'zx02.exe'))
-    if os.path.exists(p)), 'zx02.exe')   #   without the examples/ level (2026-10-05)
+ZX02 = os.path.join(_PROJ, 'tools', 'zx02.exe')   # the packer lives in tools/
 
 
 def _zx02(data):

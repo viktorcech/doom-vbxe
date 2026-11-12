@@ -1853,7 +1853,7 @@ DTAB_BYTES  equ $0800                ; the whole slot (pack_things DTAB_MAX):
                                      ;   160 B of headers + up to 236 rows --
                                      ;   the row INDEX is a byte (row+1), so
                                      ;   254 is the hard ceiling anyway.
-; ---- T4 column tables + B1 frame table (.sprcol v2), above the DTAB ---------
+; ---- T4 column tables + frame table (.sprcol v2), above the DTAB ---------
 ;   pack_things.emit_sprcol writes it as ONE stream, load_sprcol (diskio.asm)
 ;   lands it here in a single read_ext run, spr_fget/spr_ctcol read it.
 ;   Contracts: tools/_verify_sprcrop.py (columns) + tools/_verify_arena.py
@@ -2539,7 +2539,7 @@ sp_patb     = tw_soff                ;   its (size code, CTRL), the first's agai
 sp_pata     = tw_rpt                 ;   (spr_two swaps them), and the screen row
 sp_rsplit   = tw_lastt0              ;   where the second tile starts (16-bit)
     .endif
-; ---- B1 sprite arena (spr_fget/spr_fcopy, contract tools/_verify_arena.py) --
+; ---- sprite arena (spr_fget/spr_fcopy, contract tools/_verify_arena.py) --
 sp_fid      = $0EDD                  ; the frame id being resolved
 sf_off      = $0EDE                  ; FTAB: file offset (u24)
 sf_size     = $0EE1                  ; FTAB: stored bytes (u16; the copy eats it)
@@ -2794,7 +2794,7 @@ STRIP           equ 0                ;   the raycaster draws the column (fx_col)
     .ifdef ANTONIA2                  ; ANTONIA2 only again (2026-10-19). Switched
 STRIP           equ 1                ;   on for every build 2026-10-16 23:16, the
     .else                            ;   stock bank $01 then overflowed (MADS
-STRIP           equ 0                ;   "Segment B1 error") and no ATR was built
+STRIP           equ 0                ;   a segment overflow) and no ATR was built
     .endif                           ;   since V7.15
     .endif
 
@@ -2848,7 +2848,7 @@ VRAM_BCB_SPR    equ $00A500          ; sprite column (BLT_BSTENCIL, index 0 = cl
     .endif
 HUDCODE_BASE    equ $AF40            ; hud.asm: widgets
 ; bar_blit/bar_bg/bar_fire (hud.asm) need no block here: they are bank-$01
-; code and the B1 segment has no fixed addresses (B1SEG_BASE below).
+; code and the bank-$01 segment has no fixed addresses (B1SEG_BASE below).
 HUDBLIT_BASE    equ $36F8            ; hud.asm: hud_blit/hud_blit_bg. FAST since
 HUDBLIT_END     equ $379F            ;   2026-09-09 (was $B810, win2 x11.2: 0.3 ms/f
                                      ;   for ~4 blits a frame). Was: (tail of the
@@ -5157,7 +5157,7 @@ EPIOVL_MAX   equ $400                ;   MEMAC window's address space, same as
 ; since the run format landed). What lives there now:
 ;   $040000-$049FFF  FREE (the halved HU strips, gone 2026-09-24).
 ;   $04A000-$06FFFF  FREE (152 KB, up to the TEX8 scratch).
-SPRCROP_BASE equ $7900               ; T4+B1 sprite draw helpers (spr_draw.asm):
+SPRCROP_BASE equ $7900               ; T4 sprite draw helpers (spr_draw.asm):
 SPRCROP_END  equ $7C9D               ;   spr_sidtab (live row addr), spr_fget/
                                      ; 2026-08-25: was $7CFF, a LIE -- CP128_BASE
                                      ;   is $7C9E and PJF2 owns $7CB3-$7CFF. The
@@ -5182,7 +5182,7 @@ SPRCLD_END   equ $B976               ;   into bank $01 at SPRCOL_EXT; chained
                                      ;   once-per-level DRIVER, win2's x11.2
                                      ;   costs it microseconds; the loop it
                                      ;   calls ran hot in win2 for months.
-SPRLD2_BASE  equ $B977               ; load_sprites (bsp_main.asm): B1 -- the
+SPRLD2_BASE  equ $B977               ; load_sprites (bsp_main.asm): the
 SPRLD2_END   equ $B9F1               ;   first-visit tee read. Same 2026-08-17
                                      ;   swap as SPRCLD (a per-pass driver;
                                      ;   read_sectors does the byte work).

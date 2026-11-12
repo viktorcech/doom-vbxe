@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; use_ray.asm -- part of renderer.asm (icl in place): the geometry half of try_use
-;   (P_UseLines / PTR_UseTraverse).
-;--------------------------------------------------------------
-; use_side -- sign helper for the crossing test: A = 1 if
-;   cross(PT[Y] - PT[X], PT[USE_K] - PT[X]) > 0, i.e. point k is LEFT of the
-;   directed line PT[X] -> PT[Y]. X/Y/USE_K are byte offsets into USE_PT
-;--------------------------------------------------------------
 us_resume = *
         org USESIDE_BASE
         .segment B1

@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; m_episode.asm -- the episode picker (m_menu.c EpiDef / M_Episode): an overlay of
-;   its own, the menu overlay's window is full.
-;--------------------------------------------------------------
         org MENU_RUN, EPIOVL_STAGE
 
 ;--------------------------------------------------------------

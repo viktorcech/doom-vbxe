@@ -1,11 +1,3 @@
-;--------------------------------------------------------------
-; spr_draw.asm -- part of sprites.asm (icl in place): the drawing half --
-;   spr_draw (back to front), spr_one, spr_blit.
-;--------------------------------------------------------------
-; spr_draw -- draw every collected sprite BACK TO FRONT, after the BSP walk has
-;   painted the walls. spr_proj already keeps vs_ord sorted NEAR..FAR (insertion
-;   into an almost-sorted list, since the BSP hands sprites over front-to-back),
-;--------------------------------------------------------------
     .if * > SPRITES_END+1
         ert 'spr_add+spr_proj outgrew SPRITES_BASE..SPRITES_END (memory_map.inc)'
     .endif
@@ -93,7 +85,7 @@
         lda vs_sid,x                 ; live thing: sprite-table row AND the T4
         jsr spr_sidtab               ;   coltab pointer, both from the id
                                      ;   (SPRCROP block -- this segment is full)
-?have   lda (sp_tab)                 ; byte 0 = the FRAME ID (B1): resolve it
+?have   lda (sp_tab)                 ; byte 0 = the FRAME ID: resolve it
         jsr spr_fget                 ;   to an arena address -- fetching the
                                      ;   pixels from SDRAM on the first look
                                      ;   -- and to its coltab (SPRCROP block)
@@ -274,7 +266,7 @@
                                      ;   sp_t to 255 for those columns
         lda sp_t
         cmp #255
-	jeq ?cnext
+	beq ?cnext
 	lda sp_uacc+1                ; source column = u >> 8
         cmp sp_w
         bcc ?tok
@@ -323,7 +315,7 @@
 ?useT   lda sp_t
 ?y0set  sta sp_y0
         lda sp_ybot+1                ; y1 = min(ybot, window bottom)
-	jmi ?cnext		;auto-shortened to bmi when in range
+	bmi ?cnext		;auto-shortened to bmi when in range
 	bne ?useB
         lda sp_ybot
         cmp sp_b
@@ -331,7 +323,7 @@
 ?useB   lda sp_b
 ?y1set  sta sp_y1
         cmp sp_y0
-        jcc ?cnext                   ; auto-shortened to bcc when in range
+        bcc ?cnext                   ; auto-shortened to bcc when in range
 
 	rep #$20
 	.LONGA ON
@@ -553,7 +545,7 @@ FUZZ_OR equ $07                      ; how far down its ramp a pixel behind the
         org sb_resume                ; back to the $B000 sprite block
 
 ;==============================================================
-; T4 COLUMN CROP + B1 SPRITE ARENA. The .spr
+; T4 COLUMN CROP + SPRITE ARENA. The .spr
 ; file stores each column only from its first to its last opaque texture pixel and
 ; NEVER preloads: it sits in SDRAM (the level-cache tee) and spr_fget copies
 ; a frame into the VRAM arena above the level's textures on first use.
@@ -985,7 +977,7 @@ scrop_resume = *
         lsr @
         lsr @
         cmp #5
-        bcs ?twj                     ; 5-7: two tiles (out of line, past a jmp:
+        bcs ?twot                    ; 5-7: two tiles (out of line, past a jmp:
                                      ;   ?twot is out of a branch's reach)
         ora sp_ctlw
         sta sp_patw
@@ -1028,7 +1020,6 @@ scrop_resume = *
         sta sp_st26                  ; [25] under the step's high byte (spr_clink)
         rts
         .LONGA ON
-?twj    jmp ?twot                    ; (6502-cycles-layout: the rare case's trampoline)
 ?twot   sbc #5                       ; (C = 1) the second tile: 8 << (code - 5)
         ora sp_ctlw                  ;   texture rows, right behind the first's 128
         sta sp_patb

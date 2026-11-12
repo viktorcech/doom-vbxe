@@ -1,13 +1,3 @@
-;--------------------------------------------------------------
-; Part of proj.asm (icl in place): the bolt SLOTS -- pj_slot, pj_load/pj_save, pj_frameN, pj_draw1, pj_pick, pj_clr, spr_chasec, and the context.
-;--------------------------------------------------------------
-
-;--------------------------------------------------------------
-; THE SLOT MACHINERY (2026-08-09). Nothing below the context swap knows there
-;   is more than one bolt: pj_load puts a slot into the pj_* variables, the
-;   shipped flight code ticks it exactly as it did when there was one, and
-;   pj_save puts it back.
-;--------------------------------------------------------------
         .segment B1
 .proc pj_slot                        ; X = slot -> zp_ptr = its bank $01 block
 .endp

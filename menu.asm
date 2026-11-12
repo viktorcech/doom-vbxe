@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; menu.asm -- DOOM's title screen and main menu (m_menu.c), at boot and on ESC.
-;   Runs as an overlay in MENU_RUN ($1000-$14FF), RAM that is dead while paused.
-;--------------------------------------------------------------
         icl 'menu_syms.inc'          ; m_menu.c's geometry (generated)
 
 KEY_RET  equ $0C                     ; RETURN: select, like DOOM's KEY_ENTER.

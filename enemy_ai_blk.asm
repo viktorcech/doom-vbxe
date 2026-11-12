@@ -1,9 +1,3 @@
-;--------------------------------------------------------------
-; Part of enemy_ai.asm (icl in place): the things blockmap -- blk_tgt, blk_fill, blk_push.
-;--------------------------------------------------------------
-;--------------------------------------------------------------
-; blk_tgt -- en_solid's entry: which blockmap cell is the move target in?
-;--------------------------------------------------------------
         .segment B1
 .proc blk_tgt
         lda coll_cx+1                ; the SAME grid blk_push files things on:

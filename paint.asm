@@ -1,7 +1,3 @@
-;--------------------------------------------------------------
-; paint.asm -- walls the engine PAINTS from texture runs read out of SDRAM
-;   (TEX_RUNS) instead of blitting pixels from VRAM.
-;--------------------------------------------------------------
 PT_MAXRUN   equ 128                  ; REAL runs painted per column before the
                                      ;   tail is filled flat
 PT_XB       equ 256-2*TEX_RUNK       ; 2026-09-28: the run index X starts HERE, so
@@ -112,41 +108,46 @@ ps_cend cmp #BCB_SLOT*TW_MAXLINKS+PT_ZPOFF   ; the END slot (its high byte: ptc_
 ?bkj    jmp bake                     ; the rare exits' trampolines, in reach of
 ?wj     jmp ?wide                    ;   their branches (not taken on the common
                                      ;   path; the painter did the same)
-pc_in   sta [zp_pt]                  ; [0-1] SRC lo/mid
+pc_in   sta (zp_pt)                  ; [0-1] SRC lo/mid (DBR = 0: no bank byte)
         tya                          ; [2-3] SRC bank, SRC_STEPY lo = 0 (8-bit Y
         ldy #BCB_SRC_ADDR+2          ;   into 16-bit A: B = 0)
         sta [zp_pt],y
         lda rs_rpt                   ; rs_tpr, pc_dim and the light row follow
         cmp ptm_last                 ;   rs_rpt: baked when it changed (~30 %)
         bne ?bkj
-?baked  ldy tx_slot                  ; the slot's step: the baked tpr x its tile's
-        lda rs_tprk,y                ;   stretch (fx_tprk; tx_slot = 0 / 2)
-        sta rs_tpr
-        lda zp_cm                    ; [16-17] = (0, the COLORMAP row): zp_cm is
-        sec                          ;   CMAP_EXT + row << 8, the row is the word
-pccm    sbc #CMAP_EXT&$FFFF          ;   minus the base (XOR = 0 under it); the
-        ldy #BCB_XOR                 ;   masked pass patches it to `and #0`: a
-        sta [zp_pt],y                ;   MODE 1 cmask reads the dest (mseg_draw)
+?baked  lda zp_cm                    ; [16-17] = (0, the COLORMAP row): zp_cm is
+                                     ;   CMAP_EXT + row << 8, the row is the word
+                                     ;   minus the base (XOR = 0 under it). C = 1:
+                                     ;   the memo cmp hit (A = M) or the bake's sec;
+pccm    sbc #CMAP_EXT&$FFFF          ;   the masked pass patches it to `and #0` (a
+        ldy #BCB_XOR                 ;   MODE 1 cmask reads the dest, mseg_draw),
+        sta [zp_pt],y                ;   which keeps that C
 pcctl   lda #FX_PAT|[FX_CTL_W<<8]    ; [19-20] pattern + CTRL (the masked pass
         ldy #BCB_PATTERN             ;   patches the CTRL byte: mseg_draw)
         sta [zp_pt],y
+        ldy tx_slot                  ; the slot's step: the baked tpr x its tile's
+        lda rs_tprk,y                ;   stretch (fx_tprk; tx_slot = 0 / 2). HERE
+        sta rs_tpr                   ;   (rapidus-bus-timing): this stretch is 22
+                                     ;   fast cycles = 2 chip cycles exactly, and
+                                     ;   the XOR one above 25 = 3 (was 39 = 4)
         lda rs_spb                   ; [14-15] = (rows-1, AND $FF): spb - spa in
         and #$00FF                   ;   the low byte, the high byte forced. C = 1:
         sbc rs_spa                   ;   zp_cm >= CMAP_EXT (the sbc above), or the
-        ora #$FF00
+        ora #$FF00                   ;   memo cmp's under the `and` patch
         ldy #BCB_HEIGHT
         sta [zp_pt],y
         lda rs_tpr                   ; the step = -tpr: its low byte at [5]
         eor #$FFFF                   ;   (SRC_STEPY hi = 0 under it), bits 14-8 at
-        inc @                        ;   [26] (Y0 hi = 0 under it); the two masks
-        pha                          ;   below drop bit 15
-        and #$7F00                   ; [25-26] = (0, hi)
-        ldy #BCB_SIZE+4
+        inc @                        ;   [26] (Y0 hi = 0 under it). Negated TWICE,
+        xba                          ;   no pha/pla: each stretch stays inside 2
+        and #$FF00                   ;   chip cycles (22 and 19 fast; the pha form
+        ldy #BCB_SRC_STEPY+1         ;   was 23 = 3). [4-5] = (0, lo)
         sta [zp_pt],y
-        pla
-        xba
-        and #$FF00                   ; [4-5] = (0, lo)
-        ldy #BCB_SRC_STEPY+1
+        lda rs_tpr
+        eor #$FFFF
+        inc @
+        and #$7F00                   ; [25-26] = (0, hi), bit 15 dropped
+        ldy #BCB_SIZE+4
         sta [zp_pt],y
         lda rs_spb                   ; m_a = spb - pegrow, the rows under the peg
         and #$00FF                   ;   (spb >= spa >= pegrow: the clip). C = 1
@@ -169,7 +170,8 @@ pcctl   lda #FX_PAT|[FX_CTL_W<<8]    ; [19-20] pattern + CTRL (the masked pass
         lda.l ANT_MUL+1              ; the product's bytes 1-2 = its >> 8 (< 2^16)
         adc m_prod                   ; (C = 0: the bcs above fell through, nothing
         sta m_prod                   ;   since touched it; the sum stays under 2^16)
-        bra ?havep
+        jmp ?w0                      ; the peg shift and the sum, as ?wide (out of
+                                     ;   a bra's reach; 3 cycles, as the bra was)
         .LONGA OFF
 ?soft
   .else
@@ -178,27 +180,42 @@ pcctl   lda #FX_PAT|[FX_CTL_W<<8]    ; [19-20] pattern + CTRL (the masked pass
         sep #$20                     ; A = m_a: the quarter-square byte x word
         qsmulx m_a, rs_tpr, m_prod, ld   ;   product (math.asm), m_prod = m_a*tpr_lo
         qsmulxa m_a, rs_tpr+1            ;   + (m_a*tpr_hi) << 8, in A:B
-        rep #$21
-        .LONGA ON
-        stz m_prod+2
-        adc m_prod+1
-        sta m_prod+1                 ; (m_prod's low word is wt: Q8 texture pixels)
-?frac   pei (m_prod)                 ; 2026-10-20: + (m_a x rs_tprf) >> 8, tpr's next 8
-        lda rs_tprf                  ;   fraction bits: wt parks on the stack while
-        sta m_b                      ;   umul16w makes the product (16-bit in and out,
-        jsr umul16w                  ;   65816-windows: the callee's own window; bank
-        clc                          ;   $01 had no room for an 8 x 8 of its own here,
-        lda m_prod+1                 ;   ~35 cycles a column). A Q8 tpr alone stepped
-        adc 1,s                      ;   X0 by two texture pixels every few columns on
-        sta m_prod                   ;   a wall a step away (vyp2.png, m_a 400+ rows).
-        pla                          ;   ?wide joins here with its own wt.
-        clc                          ; (the sum may wrap: X0 is 15 bits either way)
-?havep  ldy tx_slot                  ; X0 = wt + the peg shift (whole texture
-        lda rs_vshw,y                ;   pixels) mod the 128-pixel tile: a word
-        xba                          ;   whose high byte stays 0 (fx_chains_init
-        adc m_prod                   ;   clears it, fx_segk writes < 128). C = 0 on
-                                     ;   every way in: the byte path's last add is
-                                     ;   below 2^16, the others clear it
+        clc                          ; wt's byte 1, 8-bit (byte 2 is never read:
+        adc m_prod+1                 ;   X0 wraps at 2^16 anyway)
+        sta m_prod+1
+        ; 2026-11-02: + (m_a x rs_tprf) >> 8, tpr's next 8 fraction bits: the HIGH
+        ; byte of an 8 x 8 quarter-square product, inline (m_a < 256 here, rs_tprf's
+        ; byte 1 is clean). Was `jsr umul16w` with wt parked on the stack, ~60
+        ; cycles a column more. The same product: bit-identical.
+        sec                          ; |x-y| into X
+        lda m_a
+        sbc rs_tprf
+        bcs ?fdok
+        eor #$FF
+        inc
+?fdok   tax
+        clc
+        lda m_a
+        adc rs_tprf                  ; x+y (9-bit: Y = low 8, carry = bit 8)
+        tay
+        bcc ?fbase
+        lda QSqrLoExt,y              ; C = 1: the adc's carry IS the sec. The low
+        sbc QSqrLoBase,x             ;   difference only for its borrow
+        lda QSqrHiExt,y
+        sbc QSqrHiBase,x
+        bra ?fj
+?fbase  sec
+        lda QSqrLoBase,y
+        sbc QSqrLoBase,x
+        lda QSqrHiBase,y
+        sbc QSqrHiBase,x
+?fj     xba                          ; B = frac
+        ldy tx_slot                  ; X0 = wt + frac + the peg shift << 8 (whole
+        lda rs_vshw,y                ;   texture pixels, < 128: fx_segk) mod the
+        xba                          ;   128-pixel tile: C = shift << 8 | frac (no
+?fsum   rep #$21                     ;   carry between them), + wt. The sum may
+        .LONGA ON                    ;   wrap: X0 is 15 bits either way
+        adc m_prod
         and #$7FFF
         ldy #BCB_SIZE+1              ; [22-23] = X0, the container's own word
         sta [zp_pt],y
@@ -224,16 +241,27 @@ pc_cend cmp #BCB_SLOT*TW_MAXLINKS+PT_ZPOFF   ;   their tables with it. The END s
         jsr ptc_fire
         rep #$20
         rts
-        ; ---- the rare multiplies (16-bit M in and out, C = 0 out) -------------
+        ; ---- the rare multiplies (16-bit M in and out) ----------------------
         .LONGA ON
 ?wide   bmi ?aneg
         lda rs_tpr                   ; 256+ rows under the peg: the 16 x 16
         sta m_b                      ;   multiply (m_prod = 32 bits, its low
-        jsr umul16w                  ;   word is wt), then the fraction's share
-        bra ?frac                    ;   with the common path (its tail falls through)
+        jsr umul16w                  ;   word is wt), then the fraction's share,
+        pei (m_prod)                 ;   a 16 x 8 product: wt parks on the stack
+        lda rs_tprf
+        sta m_b
+        jsr umul16w
+        clc
+        lda m_prod+1
+        adc 1,s                      ; wt + frac (the sum may wrap)
+        sta m_prod
+        pla
+?w0     ldy tx_slot                  ; the peg shift << 8 (a word, its high byte
+        lda rs_vshw,y                ;   0), then the common sum at ?fsum
+        xba
+        bra ?fsum
 ?aneg   stz m_prod                   ; above the peg: texture pixel 0 (the clip never
-        clc                          ;   lets it happen; kept from the painter)
-        bra ?havep
+        bra ?w0                      ;   lets it happen; kept from the painter)
         ; ---- the bake, out of line: rs_rpt changed (16-bit M in and out) ------
 bake    lda rs_rpt
         eor ptm_last
@@ -903,7 +931,7 @@ pc_widem lda rs_tpr                  ; |spa-peg| >= 256
         lda rs_tpr+1
         sta m_b+1
         jsr umul16                   ; m_prod(32) = (spa-peg) * tpr_q8
-        jmp ?havep
+        bra ?havep
 ?found2 inx                          ; (2026-09-26) the borrow came from the pass's SECOND run
         inx
 ?found  tay                          ; 2026-09-29 (no php/plp, no pc_w): A = -2*(the leftover),
